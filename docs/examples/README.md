@@ -141,6 +141,8 @@ The prompt upsampling feature uses Mistral to enhance the original prompt with m
 
 ## Hardware
 
-- **Machine:** Mac Studio M2 Ultra
-- **RAM:** 192GB Unified Memory
+- **Machine:** MacBook Pro 14" (Nov 2023)
+- **Chip:** Apple M3 Max
+- **RAM:** 96 GB Unified Memory
+- **macOS:** Tahoe 26.2
 - **Quantization:** 8-bit text encoder + qint8 transformer (~60GB peak)
