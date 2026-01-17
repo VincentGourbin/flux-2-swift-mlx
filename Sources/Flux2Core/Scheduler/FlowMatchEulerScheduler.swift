@@ -59,7 +59,10 @@ public class FlowMatchEulerScheduler: @unchecked Sendable {
     /// - Parameters:
     ///   - numInferenceSteps: Number of denoising steps
     ///   - imageSeqLen: Length of image sequence (for mu calculation)
-    public func setTimesteps(numInferenceSteps: Int, imageSeqLen: Int? = nil) {
+    ///   - strength: Denoising strength for I2I (1.0 = full denoise, 0.5 = start at 50%)
+    /// - Returns: The initial timestep index (0 for T2I, >0 for I2I with strength < 1.0)
+    @discardableResult
+    public func setTimesteps(numInferenceSteps: Int, imageSeqLen: Int? = nil, strength: Float = 1.0) -> Int {
         // Compute mu based on image sequence length (Flux.2 specific)
         let mu: Float
         if let seqLen = imageSeqLen {
@@ -71,29 +74,49 @@ public class FlowMatchEulerScheduler: @unchecked Sendable {
 
         // Generate sigmas: linspace(1.0, 1/num_steps, num_steps)
         // This is the Flux.2 specific sigma schedule
-        var sigmaValues: [Float] = []
+        var allSigmas: [Float] = []
         for i in 0..<numInferenceSteps {
             let sigma = 1.0 - Float(i) / Float(numInferenceSteps)
-            sigmaValues.append(sigma)
+            allSigmas.append(sigma)
         }
 
         // Apply time shifting with mu (exponential shift)
-        sigmaValues = sigmaValues.map { sigma in
+        allSigmas = allSigmas.map { sigma in
             timeShift(mu: mu, sigma: 1.0, t: sigma)
         }
 
         // Append terminal sigma (0)
-        sigmaValues.append(0.0)
+        allSigmas.append(0.0)
 
-        self.sigmas = sigmaValues
+        // For I2I with strength < 1.0, skip early steps
+        // strength = 1.0 → start from step 0 (full denoising)
+        // strength = 0.5 → start from step numSteps/2 (50% denoising)
+        // strength = 0.1 → start from step numSteps*0.9 (10% denoising)
+        let clampedStrength = max(0.01, min(1.0, strength))
+        let initTimestepIndex = numInferenceSteps - Int(Float(numInferenceSteps) * clampedStrength)
+        let tStart = max(0, initTimestepIndex)
+
+        // Slice sigmas from the starting point
+        self.sigmas = Array(allSigmas[tStart...])
 
         // Timesteps = sigmas * num_train_timesteps (for compatibility)
-        self.timesteps = sigmaValues.map { $0 * Float(numTrainTimesteps) }
+        self.timesteps = self.sigmas.map { $0 * Float(numTrainTimesteps) }
 
         self.stepIndex = 0
 
-        Flux2Debug.log("Scheduler set: \(numInferenceSteps) steps, mu=\(mu)")
+        let effectiveSteps = sigmas.count - 1
+        Flux2Debug.log("Scheduler set: \(effectiveSteps) effective steps (strength=\(clampedStrength), mu=\(mu))")
+        if strength < 1.0 {
+            Flux2Debug.log("I2I mode: starting from timestep \(tStart) (skipping \(tStart) steps)")
+        }
         Flux2Debug.verbose("Sigmas: \(sigmas.prefix(5))... to \(sigmas.suffix(2))")
+
+        return tStart
+    }
+
+    /// Get the initial sigma for noise injection (used by I2I)
+    public var initialSigma: Float {
+        sigmas.first ?? 1.0
     }
 
     /// Time shift function (exponential) - matches diffusers _time_shift_exponential

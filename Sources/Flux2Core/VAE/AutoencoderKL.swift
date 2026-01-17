@@ -80,10 +80,10 @@ public class AutoencoderKLFlux2: Module, @unchecked Sendable {
             latent = mean
         }
 
-        // Apply BatchNorm (Flux.2 specific) - needs NHWC
-        let latentNHWC = latent.transposed(0, 2, 3, 1)  // NCHW -> NHWC
-        let normedNHWC = latentBatchNorm(latentNHWC, training: false)
-        latent = normedNHWC.transposed(0, 3, 1, 2)  // NHWC -> NCHW
+        // NOTE: BatchNorm is NOT applied during encode for Flux.2
+        // The BatchNorm weights are for patchified format (128 channels)
+        // and encode produces unpatchified latents (32 channels).
+        // Normalization is handled later in the pipeline after patchifying.
 
         // Scale
         latent = latent * scalingFactor

@@ -17,7 +17,11 @@ public enum Flux2GenerationMode: Sendable {
     case textToImage
 
     /// Image-to-Image generation with reference images
-    case imageToImage(images: [CGImage])
+    /// - Parameters:
+    ///   - images: Reference images (1-3)
+    ///   - strength: Denoising strength (0.0-1.0). 1.0 = full denoising (ignores image),
+    ///               0.5 = 50% denoising, 0.1 = minimal changes
+    case imageToImage(images: [CGImage], strength: Float)
 }
 
 /// Progress callback for generation (currentStep, totalSteps)
@@ -249,6 +253,7 @@ public class Flux2Pipeline: @unchecked Sendable {
     ///   - steps: Number of denoising steps
     ///   - guidance: Guidance scale
     ///   - seed: Optional random seed
+    ///   - strength: Denoising strength (0.0-1.0). Default 0.8. Lower = preserve more of original image
     ///   - upsamplePrompt: Enhance prompt with visual details before encoding (default false)
     ///   - checkpointInterval: Save intermediate image every N steps (nil = disabled)
     ///   - onProgress: Optional progress callback
@@ -262,6 +267,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         steps: Int = 50,
         guidance: Float = 4.0,
         seed: UInt64? = nil,
+        strength: Float = 0.8,
         upsamplePrompt: Bool = false,
         checkpointInterval: Int? = nil,
         onProgress: Flux2ProgressCallback? = nil,
@@ -271,12 +277,16 @@ public class Flux2Pipeline: @unchecked Sendable {
             throw Flux2Error.invalidConfiguration("Provide 1-3 reference images")
         }
 
+        guard strength > 0.0 && strength <= 1.0 else {
+            throw Flux2Error.invalidConfiguration("Strength must be between 0.0 and 1.0")
+        }
+
         // Infer dimensions from first image if not provided
         let targetHeight = height ?? images[0].height
         let targetWidth = width ?? images[0].width
 
         return try await generate(
-            mode: .imageToImage(images: images),
+            mode: .imageToImage(images: images, strength: strength),
             prompt: prompt,
             height: targetHeight,
             width: targetWidth,
@@ -368,6 +378,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         // Generate initial latents in PATCHIFIED format [B, 128, H/16, W/16]
         // This is the format expected by the BatchNorm normalization
         var patchifiedLatents: MLXArray
+        var i2iStrength: Float = 1.0  // Default for T2I (full denoising)
 
         switch mode {
         case .textToImage:
@@ -378,29 +389,44 @@ public class Flux2Pipeline: @unchecked Sendable {
             )
             Flux2Debug.log("Generated patchified latents: \(patchifiedLatents.shape)")
 
-        case .imageToImage(let images):
-            // Encode reference images and patchify
-            let rawLatents = try encodeReferenceImages(images, height: validHeight, width: validWidth)
-            // Convert from [B, 32, H/8, W/8] to [B, 128, H/16, W/16]
-            patchifiedLatents = LatentUtils.packLatents(rawLatents)
-            // Reshape to NCHW patchified format
-            let B = patchifiedLatents.shape[0]
-            let seqLen = patchifiedLatents.shape[1]
-            let C = patchifiedLatents.shape[2]
-            let pH = validHeight / 16
-            let pW = validWidth / 16
-            patchifiedLatents = patchifiedLatents.reshaped([B, pH, pW, C]).transposed(0, 3, 1, 2)
+        case .imageToImage(let images, let strength):
+            i2iStrength = strength
+            Flux2Debug.log("I2I mode: strength=\(strength)")
 
-            // ONLY for image-to-image: Normalize patchified latents with VAE BatchNorm
-            // BatchNorm has 128 features = 32 channels * 2 * 2 patch
-            // NOTE: For text-to-image, we use pure random noise without normalization
-            Flux2Debug.log("Normalizing patchified latents with BatchNorm (I2I mode)...")
-            patchifiedLatents = LatentUtils.normalizeLatentsWithBatchNorm(
-                patchifiedLatents,
+            // Encode reference images
+            let rawLatents = try encodeReferenceImages(images, height: validHeight, width: validWidth)
+            Flux2Debug.log("Encoded latents shape: \(rawLatents.shape)")
+
+            // Convert from [B, 32, H/8, W/8] to patchified [B, 128, H/16, W/16]
+            var encodedPatchified = LatentUtils.packLatentsToPatchified(rawLatents)
+            Flux2Debug.log("Patchified encoded latents: \(encodedPatchified.shape)")
+
+            // Normalize encoded patchified latents with BatchNorm
+            // This standardizes the encoded latents to have similar distribution as random noise
+            Flux2Debug.log("Normalizing patchified latents with BatchNorm...")
+            encodedPatchified = LatentUtils.normalizeLatentsWithBatchNorm(
+                encodedPatchified,
                 runningMean: vae!.batchNormRunningMean,
                 runningVar: vae!.batchNormRunningVar
             )
+            eval(encodedPatchified)
+
+            // Generate noise with same shape
+            let noise = LatentUtils.generatePatchifiedLatents(
+                height: validHeight,
+                width: validWidth,
+                seed: seed
+            )
+
+            // Mix encoded latents with noise based on initial sigma
+            // For flow matching: noisy = (1 - sigma) * clean + sigma * noise
+            // At strength=1.0, sigma=1.0 -> pure noise (like T2I)
+            // At strength=0.5, sigma≈0.5 -> 50% noise mixed with image
+            let sigma = MLXArray(strength)
+            patchifiedLatents = (1 - sigma) * encodedPatchified + sigma * noise
             eval(patchifiedLatents)
+
+            Flux2Debug.log("Mixed latents with noise (sigma=\(strength)): \(patchifiedLatents.shape)")
         }
 
         // Pack patchified latents to sequence format for transformer [B, seq_len, 128]
@@ -421,10 +447,12 @@ public class Flux2Pipeline: @unchecked Sendable {
         let imageSeqLen = packedLatents.shape[1]
         Flux2Debug.log("Image sequence length: \(imageSeqLen)")
 
-        // Setup scheduler with image sequence length for proper mu calculation
-        scheduler.setTimesteps(numInferenceSteps: steps, imageSeqLen: imageSeqLen)
+        // Setup scheduler with image sequence length and strength for proper mu calculation
+        // For I2I, this will skip early timesteps based on strength
+        scheduler.setTimesteps(numInferenceSteps: steps, imageSeqLen: imageSeqLen, strength: i2iStrength)
 
-        Flux2Debug.log("Starting denoising loop...")
+        let effectiveSteps = scheduler.sigmas.count - 1
+        Flux2Debug.log("Starting denoising loop (\(effectiveSteps) effective steps)...")
 
         // OPTIMIZATION: Create guidance tensor ONCE before the loop
         let guidanceTensor = MLXArray([guidance])
@@ -463,10 +491,10 @@ public class Flux2Pipeline: @unchecked Sendable {
             let stepDuration = Date().timeIntervalSince(stepStart)
             profiler.recordStep(duration: stepDuration)
 
-            // Report progress
-            onProgress?(stepIdx + 1, steps)
+            // Report progress (using effective steps for I2I)
+            onProgress?(stepIdx + 1, effectiveSteps)
 
-            Flux2Debug.verbose("Step \(stepIdx + 1)/\(steps)")
+            Flux2Debug.verbose("Step \(stepIdx + 1)/\(effectiveSteps)")
 
             // Generate checkpoint image if requested
             if let interval = checkpointInterval,
@@ -585,21 +613,66 @@ public class Flux2Pipeline: @unchecked Sendable {
             allLatents.append(latent)
         }
 
-        // If multiple images, concatenate or average
+        // If multiple images, average the latents
         if allLatents.count == 1 {
             return allLatents[0]
         } else {
-            // Stack and average for multi-image conditioning
-            let stackedLatents = stacked(allLatents)
-            return mean(stackedLatents, axis: 0, keepDims: true)
+            // Squeeze batch dimension from each latent before stacking
+            // Each latent is [1, 32, H/8, W/8], we want to average them
+            let squeezedLatents = allLatents.map { $0.squeezed(axis: 0) }  // [32, H/8, W/8]
+            let stackedLatents = stacked(squeezedLatents, axis: 0)  // [N, 32, H/8, W/8]
+            let averaged = mean(stackedLatents, axis: 0, keepDims: false)  // [32, H/8, W/8]
+            return averaged.expandedDimensions(axis: 0)  // [1, 32, H/8, W/8]
         }
     }
 
     /// Preprocess image for VAE encoding
+    /// Resizes image to target dimensions using high-quality CoreGraphics interpolation
     private func preprocessImageForVAE(_ image: CGImage, targetHeight: Int, targetWidth: Int) -> MLXArray {
-        // Convert CGImage to MLXArray
-        let width = image.width
-        let height = image.height
+        let sourceWidth = image.width
+        let sourceHeight = image.height
+
+        // Resize image using CoreGraphics if needed
+        let resizedImage: CGImage
+        if sourceWidth != targetWidth || sourceHeight != targetHeight {
+            Flux2Debug.log("Resizing image from \(sourceWidth)x\(sourceHeight) to \(targetWidth)x\(targetHeight)")
+
+            let bytesPerPixel = 4
+            let bytesPerRow = bytesPerPixel * targetWidth
+            var pixelData = [UInt8](repeating: 0, count: targetHeight * bytesPerRow)
+
+            guard let context = CGContext(
+                data: &pixelData,
+                width: targetWidth,
+                height: targetHeight,
+                bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else {
+                Flux2Debug.log("Failed to create resize context")
+                return MLXRandom.normal([1, 3, targetHeight, targetWidth])
+            }
+
+            // High quality interpolation
+            context.interpolationQuality = .high
+
+            // Draw the image scaled to fit the target dimensions
+            context.draw(image, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
+
+            guard let result = context.makeImage() else {
+                Flux2Debug.log("Failed to create resized image")
+                return MLXRandom.normal([1, 3, targetHeight, targetWidth])
+            }
+
+            resizedImage = result
+        } else {
+            resizedImage = image
+        }
+
+        // Now convert to MLXArray
+        let width = targetWidth
+        let height = targetHeight
         let bytesPerPixel = 4
         let bytesPerRow = bytesPerPixel * width
 
@@ -617,7 +690,7 @@ public class Flux2Pipeline: @unchecked Sendable {
             return MLXRandom.normal([1, 3, targetHeight, targetWidth])
         }
 
-        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        context.draw(resizedImage, in: CGRect(x: 0, y: 0, width: width, height: height))
 
         // Convert to float array and normalize to [-1, 1]
         var floatData = [Float](repeating: 0, count: height * width * 3)
@@ -634,16 +707,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         }
 
         // Create MLXArray [1, 3, H, W]
-        let tensor = MLXArray(floatData).reshaped([1, 3, height, width])
-
-        // Resize if needed (simple nearest neighbor for now)
-        if height != targetHeight || width != targetWidth {
-            // For proper resize, would use bilinear interpolation
-            // For now, return at original size
-            return tensor
-        }
-
-        return tensor
+        return MLXArray(floatData).reshaped([1, 3, height, width])
     }
 
     /// Convert VAE output to CGImage

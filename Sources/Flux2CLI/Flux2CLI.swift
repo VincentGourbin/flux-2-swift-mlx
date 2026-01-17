@@ -198,37 +198,61 @@ struct TextToImage: AsyncParsableCommand {
 struct ImageToImage: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "i2i",
-        abstract: "Generate image with reference images"
+        abstract: "Generate image using reference images (single or multi-reference editing)"
     )
 
-    @Argument(help: "Text prompt")
+    @Argument(help: "Text prompt describing the desired output")
     var prompt: String
 
-    @Option(name: .shortAndLong, help: "Reference image(s), up to 3")
+    @Option(name: .shortAndLong, help: "Reference image(s), 1-3 images")
     var images: [String]
 
     @Option(name: .shortAndLong, help: "Output file path")
     var output: String = "output.png"
 
     @Option(name: .shortAndLong, help: "Number of inference steps")
-    var steps: Int = 50
+    var steps: Int = 28
 
     @Option(name: .shortAndLong, help: "Guidance scale")
     var guidance: Float = 4.0
 
-    @Option(name: .long, help: "Random seed")
+    @Option(name: .long, help: "Random seed for reproducibility")
     var seed: UInt64?
 
-    @Option(name: .long, help: "Text encoder quantization")
+    @Option(name: .long, help: "Denoising strength (0.0-1.0). Lower = preserve more of original image")
+    var strength: Float = 0.8
+
+    @Flag(name: .long, help: "Enhance prompt with visual details using Mistral before encoding")
+    var upsamplePrompt: Bool = false
+
+    @Option(name: .long, help: "Save checkpoint image every N steps")
+    var checkpoint: Int?
+
+    @Flag(name: .long, help: "Show detailed performance profiling")
+    var profile: Bool = false
+
+    @Option(name: .long, help: "Text encoder quantization: bf16, 8bit, 6bit, 4bit")
     var textQuant: String = "8bit"
 
-    @Option(name: .long, help: "Transformer quantization")
+    @Option(name: .long, help: "Transformer quantization: bf16, qint8, qint4")
     var transformerQuant: String = "qint8"
 
     func run() async throws {
+        let startTime = Date()
+
         // Validate image count
         guard !images.isEmpty && images.count <= 3 else {
             throw ValidationError("Provide 1 to 3 reference images")
+        }
+
+        // Validate strength
+        guard strength > 0.0 && strength <= 1.0 else {
+            throw ValidationError("Strength must be between 0.0 and 1.0")
+        }
+
+        // Configure profiling
+        if profile {
+            Flux2Profiler.shared.enable()
         }
 
         // Load reference images
@@ -238,17 +262,23 @@ struct ImageToImage: AsyncParsableCommand {
                 throw ValidationError("Failed to load image: \(path)")
             }
             refImages.append(image)
+            print("Loaded reference image: \(path) (\(image.width)x\(image.height))")
         }
 
-        print("Loaded \(refImages.count) reference image(s)")
+        print("Mode: \(refImages.count == 1 ? "Single-reference" : "Multi-reference") editing")
+        print("Strength: \(strength) (\(Int((1.0 - strength) * 100))% of original preserved)")
+
+        if upsamplePrompt {
+            print("Prompt upsampling: enabled")
+        }
 
         // Parse quantization
         guard let textQuantization = MistralQuantization(rawValue: textQuant) else {
-            throw ValidationError("Invalid text quantization: \(textQuant)")
+            throw ValidationError("Invalid text quantization: \(textQuant). Use: bf16, 8bit, 6bit, 4bit")
         }
 
         guard let transformerQuantization = TransformerQuantization(rawValue: transformerQuant) else {
-            throw ValidationError("Invalid transformer quantization: \(transformerQuant)")
+            throw ValidationError("Invalid transformer quantization: \(transformerQuant). Use: bf16, qint8, qint4")
         }
 
         let quantConfig = Flux2QuantizationConfig(
@@ -259,6 +289,20 @@ struct ImageToImage: AsyncParsableCommand {
         // Create pipeline
         let pipeline = Flux2Pipeline(quantization: quantConfig)
 
+        // Setup checkpoint directory if needed
+        let checkpointDir: String?
+        if let interval = checkpoint, interval > 0 {
+            let baseName = (output as NSString).deletingPathExtension
+            checkpointDir = "\(baseName)_checkpoints"
+            try FileManager.default.createDirectory(
+                atPath: checkpointDir!,
+                withIntermediateDirectories: true
+            )
+            print("Checkpoints will be saved to: \(checkpointDir!)")
+        } else {
+            checkpointDir = nil
+        }
+
         print("Generating image...")
 
         let image = try await pipeline.generateImageToImage(
@@ -266,16 +310,42 @@ struct ImageToImage: AsyncParsableCommand {
             images: refImages,
             steps: steps,
             guidance: guidance,
-            seed: seed
-        ) { current, total in
-            print("\rStep \(current)/\(total)", terminator: "")
-            fflush(stdout)
-        }
+            seed: seed,
+            strength: strength,
+            upsamplePrompt: upsamplePrompt,
+            checkpointInterval: checkpoint,
+            onProgress: { current, total in
+                let progress = Float(current) / Float(total) * 100
+                print("\rStep \(current)/\(total) [\(String(format: "%.0f", progress))%]", terminator: "")
+                fflush(stdout)
+            },
+            onCheckpoint: { step, checkpointImage in
+                if let dir = checkpointDir {
+                    let checkpointPath = "\(dir)/step_\(String(format: "%03d", step)).png"
+                    do {
+                        try saveImage(checkpointImage, to: checkpointPath)
+                        print("\n  Checkpoint saved: step_\(String(format: "%03d", step)).png")
+                    } catch {
+                        print("\n  Failed to save checkpoint at step \(step): \(error.localizedDescription)")
+                    }
+                }
+            }
+        )
 
         print()
 
+        let elapsed = Date().timeIntervalSince(startTime)
+        print("Generation completed in \(String(format: "%.1f", elapsed))s")
+
+        // Save image
         try saveImage(image, to: output)
         print("Image saved to \(output)")
+
+        // Show profiler report if requested
+        if profile {
+            print()
+            print(Flux2Profiler.shared.generateReport())
+        }
     }
 }
 

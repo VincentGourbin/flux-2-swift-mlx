@@ -176,6 +176,41 @@ public enum LatentUtils {
         return packed.reshaped([B, numPatches, patchDim])
     }
 
+    /// Convert VAE latents to patchified format
+    /// Converts [B, 32, H/8, W/8] to [B, 128, H/16, W/16]
+    /// This is used for I2I where VAE encodes reference images
+    /// - Parameters:
+    ///   - latents: VAE latents [B, 32, H/8, W/8]
+    ///   - patchSize: Patch size (default 2 for Flux.2)
+    /// - Returns: Patchified latents [B, 128, H/16, W/16]
+    public static func packLatentsToPatchified(
+        _ latents: MLXArray,
+        patchSize: Int = 2
+    ) -> MLXArray {
+        let shape = latents.shape
+        let B = shape[0]
+        let C = shape[1]  // 32
+        let H = shape[2]  // H/8
+        let W = shape[3]  // W/8
+
+        // Target dimensions
+        let patchifiedH = H / patchSize  // H/16
+        let patchifiedW = W / patchSize  // W/16
+        let patchifiedC = C * patchSize * patchSize  // 128
+
+        // Reshape: [B, C, H, W] -> [B, C, pH, patchSize, pW, patchSize]
+        var packed = latents.reshaped([B, C, patchifiedH, patchSize, patchifiedW, patchSize])
+
+        // Permute to group patches: [B, pH, pW, C, patchSize, patchSize]
+        packed = packed.transposed(0, 2, 4, 1, 3, 5)
+
+        // Reshape to [B, pH, pW, C*patchSize*patchSize] = [B, pH, pW, 128]
+        packed = packed.reshaped([B, patchifiedH, patchifiedW, patchifiedC])
+
+        // Transpose to NCHW: [B, 128, pH, pW]
+        return packed.transposed(0, 3, 1, 2)
+    }
+
     /// Unpack latents from transformer output (legacy)
     /// Converts [B, (H/p)*(W/p), C*p*p] back to [B, C, H, W]
     /// - Parameters:
