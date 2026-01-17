@@ -1,0 +1,462 @@
+// WeightLoader.swift - Load model weights from safetensors
+// Copyright 2025 Vincent Gourbin
+
+import Foundation
+import MLX
+import MLXNN
+
+/// Utilities for loading Flux.2 model weights from safetensors files
+public class Flux2WeightLoader {
+
+    /// Load all weights from a model directory
+    /// - Parameter modelPath: Path to directory containing safetensors files
+    /// - Returns: Dictionary of weight name to MLXArray
+    public static func loadWeights(from modelPath: String) throws -> [String: MLXArray] {
+        let fm = FileManager.default
+        let contents = try fm.contentsOfDirectory(atPath: modelPath)
+        let safetensorFiles = contents.filter { $0.hasSuffix(".safetensors") }.sorted()
+
+        if safetensorFiles.isEmpty {
+            throw Flux2WeightLoaderError.noWeightsFound(modelPath)
+        }
+
+        Flux2Debug.log("Found \(safetensorFiles.count) safetensor files in \(modelPath)")
+
+        var allWeights: [String: MLXArray] = [:]
+
+        for filename in safetensorFiles {
+            let filePath = "\(modelPath)/\(filename)"
+            let weights = try loadArrays(url: URL(fileURLWithPath: filePath))
+
+            for (key, value) in weights {
+                allWeights[key] = value
+            }
+
+            Flux2Debug.log("Loaded \(weights.count) tensors from \(filename)")
+        }
+
+        return allWeights
+    }
+
+    /// Load weights from URL
+    public static func loadWeights(from url: URL) throws -> [String: MLXArray] {
+        try loadWeights(from: url.path)
+    }
+
+    // MARK: - Transformer Weight Mapping
+
+    /// Convert HuggingFace transformer weight keys to Swift module paths
+    /// Also handles dequantization of quanto qint8 weights
+    public static func mapTransformerWeights(_ weights: [String: MLXArray]) -> [String: MLXArray] {
+        var mapped: [String: MLXArray] = [:]
+        var quantizedData: [String: MLXArray] = [:]  // base_key -> ._data
+        var quantizedScales: [String: MLXArray] = [:]  // base_key -> ._scale
+
+        // First pass: collect quantized weights and their scales
+        for (key, value) in weights {
+            var processedKey = key
+
+            // Remove common prefixes
+            if processedKey.hasPrefix("transformer.") {
+                processedKey = String(processedKey.dropFirst(12))
+            }
+
+            // Check for quanto quantization suffixes
+            if processedKey.hasSuffix("._data") {
+                let baseKey = String(processedKey.dropLast(6))  // Remove "._data"
+                let mappedKey = mapTransformerKeySimple(baseKey)
+                quantizedData[mappedKey] = value
+            } else if processedKey.hasSuffix("._scale") {
+                let baseKey = String(processedKey.dropLast(7))  // Remove "._scale"
+                let mappedKey = mapTransformerKeySimple(baseKey)
+                quantizedScales[mappedKey] = value
+            } else if processedKey.hasSuffix(".input_scale") || processedKey.hasSuffix(".output_scale") {
+                // Skip activation scales for quanto
+                continue
+            } else {
+                // Non-quantized weight, map directly
+                let mappedKey = mapTransformerKeySimple(processedKey)
+                mapped[mappedKey] = value
+            }
+        }
+
+        // Second pass: dequantize qint8 weights to float16 for memory efficiency
+        // Process in smaller batches to reduce peak memory
+        var dequantCount = 0
+        for (key, data) in quantizedData {
+            if let scale = quantizedScales[key] {
+                // Dequantize: weight = data.float() * scale, then convert to float16
+                let dequantized = (data.asType(.float32) * scale).asType(.float16)
+                mapped[key] = dequantized
+                dequantCount += 1
+            } else {
+                // No scale found, use data as-is
+                mapped[key] = data.asType(.float16)
+                Flux2Debug.warning("No scale found for quantized weight: \(key)")
+            }
+            // Periodically clear unused memory
+            if dequantCount % 50 == 0 {
+                eval(mapped.values.map { $0 })
+            }
+        }
+        Flux2Debug.log("Dequantized \(dequantCount) qint8 weights to float16")
+
+        return mapped
+    }
+
+    /// Map key without handling quantization suffixes (called after suffix processing)
+    private static func mapTransformerKeySimple(_ key: String) -> String {
+        var mapped = key
+
+        // Map single stream blocks (checkpoint may use various formats)
+        mapped = mapped.replacingOccurrences(of: "single_transformer_blocks.", with: "singleTransformerBlocks.")
+        mapped = mapped.replacingOccurrences(of: "single_transformerBlocks.", with: "singleTransformerBlocks.")
+
+        // Map double stream blocks (both formats)
+        mapped = mapped.replacingOccurrences(of: "transformer_blocks.", with: "transformerBlocks.")
+
+        // Map attention components - both underscore and camelCase from checkpoint
+        mapped = mapped.replacingOccurrences(of: "attn.to_q.", with: "attn.toQ.")
+        mapped = mapped.replacingOccurrences(of: "attn.to_k.", with: "attn.toK.")
+        mapped = mapped.replacingOccurrences(of: "attn.to_v.", with: "attn.toV.")
+        mapped = mapped.replacingOccurrences(of: "attn.toQ.", with: "attn.toQ.")
+        mapped = mapped.replacingOccurrences(of: "attn.toK.", with: "attn.toK.")
+        mapped = mapped.replacingOccurrences(of: "attn.toV.", with: "attn.toV.")
+        mapped = mapped.replacingOccurrences(of: "attn.to_out.0.", with: "attn.toOut.")
+        mapped = mapped.replacingOccurrences(of: "attn.toOut.0.", with: "attn.toOut.")
+        mapped = mapped.replacingOccurrences(of: "attn.add_q_proj.", with: "attn.addQProj.")
+        mapped = mapped.replacingOccurrences(of: "attn.add_k_proj.", with: "attn.addKProj.")
+        mapped = mapped.replacingOccurrences(of: "attn.add_v_proj.", with: "attn.addVProj.")
+        mapped = mapped.replacingOccurrences(of: "attn.addQProj.", with: "attn.addQProj.")
+        mapped = mapped.replacingOccurrences(of: "attn.addKProj.", with: "attn.addKProj.")
+        mapped = mapped.replacingOccurrences(of: "attn.addVProj.", with: "attn.addVProj.")
+        mapped = mapped.replacingOccurrences(of: "attn.to_add_out.", with: "attn.toAddOut.")
+        mapped = mapped.replacingOccurrences(of: "attn.toAddOut.", with: "attn.toAddOut.")
+
+        // Map single block attention (fused QKV+MLP)
+        // Model uses toQkvMlp, checkpoint uses to_qkv_mlp_proj
+        mapped = mapped.replacingOccurrences(of: "attn.to_qkv_mlp_proj.", with: "attn.toQkvMlp.")
+
+        // Map to_out without .0. (single stream blocks)
+        mapped = mapped.replacingOccurrences(of: "attn.to_out.", with: "attn.toOut.")
+
+        // Map norms - both formats
+        mapped = mapped.replacingOccurrences(of: "attn.norm_q.", with: "attn.normQ.")
+        mapped = mapped.replacingOccurrences(of: "attn.norm_k.", with: "attn.normK.")
+        mapped = mapped.replacingOccurrences(of: "attn.normQ.", with: "attn.normQ.")
+        mapped = mapped.replacingOccurrences(of: "attn.normK.", with: "attn.normK.")
+        mapped = mapped.replacingOccurrences(of: "attn.norm_added_q.", with: "attn.normAddedQ.")
+        mapped = mapped.replacingOccurrences(of: "attn.norm_added_k.", with: "attn.normAddedK.")
+        mapped = mapped.replacingOccurrences(of: "attn.normAddedQ.", with: "attn.normAddedQ.")
+        mapped = mapped.replacingOccurrences(of: "attn.normAddedK.", with: "attn.normAddedK.")
+        mapped = mapped.replacingOccurrences(of: "norm1_context.", with: "norm1Context.")
+        mapped = mapped.replacingOccurrences(of: "norm2_context.", with: "norm2Context.")
+
+        // Map feedforward
+        // Model uses SwiGLU with activation.proj for input, checkpoint uses linear_in
+        mapped = mapped.replacingOccurrences(of: "ff_context.linear_in.", with: "ffContext.activation.proj.")
+        mapped = mapped.replacingOccurrences(of: "ff_context.linear_out.", with: "ffContext.linearOut.")
+        mapped = mapped.replacingOccurrences(of: ".ff.linear_in.", with: ".ff.activation.proj.")
+        mapped = mapped.replacingOccurrences(of: ".ff.linear_out.", with: ".ff.linearOut.")
+        // Generic fallbacks
+        mapped = mapped.replacingOccurrences(of: "ff_context.", with: "ffContext.")
+        mapped = mapped.replacingOccurrences(of: "linear_in.", with: "activation.proj.")
+        mapped = mapped.replacingOccurrences(of: "linear_out.", with: "linearOut.")
+
+        // Map embeddings
+        mapped = mapped.replacingOccurrences(of: "x_embedder.", with: "xEmbedder.")
+        mapped = mapped.replacingOccurrences(of: "context_embedder.", with: "contextEmbedder.")
+        mapped = mapped.replacingOccurrences(of: "contextEmbedder.", with: "contextEmbedder.")
+        mapped = mapped.replacingOccurrences(of: "time_text_embed.", with: "timeGuidanceEmbed.")
+        mapped = mapped.replacingOccurrences(of: "time_guidance_embed.", with: "timeGuidanceEmbed.")
+
+        // Map timestep embedder
+        mapped = mapped.replacingOccurrences(of: "timestep_embedder.", with: "timestepEmbedder.")
+        mapped = mapped.replacingOccurrences(of: "guidance_embedder.", with: "guidanceEmbedder.")
+        mapped = mapped.replacingOccurrences(of: "linear_1.", with: "linear1.")
+        mapped = mapped.replacingOccurrences(of: "linear_2.", with: "linear2.")
+
+        // Map modulation layers
+        mapped = mapped.replacingOccurrences(of: "double_stream_modulation_img.", with: "doubleStreamModulationImg.")
+        mapped = mapped.replacingOccurrences(of: "double_stream_modulation_txt.", with: "doubleStreamModulationTxt.")
+        mapped = mapped.replacingOccurrences(of: "single_stream_modulation.", with: "singleStreamModulation.")
+
+        // Map output
+        mapped = mapped.replacingOccurrences(of: "norm_out.", with: "normOut.")
+        mapped = mapped.replacingOccurrences(of: "proj_out.", with: "projOut.")
+        mapped = mapped.replacingOccurrences(of: "normOut.", with: "normOut.")
+        mapped = mapped.replacingOccurrences(of: "projOut.", with: "projOut.")
+
+        return mapped
+    }
+
+    // MARK: - VAE Weight Mapping
+
+    /// Convert HuggingFace VAE weight keys to Swift module paths
+    /// Also transposes Conv2d weights from PyTorch OIHW format to MLX OHWI format
+    public static func mapVAEWeights(_ weights: [String: MLXArray]) -> [String: MLXArray] {
+        var mapped: [String: MLXArray] = [:]
+
+        for (key, var value) in weights {
+            var newKey = key
+
+            // Transpose Conv2d weights from PyTorch OIHW to MLX OHWI format
+            // Conv2d weights have 4 dimensions and key ends with ".weight"
+            // PyTorch: [out_channels, in_channels, kernel_h, kernel_w]
+            // MLX: [out_channels, kernel_h, kernel_w, in_channels]
+            if key.hasSuffix(".weight") && value.ndim == 4 {
+                value = value.transposed(0, 2, 3, 1)  // OIHW -> OHWI
+            }
+
+            // Map encoder/decoder
+            newKey = newKey.replacingOccurrences(of: "encoder.conv_in.", with: "encoder.convIn.")
+            newKey = newKey.replacingOccurrences(of: "encoder.conv_out.", with: "encoder.convOut.")
+            newKey = newKey.replacingOccurrences(of: "encoder.conv_norm_out.", with: "encoder.convNormOut.")
+            newKey = newKey.replacingOccurrences(of: "decoder.conv_in.", with: "decoder.convIn.")
+            newKey = newKey.replacingOccurrences(of: "decoder.conv_out.", with: "decoder.convOut.")
+            newKey = newKey.replacingOccurrences(of: "decoder.conv_norm_out.", with: "decoder.convNormOut.")
+
+            // Map down/up blocks
+            newKey = newKey.replacingOccurrences(of: "down_blocks.", with: "downBlocks.")
+            newKey = newKey.replacingOccurrences(of: "up_blocks.", with: "upBlocks.")
+
+            // Map mid_block - special handling for tuple structure
+            // mid_block.resnets.0 -> midBlock.0 (resnet1)
+            // mid_block.attentions.0 -> midBlock.1 (attention)
+            // mid_block.resnets.1 -> midBlock.2 (resnet2)
+            // Apply to both encoder and decoder
+            newKey = newKey.replacingOccurrences(of: "encoder.mid_block.resnets.0.", with: "encoder.midBlock.0.")
+            newKey = newKey.replacingOccurrences(of: "encoder.mid_block.attentions.0.", with: "encoder.midBlock.1.")
+            newKey = newKey.replacingOccurrences(of: "encoder.mid_block.resnets.1.", with: "encoder.midBlock.2.")
+            newKey = newKey.replacingOccurrences(of: "decoder.mid_block.resnets.0.", with: "decoder.midBlock.0.")
+            newKey = newKey.replacingOccurrences(of: "decoder.mid_block.attentions.0.", with: "decoder.midBlock.1.")
+            newKey = newKey.replacingOccurrences(of: "decoder.mid_block.resnets.1.", with: "decoder.midBlock.2.")
+
+            // Map ResNet blocks in down/up blocks
+            // The model uses tuples: (blocks: [ResnetBlock2D], upsample/downsample: Upsample2D?)
+            // This flattens as: upBlocks.{idx}.0.{resnet_idx} for blocks, upBlocks.{idx}.1 for upsample
+            // Checkpoint uses: up_blocks.{idx}.resnets.{resnet_idx}
+            newKey = newKey.replacingOccurrences(of: "resnets.", with: "0.")
+            newKey = newKey.replacingOccurrences(of: "conv_shortcut.", with: "convShortcut.")
+
+            // Map upsamplers and downsamplers
+            // upsamplers.0.conv -> 1.conv (position 1 in tuple)
+            // downsamplers.0.conv -> 1.conv (position 1 in tuple)
+            newKey = newKey.replacingOccurrences(of: "upsamplers.0.conv.", with: "1.conv.")
+            newKey = newKey.replacingOccurrences(of: "downsamplers.0.conv.", with: "1.conv.")
+
+            // Map attention
+            newKey = newKey.replacingOccurrences(of: "attentions.", with: "attentions.")
+            newKey = newKey.replacingOccurrences(of: "group_norm.", with: "groupNorm.")
+            newKey = newKey.replacingOccurrences(of: "to_q.", with: "toQ.")
+            newKey = newKey.replacingOccurrences(of: "to_k.", with: "toK.")
+            newKey = newKey.replacingOccurrences(of: "to_v.", with: "toV.")
+            newKey = newKey.replacingOccurrences(of: "to_out.0.", with: "toOut.")  // VAE attention has indexed to_out
+            newKey = newKey.replacingOccurrences(of: "to_out.", with: "toOut.")
+
+            // Map quant conv - order matters! More specific patterns first
+            newKey = newKey.replacingOccurrences(of: "post_quant_conv.", with: "postQuantConv.")
+            newKey = newKey.replacingOccurrences(of: "quant_conv.", with: "quantConv.")
+
+            // Map batch norm (bn -> latentBatchNorm)
+            newKey = newKey.replacingOccurrences(of: "bn.", with: "latentBatchNorm.")
+            newKey = newKey.replacingOccurrences(of: "running_mean", with: "runningMean")
+            newKey = newKey.replacingOccurrences(of: "running_var", with: "runningVar")
+            newKey = newKey.replacingOccurrences(of: "num_batches_tracked", with: "numBatchesTracked")
+
+            mapped[newKey] = value
+        }
+
+        return mapped
+    }
+
+    // MARK: - Weight Application
+
+    /// Apply weights to a transformer model
+    public static func applyTransformerWeights(
+        _ weights: [String: MLXArray],
+        to model: Flux2Transformer2DModel
+    ) throws {
+        let mapped = mapTransformerWeights(weights)
+
+        // Use MLX's built-in weight loading - flatten to get full paths
+        let flattenedArray = model.parameters().flattened()
+        var flatParameters: [String: MLXArray] = [:]
+        for (key, value) in flattenedArray {
+            flatParameters[key] = value
+        }
+
+        var updates: [String: MLXArray] = [:]
+        var notFound = 0
+
+        // Debug: print some flattened model parameter keys
+        Flux2Debug.verbose("Model parameter keys (first 20 flattened):")
+        for key in flatParameters.keys.sorted().prefix(20) {
+            Flux2Debug.verbose("  - \(key)")
+        }
+
+        for (key, value) in mapped {
+            if flatParameters.keys.contains(key) {
+                updates[key] = value
+            } else {
+                notFound += 1
+                if notFound <= 10 {
+                    Flux2Debug.log("Warning: No parameter found for key: \(key)")
+                }
+            }
+        }
+
+        if notFound > 10 {
+            Flux2Debug.log("... and \(notFound - 10) more missing parameters")
+        }
+
+        // Update model with new weights using the flattened format
+        _ = model.update(parameters: ModuleParameters.unflattened(updates))
+
+        // Debug: print some weight shapes
+        for (key, value) in updates.sorted(by: { $0.key < $1.key }).prefix(10) {
+            Flux2Debug.log("  Weight \(key): shape=\(value.shape), dtype=\(value.dtype)")
+        }
+
+        Flux2Debug.log("Applied \(updates.count) weights to transformer (\(notFound) not found)")
+    }
+
+    /// Apply weights to a VAE model
+    public static func applyVAEWeights(
+        _ weights: [String: MLXArray],
+        to model: AutoencoderKLFlux2
+    ) throws {
+        let mapped = mapVAEWeights(weights)
+
+        // Check for BatchNorm running stats
+        if let runningMean = mapped["latentBatchNorm.runningMean"],
+           let runningVar = mapped["latentBatchNorm.runningVar"] {
+            model.loadBatchNormStats(runningMean: runningMean, runningVar: runningVar)
+        }
+
+        // Flatten model parameters for key matching
+        let flattenedArray = model.parameters().flattened()
+        var flatParameters: [String: MLXArray] = [:]
+        for (key, value) in flattenedArray {
+            flatParameters[key] = value
+        }
+
+        // Debug: print some VAE parameter keys
+        Flux2Debug.verbose("VAE model parameter keys (first 20 of \(flatParameters.count) flattened):")
+        for key in flatParameters.keys.sorted().prefix(20) {
+            Flux2Debug.verbose("  - \(key)")
+        }
+
+        var updates: [String: MLXArray] = [:]
+        var notFound = 0
+
+        for (key, value) in mapped {
+            if key.contains("running") { continue }  // Skip running stats, handled above
+
+            if flatParameters.keys.contains(key) {
+                updates[key] = value
+            } else {
+                notFound += 1
+                if notFound <= 10 {
+                    Flux2Debug.log("VAE Warning: No parameter found for key: \(key)")
+                }
+            }
+        }
+
+        if notFound > 10 {
+            Flux2Debug.log("... and \(notFound - 10) more missing VAE parameters")
+        }
+
+        _ = model.update(parameters: ModuleParameters.unflattened(updates))
+
+        Flux2Debug.log("Applied \(updates.count) weights to VAE (\(notFound) not found)")
+    }
+
+    // MARK: - Quantized Weight Loading
+
+    /// Load quantized transformer weights
+    public static func loadQuantizedTransformer(
+        from modelPath: String,
+        quantization: TransformerQuantization
+    ) throws -> [String: MLXArray] {
+        let weights = try loadWeights(from: modelPath)
+
+        // For qint4/qint8, weights may already be quantized in safetensors
+        // If not, we need to quantize them here
+        if quantization != .bf16 {
+            Flux2Debug.log("Loading \(quantization.rawValue) quantized weights")
+        }
+
+        return weights
+    }
+
+    // MARK: - Verification
+
+    /// Verify that all required weights are present
+    public static func verifyTransformerWeights(_ weights: [String: MLXArray]) -> (complete: Bool, missing: [String]) {
+        let requiredPrefixes = [
+            "xEmbedder",
+            "contextEmbedder",
+            "timeGuidanceEmbed",
+            "transformerBlocks.0",
+            "singleTransformerBlocks.0",
+            "normOut",
+            "projOut"
+        ]
+
+        var missing: [String] = []
+
+        for prefix in requiredPrefixes {
+            let hasPrefix = weights.keys.contains { $0.hasPrefix(prefix) }
+            if !hasPrefix {
+                missing.append(prefix)
+            }
+        }
+
+        return (missing.isEmpty, missing)
+    }
+
+    /// Get summary of loaded weights
+    public static func summarizeWeights(_ weights: [String: MLXArray]) {
+        var totalParams: Int64 = 0
+        var byPrefix: [String: Int64] = [:]
+
+        for (key, array) in weights {
+            let params = Int64(array.shape.reduce(1, *))
+            totalParams += params
+
+            // Group by first component
+            let prefix = String(key.split(separator: ".").first ?? Substring(key))
+            byPrefix[prefix, default: 0] += params
+        }
+
+        Flux2Debug.log("Weight Summary:")
+        for (prefix, params) in byPrefix.sorted(by: { $0.value > $1.value }) {
+            let gb = Float(params * 2) / 1_000_000_000  // bf16 = 2 bytes
+            Flux2Debug.log("  \(prefix): \(params) params (~\(String(format: "%.2f", gb))GB)")
+        }
+        Flux2Debug.log("Total: \(totalParams) parameters")
+    }
+}
+
+// MARK: - Errors
+
+public enum Flux2WeightLoaderError: LocalizedError {
+    case noWeightsFound(String)
+    case weightMismatch(String)
+    case fileNotFound(String)
+    case incompatibleShape(expected: [Int], got: [Int], key: String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .noWeightsFound(let path):
+            return "No safetensors files found in: \(path)"
+        case .weightMismatch(let message):
+            return "Weight mismatch: \(message)"
+        case .fileNotFound(let path):
+            return "File not found: \(path)"
+        case .incompatibleShape(let expected, let got, let key):
+            return "Incompatible shape for \(key): expected \(expected), got \(got)"
+        }
+    }
+}

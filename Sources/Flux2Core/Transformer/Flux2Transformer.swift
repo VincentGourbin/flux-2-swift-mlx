@@ -1,0 +1,257 @@
+// Flux2Transformer.swift - Complete Flux.2 Diffusion Transformer
+// Copyright 2025 Vincent Gourbin
+
+import Foundation
+import MLX
+import MLXNN
+
+/// Flux.2 Diffusion Transformer (DiT) Model
+///
+/// Architecture:
+/// - 8 double-stream transformer blocks (joint text-image attention)
+/// - 48 single-stream transformer blocks (concatenated self-attention)
+/// - ~32B parameters total
+///
+/// Flow:
+/// 1. Project latents to inner dim: [B, H*W, 128] -> [B, H*W, 6144]
+/// 2. Project text embeddings: [B, S, 15360] -> [B, S, 6144]
+/// 3. Generate timestep/guidance embeddings
+/// 4. Double-stream blocks: process text and image separately with joint attention
+/// 5. Single-stream blocks: concatenate and process together
+/// 6. Final norm and projection: [B, H*W, 6144] -> [B, H*W, 128]
+public class Flux2Transformer2DModel: Module, @unchecked Sendable {
+    let config: Flux2TransformerConfig
+
+    // Input embeddings
+    let xEmbedder: Linear           // Latent projection: 128 -> 6144
+    let contextEmbedder: Linear     // Text projection: 15360 -> 6144
+
+    // Timestep/guidance embeddings
+    let timeGuidanceEmbed: Flux2TimestepGuidanceEmbeddings
+
+    // Positional embeddings (RoPE)
+    let posEmbed: Flux2RoPE
+
+    // Modulation layers
+    let doubleStreamModulationImg: Flux2Modulation
+    let doubleStreamModulationTxt: Flux2Modulation
+    let singleStreamModulation: Flux2Modulation
+
+    // Transformer blocks
+    let transformerBlocks: [Flux2TransformerBlock]
+    let singleTransformerBlocks: [Flux2SingleTransformerBlock]
+
+    // Output layers
+    let normOut: AdaLayerNormContinuous
+    let projOut: Linear             // Output projection: 6144 -> 128
+
+    /// Initialize Flux.2 Transformer
+    /// - Parameter config: Model configuration
+    public init(config: Flux2TransformerConfig = .flux2Dev) {
+        self.config = config
+
+        let dim = config.innerDim  // 6144
+
+        // Input projections (no bias to match checkpoint)
+        self.xEmbedder = Linear(config.inChannels, dim, bias: false)
+        self.contextEmbedder = Linear(config.jointAttentionDim, dim, bias: false)
+
+        // Timestep embeddings
+        self.timeGuidanceEmbed = Flux2TimestepGuidanceEmbeddings(
+            embeddingDim: 256,
+            timeEmbedDim: dim,
+            useGuidanceEmbeds: config.guidanceEmbeds
+        )
+
+        // RoPE
+        self.posEmbed = Flux2RoPE(
+            axesDims: config.axesDimsRope,
+            theta: config.ropeTheta
+        )
+
+        // Modulation layers (6 params each for double-stream, 3 for single)
+        self.doubleStreamModulationImg = Flux2Modulation(dim: dim, numSets: 2)
+        self.doubleStreamModulationTxt = Flux2Modulation(dim: dim, numSets: 2)
+        self.singleStreamModulation = Flux2Modulation(dim: dim, numSets: 1)
+
+        // Double-stream blocks (8)
+        self.transformerBlocks = (0..<config.numLayers).map { _ in
+            Flux2TransformerBlock(
+                dim: dim,
+                numHeads: config.numAttentionHeads,
+                headDim: config.attentionHeadDim
+            )
+        }
+
+        // Single-stream blocks (48)
+        self.singleTransformerBlocks = (0..<config.numSingleLayers).map { _ in
+            Flux2SingleTransformerBlock(
+                dim: dim,
+                numHeads: config.numAttentionHeads,
+                headDim: config.attentionHeadDim
+            )
+        }
+
+        // Output (no bias to match checkpoint)
+        self.normOut = AdaLayerNormContinuous(dim: dim)
+        self.projOut = Linear(dim, config.outChannels, bias: false)
+    }
+
+    /// Forward pass
+    /// - Parameters:
+    ///   - hiddenStates: Packed latent image [B, S_img, 128]
+    ///   - encoderHiddenStates: Text embeddings from Mistral [B, S_txt, 15360]
+    ///   - timestep: Diffusion timestep [B]
+    ///   - guidance: Guidance scale [B] (optional)
+    ///   - imgIds: Image position IDs [S_img, 4]
+    ///   - txtIds: Text position IDs [S_txt, 4]
+    /// - Returns: Predicted noise [B, S_img, 128]
+    public func callAsFunction(
+        hiddenStates: MLXArray,
+        encoderHiddenStates: MLXArray,
+        timestep: MLXArray,
+        guidance: MLXArray? = nil,
+        imgIds: MLXArray,
+        txtIds: MLXArray
+    ) -> MLXArray {
+        Flux2Debug.verbose("=== Transformer Forward ===")
+        Flux2Debug.verbose("hiddenStates: \(hiddenStates.shape)")
+        Flux2Debug.verbose("encoderHiddenStates: \(encoderHiddenStates.shape)")
+        Flux2Debug.verbose("timestep: \(timestep.shape)")
+
+        // Project inputs
+        var imgHS = xEmbedder(hiddenStates)
+        var txtHS = contextEmbedder(encoderHiddenStates)
+        Flux2Debug.verbose("After projection - imgHS: \(imgHS.shape), txtHS: \(txtHS.shape)")
+
+        // Scale timestep and guidance by 1000 (diffusers pattern)
+        // Pipeline passes timestep in [0, 1] range (sigma), but the sinusoidal
+        // embedding in Flux2TimestepGuidanceEmbeddings expects values in [0, 1000] range.
+        // Similarly, guidance (e.g., 4.0) is scaled to 4000.
+        let scaledTimestep = timestep * 1000
+        let scaledGuidance = guidance.map { $0 * 1000 }
+
+        // Generate timestep + guidance embedding
+        let temb = timeGuidanceEmbed(timestep: scaledTimestep, guidance: scaledGuidance)
+        Flux2Debug.verbose("temb shape: \(temb.shape)")
+
+        // Generate RoPE embeddings
+        let combinedIds = concatenated([txtIds, imgIds], axis: 0)
+        let ropeEmb = posEmbed(combinedIds)
+        Flux2Debug.verbose("RoPE shapes - cos: \(ropeEmb.cos.shape), sin: \(ropeEmb.sin.shape)")
+
+        // --- Double-Stream Blocks ---
+        for (blockIdx, block) in transformerBlocks.enumerated() {
+            Flux2Debug.verbose("Double-stream block \(blockIdx)")
+
+            // Get modulation parameters
+            let imgMod = doubleStreamModulationImg(temb)
+            let txtMod = doubleStreamModulationTxt(temb)
+
+            Flux2Debug.verbose("imgMod count: \(imgMod.count), first shift: \(imgMod.first?.shift.shape ?? [])")
+
+            let (newTxt, newImg) = block(
+                hiddenStates: imgHS,
+                encoderHiddenStates: txtHS,
+                temb: temb,
+                rotaryEmb: ropeEmb,
+                imgModParams: imgMod,
+                txtModParams: txtMod
+            )
+
+            imgHS = newImg
+            txtHS = newTxt
+            Flux2Debug.verbose("After block \(blockIdx) - imgHS: \(imgHS.shape), txtHS: \(txtHS.shape)")
+        }
+
+        // --- Single-Stream Blocks ---
+        // Concatenate text and image streams BEFORE entering single-stream blocks
+        // (diffusers pattern: single blocks work on concatenated hidden_states)
+        let textSeqLen = txtHS.shape[1]
+        var combinedHS = concatenated([txtHS, imgHS], axis: 1)  // [B, S_txt + S_img, dim]
+        Flux2Debug.verbose("Single-stream input (combined): \(combinedHS.shape)")
+
+        for block in singleTransformerBlocks {
+            let modParams = singleStreamModulation(temb)
+
+            // Pass encoder_hidden_states=nil since everything is in combinedHS
+            combinedHS = block(
+                hiddenStates: combinedHS,
+                encoderHiddenStates: nil,
+                temb: temb,
+                rotaryEmb: ropeEmb,
+                modParams: modParams
+            )
+        }
+
+        // Remove text tokens from the concatenated stream
+        imgHS = combinedHS[0..., textSeqLen..., 0...]
+        Flux2Debug.verbose("After single blocks (image only): \(imgHS.shape)")
+
+        // --- Output ---
+        // Final adaptive layer norm
+        imgHS = normOut(imgHS, conditioning: temb)
+
+        // Project to output channels
+        let output = projOut(imgHS)
+
+        return output
+    }
+
+    /// Convenience method with automatic position ID generation
+    public func forward(
+        latents: MLXArray,
+        encoderHiddenStates: MLXArray,
+        timestep: MLXArray,
+        guidance: MLXArray? = nil,
+        height: Int,
+        width: Int
+    ) -> MLXArray {
+        let textLen = encoderHiddenStates.shape[1]
+
+        // Generate position IDs
+        let imgIds = generateImagePositionIDs(height: height, width: width)
+        let txtIds = generateTextPositionIDs(length: textLen)
+
+        return self.callAsFunction(
+            hiddenStates: latents,
+            encoderHiddenStates: encoderHiddenStates,
+            timestep: timestep,
+            guidance: guidance,
+            imgIds: imgIds,
+            txtIds: txtIds
+        )
+    }
+}
+
+// MARK: - Weight Loading Extension
+
+extension Flux2Transformer2DModel {
+    /// Load weights from safetensors files
+    /// - Parameters:
+    ///   - url: Directory containing weight files
+    ///   - quantization: Quantization configuration
+    public func loadWeights(from url: URL, quantization: TransformerQuantization) throws {
+        // Weight loading implementation will be added in WeightLoader.swift
+        // This is a placeholder for the interface
+        fatalError("Weight loading not yet implemented - see WeightLoader.swift")
+    }
+}
+
+// MARK: - Memory Management
+
+extension Flux2Transformer2DModel {
+    /// Estimated memory requirement for this model configuration
+    public var estimatedMemoryGB: Int {
+        // Rough estimate based on parameter count and dtype
+        // 32B params * 2 bytes (bf16) / 1e9 = ~64GB for bf16
+        // Quantized versions are proportionally smaller
+        64
+    }
+
+    /// Clear GPU cache
+    public func clearCache() {
+        // MLX manages memory automatically, but we can suggest cleanup
+        eval([])  // Ensure all operations are complete
+    }
+}

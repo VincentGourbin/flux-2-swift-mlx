@@ -1,0 +1,26 @@
+# Xcode
+.build/
+.swiftpm/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+*.xcuserstate
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Test outputs
+test_checkpoints/
+result_checkpoints/
+*.png
+
+# Temporary files
+*.tmp
+*.swp
+*~
+
+# Package resolution
+Package.resolved
