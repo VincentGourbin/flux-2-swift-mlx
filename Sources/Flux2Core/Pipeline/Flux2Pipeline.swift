@@ -208,6 +208,7 @@ public class Flux2Pipeline: @unchecked Sendable {
     ///   - steps: Number of denoising steps (default 50)
     ///   - guidance: Guidance scale (default 4.0)
     ///   - seed: Optional random seed
+    ///   - upsamplePrompt: Enhance prompt with visual details before encoding (default false)
     ///   - checkpointInterval: Save intermediate image every N steps (nil = disabled)
     ///   - onProgress: Optional progress callback
     ///   - onCheckpoint: Optional callback when checkpoint image is generated
@@ -219,6 +220,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         steps: Int = 50,
         guidance: Float = 4.0,
         seed: UInt64? = nil,
+        upsamplePrompt: Bool = false,
         checkpointInterval: Int? = nil,
         onProgress: Flux2ProgressCallback? = nil,
         onCheckpoint: Flux2CheckpointCallback? = nil
@@ -231,6 +233,7 @@ public class Flux2Pipeline: @unchecked Sendable {
             steps: steps,
             guidance: guidance,
             seed: seed,
+            upsamplePrompt: upsamplePrompt,
             checkpointInterval: checkpointInterval,
             onProgress: onProgress,
             onCheckpoint: onCheckpoint
@@ -246,6 +249,7 @@ public class Flux2Pipeline: @unchecked Sendable {
     ///   - steps: Number of denoising steps
     ///   - guidance: Guidance scale
     ///   - seed: Optional random seed
+    ///   - upsamplePrompt: Enhance prompt with visual details before encoding (default false)
     ///   - checkpointInterval: Save intermediate image every N steps (nil = disabled)
     ///   - onProgress: Optional progress callback
     ///   - onCheckpoint: Optional callback when checkpoint image is generated
@@ -258,6 +262,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         steps: Int = 50,
         guidance: Float = 4.0,
         seed: UInt64? = nil,
+        upsamplePrompt: Bool = false,
         checkpointInterval: Int? = nil,
         onProgress: Flux2ProgressCallback? = nil,
         onCheckpoint: Flux2CheckpointCallback? = nil
@@ -278,6 +283,7 @@ public class Flux2Pipeline: @unchecked Sendable {
             steps: steps,
             guidance: guidance,
             seed: seed,
+            upsamplePrompt: upsamplePrompt,
             checkpointInterval: checkpointInterval,
             onProgress: onProgress,
             onCheckpoint: onCheckpoint
@@ -293,6 +299,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         steps: Int,
         guidance: Float,
         seed: UInt64?,
+        upsamplePrompt: Bool,
         checkpointInterval: Int?,
         onProgress: Flux2ProgressCallback?,
         onCheckpoint: Flux2CheckpointCallback?
@@ -316,18 +323,28 @@ public class Flux2Pipeline: @unchecked Sendable {
 
         Flux2Debug.log("Starting generation: \(validWidth)x\(validHeight), \(steps) steps, guidance=\(guidance)")
 
+        // Start profiling
+        let profiler = Flux2Profiler.shared
+
         // === PHASE 1: Text Encoding ===
         onProgress?(0, steps)
         Flux2Debug.log("=== PHASE 1: Text Encoding ===")
 
+        profiler.start("1. Load Text Encoder")
         try await loadTextEncoder()
-        let textEmbeddings = try textEncoder!.encode(prompt)
+        profiler.end("1. Load Text Encoder")
+
+        profiler.start("2. Text Encoding")
+        let textEmbeddings = try textEncoder!.encode(prompt, upsample: upsamplePrompt)
         eval(textEmbeddings)
+        profiler.end("2. Text Encoding")
 
         Flux2Debug.log("Text embeddings shape: \(textEmbeddings.shape)")
 
         // Unload text encoder to free memory
+        profiler.start("3. Unload Text Encoder")
         await unloadTextEncoder()
+        profiler.end("3. Unload Text Encoder")
 
         // === PHASE 2: Image Generation ===
         Flux2Debug.log("=== PHASE 2: Image Generation ===")
@@ -339,10 +356,14 @@ public class Flux2Pipeline: @unchecked Sendable {
         }
 
         // Load transformer
+        profiler.start("4. Load Transformer")
         try await loadTransformer()
+        profiler.end("4. Load Transformer")
 
         // Load VAE
+        profiler.start("5. Load VAE")
         try await loadVAE()
+        profiler.end("5. Load VAE")
 
         // Generate initial latents in PATCHIFIED format [B, 128, H/16, W/16]
         // This is the format expected by the BatchNorm normalization
@@ -405,21 +426,25 @@ public class Flux2Pipeline: @unchecked Sendable {
 
         Flux2Debug.log("Starting denoising loop...")
 
+        // OPTIMIZATION: Create guidance tensor ONCE before the loop
+        let guidanceTensor = MLXArray([guidance])
+
+        profiler.start("6. Denoising Loop")
+
         // Denoising loop - use sigmas (in [0, 1] range) for transformer
         for stepIdx in 0..<(scheduler.sigmas.count - 1) {
-            let sigma = scheduler.sigmas[stepIdx]
-            // Create timestep tensor (sigma is in [0, 1] range as expected by transformer)
-            let t = MLXArray([sigma])
+            let stepStart = Date()
 
-            // Create guidance tensor
-            let g = MLXArray([guidance])
+            let sigma = scheduler.sigmas[stepIdx]
+            // Create timestep tensor (sigma changes each step)
+            let t = MLXArray([sigma])
 
             // Run transformer
             let noisePred = transformer!.callAsFunction(
                 hiddenStates: packedLatents,
                 encoderHiddenStates: textEmbeddings,
                 timestep: t,
-                guidance: g,
+                guidance: guidanceTensor,
                 imgIds: imageIds,
                 txtIds: textIds
             )
@@ -434,6 +459,10 @@ public class Flux2Pipeline: @unchecked Sendable {
             // Synchronize GPU
             eval(packedLatents)
 
+            // Record step time
+            let stepDuration = Date().timeIntervalSince(stepStart)
+            profiler.recordStep(duration: stepDuration)
+
             // Report progress
             onProgress?(stepIdx + 1, steps)
 
@@ -445,25 +474,32 @@ public class Flux2Pipeline: @unchecked Sendable {
                (stepIdx + 1) % interval == 0 {
                 Flux2Debug.verbose("Generating checkpoint at step \(stepIdx + 1)...")
 
-                // Decode current latents to image
-                var checkpointPatchified = LatentUtils.unpackSequenceToPatchified(
-                    packedLatents,
-                    height: validHeight,
-                    width: validWidth
-                )
-                checkpointPatchified = LatentUtils.denormalizeLatentsWithBatchNorm(
-                    checkpointPatchified,
-                    runningMean: vae!.batchNormRunningMean,
-                    runningVar: vae!.batchNormRunningVar
-                )
-                let checkpointLatents = LatentUtils.unpatchifyLatents(checkpointPatchified)
-                eval(checkpointLatents)
+                do {
+                    // Decode current latents to image
+                    var checkpointPatchified = LatentUtils.unpackSequenceToPatchified(
+                        packedLatents,
+                        height: validHeight,
+                        width: validWidth
+                    )
+                    checkpointPatchified = LatentUtils.denormalizeLatentsWithBatchNorm(
+                        checkpointPatchified,
+                        runningMean: vae!.batchNormRunningMean,
+                        runningVar: vae!.batchNormRunningVar
+                    )
+                    let checkpointLatents = LatentUtils.unpatchifyLatents(checkpointPatchified)
+                    eval(checkpointLatents)
 
-                let checkpointDecoded = vae!.decode(checkpointLatents)
-                eval(checkpointDecoded)
+                    let checkpointDecoded = vae!.decode(checkpointLatents)
+                    eval(checkpointDecoded)
+                    Flux2Debug.verbose("Checkpoint VAE output shape: \(checkpointDecoded.shape)")
 
-                if let checkpointImage = postprocessVAEOutput(checkpointDecoded) {
-                    checkpointCallback(stepIdx + 1, checkpointImage)
+                    if let checkpointImage = postprocessVAEOutput(checkpointDecoded) {
+                        checkpointCallback(stepIdx + 1, checkpointImage)
+                    } else {
+                        Flux2Debug.log("Warning: Failed to convert checkpoint to image at step \(stepIdx + 1)")
+                    }
+                } catch {
+                    Flux2Debug.log("Checkpoint error at step \(stepIdx + 1): \(error)")
                 }
             }
 
@@ -472,6 +508,8 @@ public class Flux2Pipeline: @unchecked Sendable {
                 memoryManager.clearCache()
             }
         }
+
+        profiler.end("6. Denoising Loop")
 
         Flux2Debug.log("Denoising complete, decoding image...")
 
@@ -501,16 +539,25 @@ public class Flux2Pipeline: @unchecked Sendable {
         // === PHASE 3: Decode to Image ===
         Flux2Debug.log("=== PHASE 3: VAE Decoding ===")
 
+        profiler.start("7. VAE Decode")
         let decoded = vae!.decode(finalLatents)
         eval(decoded)
+        profiler.end("7. VAE Decode")
 
         // Convert to CGImage
+        profiler.start("8. Post-processing")
         guard let image = postprocessVAEOutput(decoded) else {
             throw Flux2Error.imageProcessingFailed("Failed to convert output to image")
         }
+        profiler.end("8. Post-processing")
 
         Flux2Debug.log("Generation complete!")
         memoryManager.logMemoryState()
+
+        // Print profiling report if enabled
+        if profiler.isEnabled {
+            print(profiler.generateReport())
+        }
 
         return image
     }
@@ -600,6 +647,7 @@ public class Flux2Pipeline: @unchecked Sendable {
     }
 
     /// Convert VAE output to CGImage
+    /// OPTIMIZED: Uses bulk array extraction instead of per-pixel loop
     private func postprocessVAEOutput(_ tensor: MLXArray) -> CGImage? {
         // tensor shape: [1, 3, H, W]
         let shape = tensor.shape
@@ -611,45 +659,31 @@ public class Flux2Pipeline: @unchecked Sendable {
         let height = shape[2]
         let width = shape[3]
 
-        // Denormalize from [-1, 1] to [0, 255]
+        // Denormalize from [-1, 1] to [0, 255] and convert to UInt8 in MLX
+        // This does the conversion on GPU, much faster than CPU loop
         let denormalized = (tensor + 1.0) * 127.5
         let clamped = clip(denormalized, min: 0, max: 255)
 
-        // Convert to UInt8 array
-        let flatTensor = clamped.squeezed(axis: 0)  // [3, H, W]
-        eval(flatTensor)
+        // Convert to [H, W, 3] layout for CGImage and cast to UInt8 on GPU
+        let hwc = clamped.squeezed(axis: 0)  // [3, H, W]
+            .transposed(axes: [1, 2, 0])      // [H, W, 3]
+            .asType(.uint8)                    // Convert to UInt8 on GPU
 
-        // Get data - reshape to [H, W, 3] for image creation
-        let transposed = flatTensor.transposed(axes: [1, 2, 0])  // [H, W, 3]
-        let flattened = transposed.reshaped([-1])
-        eval(flattened)
-
-        // Convert to bytes
-        let count = height * width * 3
-        var pixelData = [UInt8](repeating: 0, count: count)
-
-        // Extract values
-        for i in 0..<count {
-            let val = flattened[i].item(Float.self)
-            pixelData[i] = UInt8(min(255, max(0, Int(val))))
-        }
+        // Single eval and bulk extraction - MUCH faster than per-pixel loop
+        eval(hwc)
+        let pixelData = hwc.asArray(UInt8.self)
 
         // Create CGImage
-        let bytesPerPixel = 3
-        let bytesPerRow = bytesPerPixel * width
-        let bitsPerComponent = 8
-        let bitsPerPixel = 24
-
         guard let providerRef = CGDataProvider(data: Data(pixelData) as CFData) else {
             return nil
         }
 
-        let cgImage = CGImage(
+        return CGImage(
             width: width,
             height: height,
-            bitsPerComponent: bitsPerComponent,
-            bitsPerPixel: bitsPerPixel,
-            bytesPerRow: bytesPerRow,
+            bitsPerComponent: 8,
+            bitsPerPixel: 24,
+            bytesPerRow: width * 3,
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
             provider: providerRef,
@@ -657,8 +691,6 @@ public class Flux2Pipeline: @unchecked Sendable {
             shouldInterpolate: true,
             intent: .defaultIntent
         )
-
-        return cgImage
     }
 }
 

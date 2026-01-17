@@ -61,6 +61,12 @@ struct TextToImage: AsyncParsableCommand {
     @Flag(name: .long, help: "Enable debug logs (verbose output)")
     var debug: Bool = false
 
+    @Flag(name: .long, help: "Enable performance profiling")
+    var profile: Bool = false
+
+    @Flag(name: .long, help: "Enhance prompt with more visual details before encoding")
+    var upsamplePrompt: Bool = false
+
     @Option(name: .long, help: "Save intermediate images at each N steps (e.g., 5 saves every 5 steps)")
     var checkpoint: Int?
 
@@ -70,6 +76,11 @@ struct TextToImage: AsyncParsableCommand {
             Flux2Debug.enableDebugMode()
         } else {
             Flux2Debug.setNormalMode()
+        }
+
+        // Configure profiling
+        if profile {
+            Flux2Profiler.shared.enable()
         }
         // Parse quantization settings
         guard let textQuantization = MistralQuantization(rawValue: textQuant) else {
@@ -95,6 +106,9 @@ struct TextToImage: AsyncParsableCommand {
 
         print("Generating image...")
         print("  Prompt: \"\(prompt)\"")
+        if upsamplePrompt {
+            print("  Prompt upsampling: enabled (will enhance prompt with visual details)")
+        }
         print("  Size: \(width)x\(height)")
         print("  Steps: \(steps)")
         print("  Guidance: \(guidance)")
@@ -150,6 +164,7 @@ struct TextToImage: AsyncParsableCommand {
             steps: steps,
             guidance: guidance,
             seed: seed,
+            upsamplePrompt: upsamplePrompt,
             checkpointInterval: checkpoint
         ) { current, total in
             let progress = Float(current) / Float(total) * 100
@@ -162,7 +177,7 @@ struct TextToImage: AsyncParsableCommand {
                     try saveImage(checkpointImage, to: checkpointPath)
                     print("\n  Checkpoint saved: step_\(String(format: "%03d", step)).png")
                 } catch {
-                    print("\n  Failed to save checkpoint at step \(step)")
+                    print("\n  Failed to save checkpoint at step \(step): \(error.localizedDescription)")
                 }
             }
         }

@@ -58,21 +58,63 @@ public class Flux2TextEncoder: @unchecked Sendable {
         Flux2Debug.log("Mistral text encoder loaded successfully")
     }
 
-    // MARK: - Encoding
+    // MARK: - Prompt Upsampling
 
-    /// Encode a text prompt to Flux.2 embeddings
-    /// - Parameter prompt: Text prompt to encode
-    /// - Returns: Embeddings tensor [1, 512, 15360]
-    public func encode(_ prompt: String) throws -> MLXArray {
+    /// Upsample/enhance a prompt using Mistral's text generation capability
+    /// Uses the FLUX.2 T2I upsampling system message to generate more detailed prompts
+    /// - Parameter prompt: Original user prompt
+    /// - Returns: Enhanced prompt with more visual details
+    public func upsamplePrompt(_ prompt: String) throws -> String {
         guard MistralCore.shared.isModelLoaded else {
             throw Flux2Error.modelNotLoaded("Text encoder not loaded")
         }
 
-        Flux2Debug.log("Encoding prompt: \"\(prompt.prefix(50))...\"")
+        Flux2Debug.log("Upsampling prompt: \"\(prompt.prefix(50))...\"")
+
+        // Build messages with FLUX T2I upsampling system message
+        let messages = FluxConfig.buildMessages(prompt: prompt, mode: .upsamplingT2I)
+
+        // Generate enhanced prompt using Mistral chat
+        let result = try MistralCore.shared.chat(
+            messages: messages,
+            parameters: GenerateParameters(
+                maxTokens: 512,
+                temperature: 0.7,
+                topP: 0.9
+            )
+        )
+
+        let enhanced = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        Flux2Debug.log("Enhanced prompt: \"\(enhanced.prefix(100))...\"")
+
+        return enhanced
+    }
+
+    // MARK: - Encoding
+
+    /// Encode a text prompt to Flux.2 embeddings
+    /// - Parameters:
+    ///   - prompt: Text prompt to encode
+    ///   - upsample: Whether to enhance the prompt before encoding (default: false)
+    /// - Returns: Embeddings tensor [1, 512, 15360]
+    public func encode(_ prompt: String, upsample: Bool = false) throws -> MLXArray {
+        guard MistralCore.shared.isModelLoaded else {
+            throw Flux2Error.modelNotLoaded("Text encoder not loaded")
+        }
+
+        // Optionally upsample the prompt
+        let finalPrompt: String
+        if upsample {
+            finalPrompt = try upsamplePrompt(prompt)
+        } else {
+            finalPrompt = prompt
+        }
+
+        Flux2Debug.log("Encoding prompt: \"\(finalPrompt.prefix(50))...\"")
 
         // Use the FLUX-compatible embedding extraction
         let embeddings = try MistralCore.shared.extractFluxEmbeddings(
-            prompt: prompt,
+            prompt: finalPrompt,
             maxLength: maxSequenceLength
         )
 
@@ -105,9 +147,11 @@ public class Flux2TextEncoder: @unchecked Sendable {
 extension Flux2TextEncoder {
 
     /// Encode multiple prompts (for batch generation)
-    /// - Parameter prompts: Array of text prompts
+    /// - Parameters:
+    ///   - prompts: Array of text prompts
+    ///   - upsample: Whether to enhance prompts before encoding (default: false)
     /// - Returns: Stacked embeddings [B, 512, 15360]
-    public func encodeBatch(_ prompts: [String]) throws -> MLXArray {
+    public func encodeBatch(_ prompts: [String], upsample: Bool = false) throws -> MLXArray {
         guard !prompts.isEmpty else {
             throw Flux2Error.invalidConfiguration("Empty prompt list")
         }
@@ -115,7 +159,7 @@ extension Flux2TextEncoder {
         var embeddings: [MLXArray] = []
 
         for prompt in prompts {
-            let emb = try encode(prompt)
+            let emb = try encode(prompt, upsample: upsample)
             embeddings.append(emb)
         }
 

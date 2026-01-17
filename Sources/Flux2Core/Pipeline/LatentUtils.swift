@@ -328,13 +328,13 @@ extension LatentUtils {
     ///   - latents: Input latents [B, C, H, W] in NCHW format
     ///   - runningMean: BatchNorm running mean [C]
     ///   - runningVar: BatchNorm running variance [C]
-    ///   - eps: Epsilon for numerical stability
+    ///   - eps: Epsilon for numerical stability (Flux.2 uses 1e-4)
     /// - Returns: Normalized latents
     public static func normalizeLatentsWithBatchNorm(
         _ latents: MLXArray,
         runningMean: MLXArray,
         runningVar: MLXArray,
-        eps: Float = 1e-5
+        eps: Float = 1e-4  // Flux.2 batch_norm_eps = 0.0001
     ) -> MLXArray {
         // Reshape stats for NCHW broadcast: [C] -> [1, C, 1, 1]
         let C = runningMean.shape[0]
@@ -351,13 +351,13 @@ extension LatentUtils {
     ///   - latents: Denoised latents [B, C, H, W] in NCHW format
     ///   - runningMean: BatchNorm running mean [C]
     ///   - runningVar: BatchNorm running variance [C]
-    ///   - eps: Epsilon for numerical stability
+    ///   - eps: Epsilon for numerical stability (Flux.2 uses 1e-4)
     /// - Returns: Denormalized latents ready for VAE decode
     public static func denormalizeLatentsWithBatchNorm(
         _ latents: MLXArray,
         runningMean: MLXArray,
         runningVar: MLXArray,
-        eps: Float = 1e-5
+        eps: Float = 1e-4  // Flux.2 batch_norm_eps = 0.0001
     ) -> MLXArray {
         // Reshape stats for NCHW broadcast: [C] -> [1, C, 1, 1]
         let C = runningMean.shape[0]

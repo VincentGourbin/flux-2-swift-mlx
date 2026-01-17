@@ -94,9 +94,11 @@ public class AutoencoderKLFlux2: Module, @unchecked Sendable {
     /// Decode latent to image
     /// - Parameter z: Latent representation [B, 32, H/8, W/8] (NCHW format)
     /// - Returns: Decoded image [B, 3, H, W] in [-1, 1] (NCHW format)
+    /// - Note: Flux.2 VAE does NOT use scaling factor (unlike SD VAE)
     public func decode(_ z: MLXArray) -> MLXArray {
-        // Unscale
-        var latent = z / scalingFactor
+        // NOTE: Flux.2 VAE does NOT apply scaling factor!
+        // (Standard SD VAE uses scalingFactor=0.18215, but Flux.2 does not)
+        var latent = z
 
         // Apply post-quant conv if present - needs NHWC
         if let pqc = postQuantConv {

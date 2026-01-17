@@ -141,14 +141,14 @@ public class Flux2Transformer2DModel: Module, @unchecked Sendable {
         Flux2Debug.verbose("RoPE shapes - cos: \(ropeEmb.cos.shape), sin: \(ropeEmb.sin.shape)")
 
         // --- Double-Stream Blocks ---
+        // OPTIMIZATION: Compute modulation parameters ONCE before the loop
+        // (they only depend on temb which doesn't change between blocks)
+        let imgMod = doubleStreamModulationImg(temb)
+        let txtMod = doubleStreamModulationTxt(temb)
+        Flux2Debug.verbose("imgMod count: \(imgMod.count), first shift: \(imgMod.first?.shift.shape ?? [])")
+
         for (blockIdx, block) in transformerBlocks.enumerated() {
             Flux2Debug.verbose("Double-stream block \(blockIdx)")
-
-            // Get modulation parameters
-            let imgMod = doubleStreamModulationImg(temb)
-            let txtMod = doubleStreamModulationTxt(temb)
-
-            Flux2Debug.verbose("imgMod count: \(imgMod.count), first shift: \(imgMod.first?.shift.shape ?? [])")
 
             let (newTxt, newImg) = block(
                 hiddenStates: imgHS,
@@ -171,16 +171,17 @@ public class Flux2Transformer2DModel: Module, @unchecked Sendable {
         var combinedHS = concatenated([txtHS, imgHS], axis: 1)  // [B, S_txt + S_img, dim]
         Flux2Debug.verbose("Single-stream input (combined): \(combinedHS.shape)")
 
-        for block in singleTransformerBlocks {
-            let modParams = singleStreamModulation(temb)
+        // OPTIMIZATION: Compute single-stream modulation ONCE before the loop
+        let singleMod = singleStreamModulation(temb)
 
+        for block in singleTransformerBlocks {
             // Pass encoder_hidden_states=nil since everything is in combinedHS
             combinedHS = block(
                 hiddenStates: combinedHS,
                 encoderHiddenStates: nil,
                 temb: temb,
                 rotaryEmb: ropeEmb,
-                modParams: modParams
+                modParams: singleMod
             )
         }
 
