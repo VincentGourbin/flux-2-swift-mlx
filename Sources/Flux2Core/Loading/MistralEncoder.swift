@@ -176,8 +176,10 @@ public class Flux2TextEncoder: @unchecked Sendable {
         print("[VLM-Upsample] Enhanced prompt with image context:\n\(enhancedPrompt)")
         fflush(stdout)
 
-        // Now use text-only chat to refine the prompt for image generation
-        let messages = FluxConfig.buildMessages(prompt: enhancedPrompt, mode: .upsamplingI2I)
+        // Use T2I upsampling mode (not I2I) because:
+        // - I2I mode is for single-image editing: "convert editing requests into 50-80 word instructions"
+        // - T2I mode expands prompts with visual details, which is what we need for multi-image compositing
+        let messages = FluxConfig.buildMessages(prompt: enhancedPrompt, mode: .upsamplingT2I)
 
         let chatResult = try FluxTextEncoders.shared.chat(
             messages: messages,

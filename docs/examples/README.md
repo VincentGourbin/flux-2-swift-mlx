@@ -175,8 +175,8 @@ flux2 i2i "transform into a beautiful watercolor painting with soft brushstrokes
 **Prompt:** `"Put the jacket from image 2 on the cat from image 1"`
 
 **Reference Images:**
-1. Cat on beach (1024x1024)
-2. Yellow jacket (1080x1620)
+1. `cat_beach_upsampled/final.png` (1024x1024) - Cat with sunglasses on beach
+2. `jacket.jpg` (1080x1620) - Yellow jacket
 
 **Parameters:**
 - Size: 1024x1024
@@ -187,6 +187,32 @@ flux2 i2i "transform into a beautiful watercolor painting with soft brushstrokes
 | Step 7 | Step 14 | Step 21 | Final (Step 28) |
 |--------|---------|---------|-----------------|
 | ![Step 7](i2i_cat_jacket/final_checkpoints/step_007.png) | ![Step 14](i2i_cat_jacket/final_checkpoints/step_014.png) | ![Step 21](i2i_cat_jacket/final_checkpoints/step_021.png) | ![Final](i2i_cat_jacket/final.png) |
+
+**Performance Report:**
+```
+╔══════════════════════════════════════════════════════════════╗
+║                  FLUX.2 PERFORMANCE REPORT                   ║
+╠══════════════════════════════════════════════════════════════╣
+📊 PHASE TIMINGS:
+────────────────────────────────────────────────────────────────
+  1. Load Text Encoder                4.10s    0.1%
+  2. Text Encoding                    2.39s    0.0%
+  3. Unload Text Encoder            141.3ms    0.0%
+  4. Load Transformer                21.95s    0.4%
+  5. Load VAE                        68.5ms    0.0%
+  6. Denoising Loop                96m 3.2s   99.5% ███████████████████
+  7. VAE Decode                       2.19s    0.0%
+────────────────────────────────────────────────────────────────
+  TOTAL                           96m 34.0s  100.0%
+
+📈 DENOISING STEP STATISTICS:
+────────────────────────────────────────────────────────────────
+  Steps:              28
+  Average per step:   3m 25.5s
+  Fastest step:       2m 44.5s
+  Slowest step:       4m 33.4s
+╚══════════════════════════════════════════════════════════════╝
+```
 
 **Command:**
 ```bash
@@ -220,6 +246,36 @@ flux2 i2i "Put the jacket from image 2 on the cat from image 1" \
 | Step 7 | Step 14 | Step 21 | Final (Step 28) |
 |--------|---------|---------|-----------------|
 | ![Step 7](i2i_cat_jacket_hat/final_checkpoints/step_007.png) | ![Step 14](i2i_cat_jacket_hat/final_checkpoints/step_014.png) | ![Step 21](i2i_cat_jacket_hat/final_checkpoints/step_021.png) | ![Final](i2i_cat_jacket_hat/final.png) |
+
+**Performance Report:**
+```
+╔══════════════════════════════════════════════════════════════╗
+║                  FLUX.2 PERFORMANCE REPORT                   ║
+╠══════════════════════════════════════════════════════════════╣
+📊 PHASE TIMINGS:
+────────────────────────────────────────────────────────────────
+  1. Load Text Encoder                4.08s    0.0%
+  2. Text Encoding                    2.38s    0.0%
+  3. Unload Text Encoder            143.5ms    0.0%
+  4. Load Transformer                26.43s    0.2%
+  5. Load VAE                        72.4ms    0.0%
+  6. Denoising Loop              176m 28.2s   99.7% ███████████████████
+  7. VAE Decode                       1.93s    0.0%
+  8. Post-processing                  1.4ms    0.0%
+────────────────────────────────────────────────────────────────
+  TOTAL                           177m 3.3s  100.0%
+
+📈 DENOISING STEP STATISTICS:
+────────────────────────────────────────────────────────────────
+  Steps:              28
+  Total denoising:    176m 16.2s
+  Average per step:   6m 17.7s
+  Fastest step:       4m 52.1s
+  Slowest step:       7m 54.5s
+╚══════════════════════════════════════════════════════════════╝
+```
+
+> **Note:** With 3 reference images, each denoising step takes significantly longer (~6m 17.7s) compared to 2 images (~3m 25.5s) due to increased context length in the transformer attention.
 
 **Command:**
 ```bash
