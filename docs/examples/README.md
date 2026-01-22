@@ -301,6 +301,39 @@ flux2 t2i "a beaver building a dam in a forest stream, detailed fur, water refle
 
 ---
 
+### Beaver with Prompt Upsampling (Step-by-Step Progression)
+
+**Prompt:** `"a beaver building a dam"` (enhanced by Qwen3 upsampling)
+
+This example shows how Klein 4B generates an image in just 4 steps with flow matching. The image emerges from noise in the final step.
+
+| Step 1 | Step 2 | Step 3 | Step 4 (Final) |
+|--------|--------|--------|----------------|
+| ![Step 1](klein_4b/beaver_upsampled_checkpoints/step_001.png) | ![Step 2](klein_4b/beaver_upsampled_checkpoints/step_002.png) | ![Step 3](klein_4b/beaver_upsampled_checkpoints/step_003.png) | ![Step 4](klein_4b/beaver_upsampled_checkpoints/step_004.png) |
+
+**Final Result:**
+
+![Beaver Upsampled](klein_4b/beaver_upsampled_final.png)
+
+**Parameters:**
+- Steps: 4
+- Guidance: 1.0
+- Prompt upsampling: enabled
+- Generation time: ~43s (includes upsampling)
+
+**Command:**
+```bash
+flux2 t2i "a beaver building a dam" \
+  --model klein-4b \
+  --upsample-prompt \
+  --checkpoint 1 \
+  -o beaver_upsampled.png
+```
+
+> **Insight:** Klein's flow matching generates the image very differently from diffusion models - the structure emerges almost entirely in the final step, rather than gradually refining over many steps
+
+---
+
 ### Eagle Over Mountains
 
 **Prompt:** `"a majestic eagle flying over mountains at sunset, dramatic lighting"`
