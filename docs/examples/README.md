@@ -1,492 +1,96 @@
-# Generation Examples
+# Flux.2 Swift MLX - Examples Gallery
 
-This folder contains example images generated with Flux.2 Swift MLX.
+This directory contains example images and documentation for the Flux.2 Swift MLX framework.
 
-## Cat on Beach - Standard Generation
+## Available Models
 
-**Prompt:** `"a cat wearing sunglasses, sitting on a sunny beach"`
+| Model | Parameters | Speed | License | Documentation |
+|-------|------------|-------|---------|---------------|
+| **[Flux.2 Dev](flux2-dev/README.md)** | 32B | ~35 min/image | Non-commercial | High quality, detailed generation |
+| **[Flux.2 Klein 4B](flux2-klein-4b/README.md)** | 4B | ~26s/image | Apache 2.0 | Fast, commercial-friendly |
 
-**Parameters:**
-- Size: 1024x1024
-- Steps: 28
-- Guidance: 4.0
-- Seed: random
-- Prompt upsampling: disabled
+## Quick Comparison
 
-### Progression
+| Feature | Flux.2 Dev | Klein 4B |
+|---------|------------|----------|
+| Parameters | 32B | 4B |
+| Text Encoder | Mistral Small 3.2 | Qwen3-4B |
+| Default Steps | 50 | 4 (distilled) |
+| VRAM Usage | ~60GB | ~5-8GB |
+| 1024×1024 Time | ~35 min | ~26s |
+| **Speedup** | 1x | **~80x** |
 
-| Step 7 | Step 14 | Step 21 | Final (Step 28) |
-|--------|---------|---------|-----------------|
-| ![Step 7](cat_beach_standard/step_007.png) | ![Step 14](cat_beach_standard/step_014.png) | ![Step 21](cat_beach_standard/step_021.png) | ![Final](cat_beach_standard/final.png) |
-
-### Performance Report
-
-```
-╔══════════════════════════════════════════════════════════════╗
-║                  FLUX.2 PERFORMANCE REPORT                   ║
-╠══════════════════════════════════════════════════════════════╣
-📊 PHASE TIMINGS:
-────────────────────────────────────────────────────────────────
-  1. Load Text Encoder                4.08s    0.2%
-  2. Text Encoding                    2.41s    0.1%
-  3. Unload Text Encoder            113.7ms    0.0%
-  4. Load Transformer                23.63s    1.1%
-  5. Load VAE                        80.9ms    0.0%
-  6. Denoising Loop               34m 19.2s   98.5% ███████████████████
-  7. VAE Decode                       1.94s    0.1%
-  8. Post-processing                  1.5ms    0.0%
-────────────────────────────────────────────────────────────────
-  TOTAL                           34m 51.4s  100.0%
-
-📈 DENOISING STEP STATISTICS:
-────────────────────────────────────────────────────────────────
-  Steps:              28
-  Total denoising:    34m 19.2s
-  Average per step:   1m 13.1s
-  Fastest step:       52.02s
-  Slowest step:       2m 49.3s
-╚══════════════════════════════════════════════════════════════╝
-```
+For detailed comparison, see [**Model Comparison**](comparison.md).
 
 ---
 
-## Cat on Beach - With Prompt Upsampling
+## Documentation Index
 
-**Original prompt:** `"a cat wearing sunglasses, sitting on a sunny beach"`
+### Model-Specific Examples
 
-**Enhanced prompt (by Mistral):** *(generated automatically with `--upsample-prompt`)*
+- **[Flux.2 Dev Examples](flux2-dev/README.md)**
+  - Text-to-Image (standard and with prompt upsampling)
+  - Image-to-Image (artistic variation)
+  - Multi-reference I2I (cat + hat + jacket)
+  - Image interpretation (map to Paris photo)
 
-The prompt upsampling feature uses Mistral to enhance the original prompt with more visual details before encoding, potentially improving image quality and coherence.
+- **[Flux.2 Klein 4B Examples](flux2-klein-4b/README.md)**
+  - Fast T2I generation (4 steps)
+  - Multiple resolutions (1024², 1536×1024, 2048²)
+  - Quantization comparison (bf16 vs qint8)
+  - Prompt upsampling progression
 
-**Parameters:**
-- Size: 1024x1024
-- Steps: 28
-- Guidance: 4.0
-- Seed: random
-- Prompt upsampling: **enabled**
+### Comparisons
 
-### Progression
-
-| Step 7 | Step 14 | Step 21 | Final (Step 28) |
-|--------|---------|---------|-----------------|
-| ![Step 7](cat_beach_upsampled/step_007.png) | ![Step 14](cat_beach_upsampled/step_014.png) | ![Step 21](cat_beach_upsampled/step_021.png) | ![Final](cat_beach_upsampled/final.png) |
-
-### Performance Report (with prompt upsampling)
-
-```
-╔══════════════════════════════════════════════════════════════╗
-║                  FLUX.2 PERFORMANCE REPORT                   ║
-╠══════════════════════════════════════════════════════════════╣
-📊 PHASE TIMINGS:
-────────────────────────────────────────────────────────────────
-  1. Load Text Encoder                4.47s    0.2%
-  2. Text Encoding                 2m 28.7s    7.7% █
-  3. Unload Text Encoder            289.7ms    0.0%
-  4. Load Transformer                30.30s    1.6%
-  5. Load VAE                        83.1ms    0.0%
-  6. Denoising Loop               29m 16.0s   90.4% ██████████████████
-  7. VAE Decode                       1.86s    0.1%
-  8. Post-processing                  1.5ms    0.0%
-────────────────────────────────────────────────────────────────
-  TOTAL                           32m 21.7s  100.0%
-
-📈 DENOISING STEP STATISTICS:
-────────────────────────────────────────────────────────────────
-  Steps:              28
-  Total denoising:    29m 7.4s
-  Average per step:   1m 2.4s
-  Fastest step:       54.11s
-  Slowest step:       1m 48.4s
-
-  📐 Estimated times for different step counts:
-     10 steps: 10m 24.1s
-     20 steps: 20m 48.2s
-     28 steps: 29m 7.4s
-     50 steps: 52m 0.4s
-
-💡 INSIGHTS:
-────────────────────────────────────────────────────────────────
-  Bottleneck: 6. Denoising Loop (90.4% of total)
-  Overhead (non-denoising): 3m 5.7s
-
-╚══════════════════════════════════════════════════════════════╝
-```
-
-**Note:** Text encoding takes longer with prompt upsampling (~2.5 min vs ~2.4s) because Mistral generates an enhanced prompt before encoding.
+- **[Dev vs Klein Comparison](comparison.md)**
+  - Performance benchmarks
+  - Quality comparison
+  - When to use each model
+  - Recommended workflows
 
 ---
 
-## Image-to-Image Examples
+## Sample Outputs
 
-### I2I - Artistic Variation (Watercolor)
+### Flux.2 Dev (32B) - High Quality
 
-**Prompt:** `"transform into a beautiful watercolor painting with soft brushstrokes and vibrant colors"`
+| Text-to-Image | Image-to-Image |
+|---------------|----------------|
+| ![Cat Beach](flux2-dev/cat_beach_upsampled/final.png) | ![Watercolor](flux2-dev/i2i_artistic_variation/final.png) |
 
-**Reference:** Cat on beach (single image)
+*~35 min generation time, ~60GB VRAM*
 
-**Parameters:**
-- Size: 1024x1024
-- Steps: 28 effective
-- Strength: 0.7 (30% original preserved)
-- Prompt upsampling: disabled
+### Flux.2 Klein 4B - Fast Generation
 
-| Step 7 | Step 14 | Step 21 | Final (Step 28) |
-|--------|---------|---------|-----------------|
-| ![Step 7](i2i_artistic_variation/step_007.png) | ![Step 14](i2i_artistic_variation/step_014.png) | ![Step 21](i2i_artistic_variation/step_021.png) | ![Final](i2i_artistic_variation/final.png) |
+| 1024×1024 | 2048×2048 |
+|-----------|-----------|
+| ![Beaver](flux2-klein-4b/klein_4b/beaver_1024.png) | ![City](flux2-klein-4b/klein_4b/city_2048.png) |
 
-**Command:**
-```bash
-flux2 i2i "transform into a beautiful watercolor painting with soft brushstrokes and vibrant colors" \
-  --images cat_beach_upsampled.png \
-  --strength 0.7 --steps 28 \
-  --checkpoint 7 --profile \
-  --output artistic_variation.png
-```
-
-> **Note:** The I2I mode transforms the input image by encoding it with VAE, adding noise based on strength, and denoising with the text prompt as guidance. Lower strength preserves more of the original image.
+*~26s generation time, ~5-8GB VRAM*
 
 ---
 
-### Image Interpretation: Map to Paris Photo (I2I + T2I Upsampling Chain)
+## Hardware Used
 
-This example demonstrates the **`--interpret`** feature which chains I2I and T2I upsampling:
-
-1. **I2I Upsampling**: VLM analyzes the image and interprets the user's request
-2. **T2I Upsampling**: The interpretation is enriched into a detailed generation prompt
-3. **Generation**: Flux.2 generates a new image based on the enriched prompt
-
-**Prompt:** `"Describe what the red arrow is seeing"`
-
-**Input:** A map of Paris with a red arrow pointing from Tour Eiffel towards Place de la Bastille
-
-| Input Map | Generated Photo |
-|-----------|-----------------|
-| ![Input](i2i_map_paris/input_map.png) | ![Output](i2i_map_paris/output.png) |
-
-**VLM Interpretation (Step 1 - I2I):**
-> "Highlight the view from the Eiffel Tower towards Place de la Bastille, keeping the red arrow direction unchanged. Enhance visibility of landmarks along this axis including Musée d'Orsay, Palais Garnier, and Place de la Bastille..."
-
-**Enriched Prompt (Step 2 - T2I):**
-> "The red arrow is directed towards a panoramic view from the Eiffel Tower, capturing a sweeping perspective of Parisian landmarks along its axis. The view should prominently feature the Musée d'Orsay, a grand, U-shaped Beaux-Arts building with a distinctive clock facade, situated along the left bank of the Seine River..."
-
-**Generation Progress:**
-
-| Step 7 (25%) | Step 14 (50%) | Step 21 (75%) | Step 28 (100%) |
-|--------------|---------------|---------------|----------------|
-| ![Step 7](i2i_map_paris/output_checkpoints/step_007.png) | ![Step 14](i2i_map_paris/output_checkpoints/step_014.png) | ![Step 21](i2i_map_paris/output_checkpoints/step_021.png) | ![Step 28](i2i_map_paris/output_checkpoints/step_028.png) |
-
-**Command:**
-```bash
-flux2 t2i "Describe what the red arrow is seeing" \
-  --interpret map.png \
-  --width 1024 --height 1024 \
-  --steps 28 --checkpoint 7 \
-  -o output.png
-```
-
-> **Key insight:** The `--interpret` flag enables VLM image understanding. Instead of just describing the map, the model interprets the user's semantic intent ("what the arrow is seeing") and generates a photorealistic image of the Parisian landmarks along the arrow's path.
-
-See [i2i_map_paris/README.md](i2i_map_paris/README.md) for full technical details.
-
----
-
-### Multi-Reference I2I: Cat + Hat + Jacket
-
-This example demonstrates **multi-reference Image-to-Image** where elements from multiple images are combined based on explicit prompt instructions.
-
-**Prompt:** `"Modify the cat on image 1 to wear the hat from image 2 and the jacket from image 3"`
-
-**Reference Images:**
-
-| Image 1 (Cat) | Image 2 (Hat) | Image 3 (Jacket) |
-|---------------|---------------|------------------|
-| ![Cat](cat_beach_standard/final.png) | ![Hat](hat.jpg) | ![Jacket](jacket.jpg) |
-
-**Parameters:**
-- Size: 1024x1024
-- Steps: 28
-- Strength: 0.7
-- Generation Time: ~3.1 hours
-
-**Generation Progress:**
-
-| Step 7 (25%) | Step 14 (50%) | Step 21 (75%) | Step 28 (100%) |
-|--------------|---------------|---------------|----------------|
-| ![Step 7](i2i_cat_hat_jacket/checkpoints/step_007.png) | ![Step 14](i2i_cat_hat_jacket/checkpoints/step_014.png) | ![Step 21](i2i_cat_hat_jacket/checkpoints/step_021.png) | ![Step 28](i2i_cat_hat_jacket/checkpoints/step_028.png) |
-
-**Final Output:**
-
-![Output](i2i_cat_hat_jacket/output.png)
-
-**Command:**
-```bash
-flux2 i2i "Modify the cat on image 1 to wear the hat from image 2 and the jacket from image 3" \
-  --images cat.png --images hat.jpg --images jacket.jpg \
-  --strength 0.7 --steps 28 \
-  --checkpoint 7 -o output.png
-```
-
-> **Key insight:** The prompt explicitly references images by number ("image 1", "image 2", "image 3"). The model uses multi-reference conditioning where each image gets unique T-coordinates, allowing the transformer to distinguish and extract specific elements from each reference.
-
-See [i2i_cat_hat_jacket/README.md](i2i_cat_hat_jacket/README.md) for full technical details.
-
----
-
-## CLI Commands Summary
-
-```bash
-# Standard T2I generation
-flux2 t2i "a cat wearing sunglasses, sitting on a sunny beach" \
-  --width 1024 --height 1024 --steps 28 \
-  --checkpoint 7 -o cat_beach.png
-
-# T2I with prompt upsampling
-flux2 t2i "a cat wearing sunglasses" \
-  --upsample-prompt \
-  --width 1024 --height 1024 --steps 28 \
-  -o cat_upsampled.png
-
-# I2I artistic transformation
-flux2 i2i "transform into watercolor painting" \
-  --images input.png --strength 0.7 \
-  --steps 28 -o watercolor.png
-
-# T2I with image interpretation (VLM)
-flux2 t2i "describe what you see" \
-  --interpret reference.png \
-  --width 1024 --height 1024 --steps 28 \
-  -o interpreted.png
-
-# Multi-reference I2I (combine elements from multiple images)
-flux2 i2i "Modify the cat on image 1 to wear the hat from image 2 and the jacket from image 3" \
-  --images cat.png --images hat.jpg --images jacket.jpg \
-  --strength 0.7 --steps 28 \
-  -o combined.png
-```
-
----
-
----
-
-## Flux.2 Klein 4B - Fast Generation
-
-**Klein 4B** is a distilled version of Flux.2 optimized for speed:
-- **4 billion parameters** (vs 32B for Dev)
-- **4 inference steps** (vs 28-50 for Dev)
-- **guidance_scale = 1.0** (vs 4.0 for Dev)
-- **Apache 2.0 license** (commercial use allowed)
-- **~13GB VRAM** (vs ~60GB for Dev)
-
-### Beaver Building a Dam
-
-**Prompt:** `"a beaver building a dam in a forest stream, detailed fur, water reflections"`
-
-| 256×256 (50 steps, test) | 1024×1024 (4 steps) |
-|--------------------------|---------------------|
-| ![256](klein_4b/beaver_256.png) | ![1024](klein_4b/beaver_1024.png) |
-
-**Parameters:**
-- Steps: 4
-- Guidance: 1.0
-- Generation time: ~33s (1024×1024)
-
-**Command:**
-```bash
-flux2 t2i "a beaver building a dam in a forest stream, detailed fur, water reflections" \
-  --model klein-4b \
-  -o beaver.png
-```
-
-> **Note:** With `--model klein-4b`, the CLI automatically uses steps=4 and guidance=1.0
-
----
-
-### Beaver with Prompt Upsampling (Step-by-Step Progression)
-
-**Prompt:** `"a beaver building a dam"` (enhanced by Qwen3 upsampling)
-
-This example shows how Klein 4B generates an image in just 4 steps with flow matching. The image emerges from noise in the final step.
-
-| Step 1 | Step 2 | Step 3 | Step 4 (Final) |
-|--------|--------|--------|----------------|
-| ![Step 1](klein_4b/beaver_upsampled_checkpoints/step_001.png) | ![Step 2](klein_4b/beaver_upsampled_checkpoints/step_002.png) | ![Step 3](klein_4b/beaver_upsampled_checkpoints/step_003.png) | ![Step 4](klein_4b/beaver_upsampled_checkpoints/step_004.png) |
-
-**Final Result:**
-
-![Beaver Upsampled](klein_4b/beaver_upsampled_final.png)
-
-**Parameters:**
-- Steps: 4
-- Guidance: 1.0
-- Prompt upsampling: enabled
-- Generation time: ~43s (includes upsampling)
-
-**Command:**
-```bash
-flux2 t2i "a beaver building a dam" \
-  --model klein-4b \
-  --upsample-prompt \
-  --checkpoint 1 \
-  -o beaver_upsampled.png
-```
-
-> **Insight:** Klein's flow matching generates the image very differently from diffusion models - the structure emerges almost entirely in the final step, rather than gradually refining over many steps
-
----
-
-### Eagle Over Mountains
-
-**Prompt:** `"a majestic eagle flying over mountains at sunset, dramatic lighting"`
-
-![Eagle](klein_4b/eagle_1536x1024.png)
-
-**Parameters:**
-- Size: 1536×1024
-- Steps: 4
-- Guidance: 1.0
-- Generation time: ~55s
-
-**Command:**
-```bash
-flux2 t2i "a majestic eagle flying over mountains at sunset, dramatic lighting" \
-  --model klein-4b -w 1536 -h 1024 \
-  -o eagle.png
-```
-
----
-
-### Futuristic City (2048×2048)
-
-**Prompt:** `"a futuristic city with flying cars and neon lights at night"`
-
-![City](klein_4b/city_2048.png)
-
-**Parameters:**
-- Size: 2048×2048 (maximum tested)
-- Steps: 4
-- Guidance: 1.0
-- Generation time: ~298s (~5 min)
-
-**Command:**
-```bash
-flux2 t2i "a futuristic city with flying cars and neon lights at night" \
-  --model klein-4b -w 2048 -h 2048 \
-  -o city.png
-```
-
----
-
-### Klein 4B: bf16 vs qint8 Benchmark
-
-This benchmark compares **full precision (bf16)** and **8-bit quantized (qint8)** versions of Klein 4B.
-
-**Prompt:** `"a beaver building a dam in a forest stream, detailed fur, water reflections"`
-
-| bf16 (Full Precision) | qint8 (Quantized) |
-|-----------------------|-------------------|
-| ![bf16](klein_4b_benchmark/beaver_bf16.png) | ![qint8](klein_4b_benchmark/beaver_qint8.png) |
-
-**Performance Comparison (1024×1024, 4 steps):**
-
-| Metric | bf16 | qint8 | Difference |
-|--------|------|-------|------------|
-| **Total Time** | 25.6s | 27.2s | bf16 6% faster |
-| **Denoising Loop** | 21.4s | 22.5s | bf16 5% faster |
-| **Memory (Peak)** | ~5.6 GB | ~3.8 GB | qint8 32% less |
-| **Transformer Load** | 642ms | 916ms | bf16 30% faster |
-| **Quality** | Best | Excellent | Virtually identical |
-
-**bf16 Performance Report:**
-```
-╔══════════════════════════════════════════════════════════════╗
-║                  FLUX.2 PERFORMANCE REPORT                   ║
-╠══════════════════════════════════════════════════════════════╣
-📊 PHASE TIMINGS:
-────────────────────────────────────────────────────────────────
-  1. Load Text Encoder                1.28s    5.0% █
-  2. Text Encoding                  443.9ms    1.7%
-  3. Unload Text Encoder             46.7ms    0.2%
-  4. Load Transformer               642.2ms    2.5%
-  5. Load VAE                        25.1ms    0.1%
-  6. Denoising Loop                  21.36s   83.4% ████████████████
-  7. VAE Decode                       1.80s    7.0% █
-  8. Post-processing                  2.3ms    0.0%
-────────────────────────────────────────────────────────────────
-  TOTAL                              25.60s  100.0%
-
-📈 DENOISING STEP STATISTICS:
-────────────────────────────────────────────────────────────────
-  Steps:              4
-  Total denoising:    21.36s
-  Average per step:   5.34s
-  Fastest step:       4.93s
-  Slowest step:       5.73s
-╚══════════════════════════════════════════════════════════════╝
-```
-
-**qint8 Performance Report:**
-```
-╔══════════════════════════════════════════════════════════════╗
-║                  FLUX.2 PERFORMANCE REPORT                   ║
-╠══════════════════════════════════════════════════════════════╣
-📊 PHASE TIMINGS:
-────────────────────────────────────────────────────────────────
-  1. Load Text Encoder                1.35s    5.0%
-  2. Text Encoding                  460.5ms    1.7%
-  3. Unload Text Encoder             45.6ms    0.2%
-  4. Load Transformer               916.1ms    3.4%
-  5. Load VAE                        27.7ms    0.1%
-  6. Denoising Loop                  22.53s   82.8% ████████████████
-  7. VAE Decode                       1.87s    6.9% █
-  8. Post-processing                  2.3ms    0.0%
-────────────────────────────────────────────────────────────────
-  TOTAL                              27.20s  100.0%
-
-📈 DENOISING STEP STATISTICS:
-────────────────────────────────────────────────────────────────
-  Steps:              4
-  Total denoising:    22.53s
-  Average per step:   5.63s
-  Fastest step:       4.98s
-  Slowest step:       6.35s
-╚══════════════════════════════════════════════════════════════╝
-```
-
-**Commands:**
-```bash
-# bf16 (full precision)
-flux2 t2i "a beaver building a dam in a forest stream, detailed fur, water reflections" \
-  --model klein-4b --transformer-quant bf16 --seed 42 --profile \
-  -o beaver_bf16.png
-
-# qint8 (quantized - default)
-flux2 t2i "a beaver building a dam in a forest stream, detailed fur, water reflections" \
-  --model klein-4b --transformer-quant qint8 --seed 42 --profile \
-  -o beaver_qint8.png
-```
-
-> **Conclusion:** bf16 is slightly faster (~6%) due to no quantization overhead, but uses ~50% more memory. The visual quality difference is imperceptible - both produce excellent results. **Recommendation:** Use qint8 (default) for most cases; use bf16 when memory is not a constraint and maximum theoretical quality is desired.
-
----
-
-### Klein 4B vs Dev Comparison
-
-| Feature | Klein 4B | Dev |
-|---------|----------|-----|
-| Parameters | 4B | 32B |
-| Default Steps | **4** | 50 |
-| Default Guidance | **1.0** | 4.0 |
-| Text Encoder | Qwen3-4B | Mistral Small 3.2 |
-| VRAM Usage | ~13GB | ~60GB |
-| License | **Apache 2.0** | Non-commercial |
-| 1024×1024 Time | ~33s | ~35min |
-
----
-
-## Hardware
-
+All examples generated on:
 - **Machine:** MacBook Pro 14" (Nov 2023)
 - **Chip:** Apple M3 Max
 - **RAM:** 96 GB Unified Memory
 - **macOS:** Tahoe 26.2
-- **Quantization:** 8-bit text encoder + qint8 transformer (~60GB peak for Dev, ~13GB for Klein)
+
+---
+
+## Quick Start
+
+```bash
+# Klein 4B - Fast generation (recommended for exploration)
+flux2 t2i "a beaver building a dam" --model klein-4b
+
+# Dev - High quality (requires 64GB+ RAM)
+flux2 t2i "a cat wearing sunglasses" --model dev --steps 28
+
+# See all options
+flux2 --help
+```
+
+For complete CLI documentation, see [CLI.md](../CLI.md).
