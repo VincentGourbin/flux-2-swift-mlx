@@ -121,6 +121,33 @@ flux2 t2i "a futuristic city with flying cars and neon lights" \
 
 > **Note:** Klein 4B uses ~13GB VRAM (vs ~60GB for Dev) and generates images in ~33s at 1024×1024 (vs ~35min for Dev).
 
+### Klein 4B Quantization Options
+
+Klein 4B supports both full precision (bf16) and quantized (qint8) modes:
+
+| Quantization | Memory | Speed (4 steps) | Quality |
+|--------------|--------|-----------------|---------|
+| `bf16` | ~8GB | ~26s | Best |
+| `qint8` | ~5GB | ~27s | Excellent |
+
+**Full precision (bf16):**
+```bash
+flux2 t2i "a beaver building a dam" \
+  --model klein-4b \
+  --transformer-quant bf16 \
+  -o beaver_bf16.png
+```
+
+**Quantized (qint8) - default:**
+```bash
+flux2 t2i "a beaver building a dam" \
+  --model klein-4b \
+  --transformer-quant qint8 \
+  -o beaver_qint8.png
+```
+
+> **Recommendation:** For most use cases, the default qint8 quantization provides excellent quality with lower memory usage. Use bf16 when maximum quality is required and memory is not constrained.
+
 ---
 
 ## Image-to-Image (i2i)

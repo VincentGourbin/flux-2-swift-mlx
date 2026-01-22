@@ -376,6 +376,99 @@ flux2 t2i "a futuristic city with flying cars and neon lights at night" \
 
 ---
 
+### Klein 4B: bf16 vs qint8 Benchmark
+
+This benchmark compares **full precision (bf16)** and **8-bit quantized (qint8)** versions of Klein 4B.
+
+**Prompt:** `"a beaver building a dam in a forest stream, detailed fur, water reflections"`
+
+| bf16 (Full Precision) | qint8 (Quantized) |
+|-----------------------|-------------------|
+| ![bf16](klein_4b_benchmark/beaver_bf16.png) | ![qint8](klein_4b_benchmark/beaver_qint8.png) |
+
+**Performance Comparison (1024×1024, 4 steps):**
+
+| Metric | bf16 | qint8 | Difference |
+|--------|------|-------|------------|
+| **Total Time** | 25.6s | 27.2s | bf16 6% faster |
+| **Denoising Loop** | 21.4s | 22.5s | bf16 5% faster |
+| **Memory (Peak)** | ~5.6 GB | ~3.8 GB | qint8 32% less |
+| **Transformer Load** | 642ms | 916ms | bf16 30% faster |
+| **Quality** | Best | Excellent | Virtually identical |
+
+**bf16 Performance Report:**
+```
+╔══════════════════════════════════════════════════════════════╗
+║                  FLUX.2 PERFORMANCE REPORT                   ║
+╠══════════════════════════════════════════════════════════════╣
+📊 PHASE TIMINGS:
+────────────────────────────────────────────────────────────────
+  1. Load Text Encoder                1.28s    5.0% █
+  2. Text Encoding                  443.9ms    1.7%
+  3. Unload Text Encoder             46.7ms    0.2%
+  4. Load Transformer               642.2ms    2.5%
+  5. Load VAE                        25.1ms    0.1%
+  6. Denoising Loop                  21.36s   83.4% ████████████████
+  7. VAE Decode                       1.80s    7.0% █
+  8. Post-processing                  2.3ms    0.0%
+────────────────────────────────────────────────────────────────
+  TOTAL                              25.60s  100.0%
+
+📈 DENOISING STEP STATISTICS:
+────────────────────────────────────────────────────────────────
+  Steps:              4
+  Total denoising:    21.36s
+  Average per step:   5.34s
+  Fastest step:       4.93s
+  Slowest step:       5.73s
+╚══════════════════════════════════════════════════════════════╝
+```
+
+**qint8 Performance Report:**
+```
+╔══════════════════════════════════════════════════════════════╗
+║                  FLUX.2 PERFORMANCE REPORT                   ║
+╠══════════════════════════════════════════════════════════════╣
+📊 PHASE TIMINGS:
+────────────────────────────────────────────────────────────────
+  1. Load Text Encoder                1.35s    5.0%
+  2. Text Encoding                  460.5ms    1.7%
+  3. Unload Text Encoder             45.6ms    0.2%
+  4. Load Transformer               916.1ms    3.4%
+  5. Load VAE                        27.7ms    0.1%
+  6. Denoising Loop                  22.53s   82.8% ████████████████
+  7. VAE Decode                       1.87s    6.9% █
+  8. Post-processing                  2.3ms    0.0%
+────────────────────────────────────────────────────────────────
+  TOTAL                              27.20s  100.0%
+
+📈 DENOISING STEP STATISTICS:
+────────────────────────────────────────────────────────────────
+  Steps:              4
+  Total denoising:    22.53s
+  Average per step:   5.63s
+  Fastest step:       4.98s
+  Slowest step:       6.35s
+╚══════════════════════════════════════════════════════════════╝
+```
+
+**Commands:**
+```bash
+# bf16 (full precision)
+flux2 t2i "a beaver building a dam in a forest stream, detailed fur, water reflections" \
+  --model klein-4b --transformer-quant bf16 --seed 42 --profile \
+  -o beaver_bf16.png
+
+# qint8 (quantized - default)
+flux2 t2i "a beaver building a dam in a forest stream, detailed fur, water reflections" \
+  --model klein-4b --transformer-quant qint8 --seed 42 --profile \
+  -o beaver_qint8.png
+```
+
+> **Conclusion:** bf16 is slightly faster (~6%) due to no quantization overhead, but uses ~50% more memory. The visual quality difference is imperceptible - both produce excellent results. **Recommendation:** Use qint8 (default) for most cases; use bf16 when memory is not a constraint and maximum theoretical quality is desired.
+
+---
+
 ### Klein 4B vs Dev Comparison
 
 | Feature | Klein 4B | Dev |

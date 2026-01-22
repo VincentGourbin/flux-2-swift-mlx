@@ -45,9 +45,238 @@ public class Flux2WeightLoader {
 
     // MARK: - Transformer Weight Mapping
 
+    /// Detect if weights are in BFL (Black Forest Labs) native format
+    private static func isBFLFormat(_ weights: [String: MLXArray]) -> Bool {
+        // BFL format uses "double_blocks" and "single_blocks" directly
+        // Diffusers format uses "transformer_blocks" and "single_transformer_blocks"
+        return weights.keys.contains { $0.hasPrefix("double_blocks.") || $0.hasPrefix("single_blocks.") }
+    }
+
     /// Convert HuggingFace transformer weight keys to Swift module paths
     /// Also handles dequantization of quanto qint8 weights
+    /// Supports both Diffusers format and BFL native format
     public static func mapTransformerWeights(_ weights: [String: MLXArray]) -> [String: MLXArray] {
+        // Detect format
+        if isBFLFormat(weights) {
+            Flux2Debug.log("Detected BFL native format weights")
+            return mapBFLTransformerWeights(weights)
+        }
+
+        Flux2Debug.log("Detected Diffusers format weights")
+        return mapDiffusersTransformerWeights(weights)
+    }
+
+    /// Map weights in BFL (Black Forest Labs) native format
+    /// BFL format uses fused QKV and different naming conventions
+    private static func mapBFLTransformerWeights(_ weights: [String: MLXArray]) -> [String: MLXArray] {
+        var mapped: [String: MLXArray] = [:]
+
+        // Debug: count double_blocks keys
+        let doubleBlockKeys = weights.keys.filter { $0.hasPrefix("double_blocks.") }
+        Flux2Debug.log("BFL format: found \(doubleBlockKeys.count) double_blocks keys")
+        for key in doubleBlockKeys.prefix(5) {
+            Flux2Debug.verbose("  double_block key: \(key)")
+        }
+
+        for (key, value) in weights {
+            // BFL format uses fused QKV weights that need to be split
+            // double_blocks.{i}.img_attn.qkv.weight -> split into toQ, toK, toV
+            // double_blocks.{i}.txt_attn.qkv.weight -> split into addQProj, addKProj, addVProj
+
+            if key.contains(".img_attn.qkv.weight") {
+                Flux2Debug.verbose("Splitting img_attn QKV: \(key) shape=\(value.shape)")
+                // Extract block index
+                let blockIdx = extractBlockIndex(from: key, prefix: "double_blocks.")
+                // Split fused QKV into Q, K, V (shape: [3*dim, dim] -> 3x [dim, dim])
+                let dim = value.shape[0] / 3
+                let q = value[0..<dim, 0...]
+                let k = value[dim..<(2*dim), 0...]
+                let v = value[(2*dim)..., 0...]
+                mapped["transformerBlocks.\(blockIdx).attn.toQ.weight"] = q
+                mapped["transformerBlocks.\(blockIdx).attn.toK.weight"] = k
+                mapped["transformerBlocks.\(blockIdx).attn.toV.weight"] = v
+            } else if key.contains(".txt_attn.qkv.weight") {
+                let blockIdx = extractBlockIndex(from: key, prefix: "double_blocks.")
+                let dim = value.shape[0] / 3
+                let q = value[0..<dim, 0...]
+                let k = value[dim..<(2*dim), 0...]
+                let v = value[(2*dim)..., 0...]
+                mapped["transformerBlocks.\(blockIdx).attn.addQProj.weight"] = q
+                mapped["transformerBlocks.\(blockIdx).attn.addKProj.weight"] = k
+                mapped["transformerBlocks.\(blockIdx).attn.addVProj.weight"] = v
+            } else if key.contains(".img_attn.proj.weight") {
+                let blockIdx = extractBlockIndex(from: key, prefix: "double_blocks.")
+                mapped["transformerBlocks.\(blockIdx).attn.toOut.weight"] = value
+            } else if key.contains(".txt_attn.proj.weight") {
+                let blockIdx = extractBlockIndex(from: key, prefix: "double_blocks.")
+                mapped["transformerBlocks.\(blockIdx).attn.toAddOut.weight"] = value
+            } else if key.contains(".img_attn.norm.query_norm.scale") {
+                let blockIdx = extractBlockIndex(from: key, prefix: "double_blocks.")
+                mapped["transformerBlocks.\(blockIdx).attn.normQ.weight"] = value
+            } else if key.contains(".img_attn.norm.key_norm.scale") {
+                let blockIdx = extractBlockIndex(from: key, prefix: "double_blocks.")
+                mapped["transformerBlocks.\(blockIdx).attn.normK.weight"] = value
+            } else if key.contains(".txt_attn.norm.query_norm.scale") {
+                let blockIdx = extractBlockIndex(from: key, prefix: "double_blocks.")
+                mapped["transformerBlocks.\(blockIdx).attn.normAddedQ.weight"] = value
+            } else if key.contains(".txt_attn.norm.key_norm.scale") {
+                let blockIdx = extractBlockIndex(from: key, prefix: "double_blocks.")
+                mapped["transformerBlocks.\(blockIdx).attn.normAddedK.weight"] = value
+            } else if key.contains(".img_mlp.0.weight") {
+                // BFL: img_mlp.0 is the gated linear (produces 2x for SwiGLU)
+                let blockIdx = extractBlockIndex(from: key, prefix: "double_blocks.")
+                mapped["transformerBlocks.\(blockIdx).ff.activation.proj.weight"] = value
+            } else if key.contains(".img_mlp.2.weight") {
+                let blockIdx = extractBlockIndex(from: key, prefix: "double_blocks.")
+                mapped["transformerBlocks.\(blockIdx).ff.linearOut.weight"] = value
+            } else if key.contains(".txt_mlp.0.weight") {
+                let blockIdx = extractBlockIndex(from: key, prefix: "double_blocks.")
+                mapped["transformerBlocks.\(blockIdx).ffContext.activation.proj.weight"] = value
+            } else if key.contains(".txt_mlp.2.weight") {
+                let blockIdx = extractBlockIndex(from: key, prefix: "double_blocks.")
+                mapped["transformerBlocks.\(blockIdx).ffContext.linearOut.weight"] = value
+            } else if key.hasPrefix("single_blocks.") && key.contains(".linear1.weight") {
+                // Single blocks have fused QKV+MLP
+                let blockIdx = extractBlockIndex(from: key, prefix: "single_blocks.")
+                mapped["singleTransformerBlocks.\(blockIdx).attn.toQkvMlp.weight"] = value
+            } else if key.hasPrefix("single_blocks.") && key.contains(".linear2.weight") {
+                let blockIdx = extractBlockIndex(from: key, prefix: "single_blocks.")
+                mapped["singleTransformerBlocks.\(blockIdx).attn.toOut.weight"] = value
+            } else if key.hasPrefix("single_blocks.") && key.contains(".norm.query_norm.scale") {
+                let blockIdx = extractBlockIndex(from: key, prefix: "single_blocks.")
+                mapped["singleTransformerBlocks.\(blockIdx).attn.normQ.weight"] = value
+            } else if key.hasPrefix("single_blocks.") && key.contains(".norm.key_norm.scale") {
+                let blockIdx = extractBlockIndex(from: key, prefix: "single_blocks.")
+                mapped["singleTransformerBlocks.\(blockIdx).attn.normK.weight"] = value
+            } else if key == "img_in.weight" {
+                Flux2Debug.log("BFL: mapping img_in -> xEmbedder: \(value.shape)")
+                mapped["xEmbedder.weight"] = value
+            } else if key == "txt_in.weight" {
+                Flux2Debug.log("BFL: mapping txt_in -> contextEmbedder: \(value.shape)")
+                mapped["contextEmbedder.weight"] = value
+            } else if key == "time_in.in_layer.weight" {
+                Flux2Debug.log("BFL: mapping time_in.in_layer -> timestepEmbedder.linear1: \(value.shape)")
+                mapped["timeGuidanceEmbed.timestepEmbedder.linear1.weight"] = value
+            } else if key == "time_in.out_layer.weight" {
+                Flux2Debug.log("BFL: mapping time_in.out_layer -> timestepEmbedder.linear2: \(value.shape)")
+                mapped["timeGuidanceEmbed.timestepEmbedder.linear2.weight"] = value
+            } else if key == "double_stream_modulation_img.lin.weight" {
+                mapped["doubleStreamModulationImg.linear.weight"] = value
+            } else if key == "double_stream_modulation_txt.lin.weight" {
+                mapped["doubleStreamModulationTxt.linear.weight"] = value
+            } else if key == "single_stream_modulation.lin.weight" {
+                mapped["singleStreamModulation.linear.weight"] = value
+            } else if key == "final_layer.adaLN_modulation.1.weight" {
+                // IMPORTANT: BFL format vs Diffusers format weight layout difference
+                //
+                // The normOut layer (AdaLayerNormContinuous) projects conditioning to scale+shift:
+                //   params = linear(silu(conditioning))  // [B, dim * 2]
+                //   scale = params[0:dim]
+                //   shift = params[dim:]
+                //
+                // BFL format stores the linear weight as [shift_weights | scale_weights]
+                // Diffusers format stores it as [scale_weights | shift_weights]
+                //
+                // Without this swap, bf16 BFL models produce inverted scale/shift values,
+                // causing ~10x higher output magnitude and posterized/noisy images.
+                //
+                // Fix: Swap the two halves of the weight matrix to match diffusers layout.
+                let dim = value.shape[0] / 2  // 3072 for Klein 4B, 6144 for Dev
+                let shiftRows = value[0..<dim, 0...]  // First half (shift in BFL)
+                let scaleRows = value[dim..., 0...]   // Second half (scale in BFL)
+                let swapped = concatenated([scaleRows, shiftRows], axis: 0)
+                Flux2Debug.log("BFL: Swapped normOut.linear.weight halves (dim=\(dim)): \(value.shape) -> \(swapped.shape)")
+                mapped["normOut.linear.weight"] = swapped
+            } else if key == "final_layer.linear.weight" {
+                mapped["projOut.weight"] = value
+            } else {
+                Flux2Debug.verbose("BFL format: unmapped key \(key)")
+            }
+        }
+
+        Flux2Debug.log("Mapped \(mapped.count) BFL format weights")
+
+        // Debug: print mapped keys by category
+        let transformerBlockKeys = mapped.keys.filter { $0.hasPrefix("transformerBlocks.") }
+        let singleBlockKeys = mapped.keys.filter { $0.hasPrefix("singleTransformerBlocks.") }
+        Flux2Debug.log("  - transformerBlocks keys: \(transformerBlockKeys.count)")
+        Flux2Debug.log("  - singleTransformerBlocks keys: \(singleBlockKeys.count)")
+
+        Flux2Debug.verbose("transformerBlocks keys:")
+        for key in transformerBlockKeys.sorted().prefix(10) {
+            Flux2Debug.verbose("  - \(key): \(mapped[key]!.shape)")
+        }
+
+        // DEBUG: Print raw BFL weight statistics BEFORE conversion
+        Flux2Debug.log("=== Raw BFL Weight Statistics (BEFORE conversion) ===")
+        for key in ["xEmbedder.weight", "contextEmbedder.weight",
+                    "transformerBlocks.0.attn.toQ.weight",
+                    "transformerBlocks.0.ff.activation.proj.weight",
+                    "singleTransformerBlocks.0.attn.toQkvMlp.weight"] {
+            if let w = mapped[key] {
+                eval(w)
+                // Convert to float32 for accurate stats
+                let wf32 = w.asType(.float32)
+                let absVal = MLX.abs(wf32)
+                let meanVal = mean(absVal).item(Float.self)
+                let maxVal = MLX.max(absVal).item(Float.self)
+                let minVal = MLX.min(absVal).item(Float.self)
+                let hasNaN = any(isNaN(wf32)).item(Bool.self)
+                let numInf = sum(MLX.abs(wf32) .> 1e30).item(Int.self)  // Count very large values as proxy for inf
+                Flux2Debug.log("  \(key): dtype=\(w.dtype), shape=\(w.shape), mean=\(meanVal), max=\(maxVal), min=\(minVal), hasNaN=\(hasNaN), numInf=\(numInf)")
+            }
+        }
+
+        // Convert bfloat16 → float32 → float16 (via float32 to avoid precision loss)
+        // Direct bf16 → f16 can cause inf/nan due to exponent range difference
+        var converted: [String: MLXArray] = [:]
+        var convertedCount = 0
+        for (key, value) in mapped {
+            if value.dtype == .bfloat16 {
+                // bf16 → f32 → f16 preserves values within f16's range
+                converted[key] = value.asType(.float32).asType(.float16)
+                convertedCount += 1
+            } else {
+                converted[key] = value
+            }
+        }
+        Flux2Debug.log("Converted \(convertedCount) bfloat16 weights to float16 via float32")
+
+        // DEBUG: Print weight statistics for key layers (AFTER processing)
+        Flux2Debug.log("=== BFL Weight Statistics (AFTER processing) ===")
+        for key in ["xEmbedder.weight", "contextEmbedder.weight",
+                    "transformerBlocks.0.attn.toQ.weight",
+                    "transformerBlocks.0.ff.activation.proj.weight",
+                    "singleTransformerBlocks.0.attn.toQkvMlp.weight"] {
+            if let w = converted[key] {
+                eval(w)
+                let wf32 = w.asType(.float32)
+                let absVal = MLX.abs(wf32)
+                let meanVal = mean(absVal).item(Float.self)
+                let maxVal = MLX.max(absVal).item(Float.self)
+                let minVal = MLX.min(absVal).item(Float.self)
+                let hasNaN = any(isNaN(wf32)).item(Bool.self)
+                let numInf = sum(MLX.abs(wf32) .> 1e30).item(Int.self)  // Count very large values as proxy for inf
+                Flux2Debug.log("  \(key): dtype=\(w.dtype), shape=\(w.shape), mean=\(meanVal), max=\(maxVal), min=\(minVal), hasNaN=\(hasNaN), numInf=\(numInf)")
+            } else {
+                Flux2Debug.log("  \(key): NOT FOUND")
+            }
+        }
+
+        return converted
+    }
+
+    /// Extract block index from key like "double_blocks.3.img_attn.qkv.weight"
+    private static func extractBlockIndex(from key: String, prefix: String) -> Int {
+        guard key.hasPrefix(prefix) else { return 0 }
+        let afterPrefix = String(key.dropFirst(prefix.count))
+        guard let dotIndex = afterPrefix.firstIndex(of: ".") else { return 0 }
+        let indexStr = String(afterPrefix[..<dotIndex])
+        return Int(indexStr) ?? 0
+    }
+
+    /// Map weights in Diffusers format (HuggingFace/quanto quantized)
+    private static func mapDiffusersTransformerWeights(_ weights: [String: MLXArray]) -> [String: MLXArray] {
         var mapped: [String: MLXArray] = [:]
         var quantizedData: [String: MLXArray] = [:]  // base_key -> ._data
         var quantizedScales: [String: MLXArray] = [:]  // base_key -> ._scale
@@ -100,6 +329,24 @@ public class Flux2WeightLoader {
             }
         }
         Flux2Debug.log("Dequantized \(dequantCount) qint8 weights to float16")
+
+        // DEBUG: Print weight statistics for key layers
+        Flux2Debug.log("=== Diffusers Weight Statistics ===")
+        for key in ["xEmbedder.weight", "contextEmbedder.weight",
+                    "transformerBlocks.0.attn.toQ.weight",
+                    "transformerBlocks.0.ff.activation.proj.weight",
+                    "singleTransformerBlocks.0.attn.toQkvMlp.weight"].prefix(5) {
+            if let w = mapped[key] {
+                eval(w)
+                let absVal = MLX.abs(w)
+                let meanVal = mean(absVal).item(Float.self)
+                let maxVal = MLX.max(absVal).item(Float.self)
+                let minVal = MLX.min(absVal).item(Float.self)
+                Flux2Debug.log("  \(key): shape=\(w.shape), mean=\(meanVal), max=\(maxVal), min=\(minVal)")
+            } else {
+                Flux2Debug.log("  \(key): NOT FOUND")
+            }
+        }
 
         return mapped
     }
@@ -289,10 +536,17 @@ public class Flux2WeightLoader {
         var updates: [String: MLXArray] = [:]
         var notFound = 0
 
-        // Debug: print some flattened model parameter keys
-        Flux2Debug.verbose("Model parameter keys (first 20 flattened):")
-        for key in flatParameters.keys.sorted().prefix(20) {
-            Flux2Debug.verbose("  - \(key)")
+        // Debug: print flattened model parameter keys by category
+        let modelTransformerBlocks = flatParameters.keys.filter { $0.hasPrefix("transformerBlocks.") }
+        let modelSingleBlocks = flatParameters.keys.filter { $0.hasPrefix("singleTransformerBlocks.") }
+        let modelTimeEmbed = flatParameters.keys.filter { $0.contains("timeGuidanceEmbed") || $0.contains("xEmbedder") }
+        Flux2Debug.verbose("Model parameter keys:")
+        Flux2Debug.verbose("  - transformerBlocks params: \(modelTransformerBlocks.count)")
+        Flux2Debug.verbose("  - singleTransformerBlocks params: \(modelSingleBlocks.count)")
+        Flux2Debug.verbose("  - time/embedder params: \(modelTimeEmbed.count)")
+        Flux2Debug.verbose("  - total params: \(flatParameters.count)")
+        for key in modelTimeEmbed.sorted() {
+            Flux2Debug.verbose("    \(key)")
         }
 
         for (key, value) in mapped {
