@@ -3,20 +3,61 @@
 
 import Foundation
 
+/// Scheduler parameter overrides for specialized LoRAs (e.g., Turbo)
+public struct SchedulerOverrides: Sendable, Codable, Equatable {
+    /// Custom sigma schedule (replaces computed sigmas)
+    /// Used by Turbo LoRAs that require specific noise schedules
+    public var customSigmas: [Float]?
+
+    /// Recommended number of inference steps
+    public var numSteps: Int?
+
+    /// Recommended guidance scale
+    public var guidance: Float?
+
+    /// Recommended strength for I2I
+    public var strength: Float?
+
+    public init(
+        customSigmas: [Float]? = nil,
+        numSteps: Int? = nil,
+        guidance: Float? = nil,
+        strength: Float? = nil
+    ) {
+        self.customSigmas = customSigmas
+        self.numSteps = numSteps
+        self.guidance = guidance
+        self.strength = strength
+    }
+
+    /// Check if any overrides are set
+    public var hasOverrides: Bool {
+        customSigmas != nil || numSteps != nil || guidance != nil || strength != nil
+    }
+}
+
 /// Configuration for a LoRA adapter
-public struct LoRAConfig: Sendable {
+public struct LoRAConfig: Sendable, Codable {
     /// Path to the LoRA safetensors file
-    public let filePath: String
+    public var filePath: String
 
     /// Scale factor for LoRA weights (typically 0.5 - 1.5)
-    public var scale: Float
+    public var scale: Float?
 
     /// Optional activation keyword to prepend to prompt (e.g., "sks")
     public var activationKeyword: String?
 
+    /// Optional scheduler overrides (for Turbo LoRAs, etc.)
+    public var schedulerOverrides: SchedulerOverrides?
+
     /// Unique identifier for this LoRA (derived from filename)
     public var name: String {
         URL(fileURLWithPath: filePath).deletingPathExtension().lastPathComponent
+    }
+
+    /// Effective scale (defaults to 1.0 if not specified)
+    public var effectiveScale: Float {
+        scale ?? 1.0
     }
 
     /// Initialize LoRA configuration
@@ -24,10 +65,36 @@ public struct LoRAConfig: Sendable {
     ///   - filePath: Path to the LoRA safetensors file
     ///   - scale: Scale factor for LoRA weights (default: 1.0)
     ///   - activationKeyword: Optional keyword to prepend to prompt
-    public init(filePath: String, scale: Float = 1.0, activationKeyword: String? = nil) {
+    ///   - schedulerOverrides: Optional scheduler parameter overrides
+    public init(
+        filePath: String,
+        scale: Float? = 1.0,
+        activationKeyword: String? = nil,
+        schedulerOverrides: SchedulerOverrides? = nil
+    ) {
         self.filePath = filePath
         self.scale = scale
         self.activationKeyword = activationKeyword
+        self.schedulerOverrides = schedulerOverrides
+    }
+
+    /// Load LoRA configuration from a JSON file
+    /// - Parameter path: Path to the JSON config file
+    /// - Returns: Parsed LoRAConfig
+    public static func load(from path: String) throws -> LoRAConfig {
+        let url = URL(fileURLWithPath: path)
+        let data = try Data(contentsOf: url)
+        let decoder = JSONDecoder()
+        return try decoder.decode(LoRAConfig.self, from: data)
+    }
+
+    /// Save LoRA configuration to a JSON file
+    /// - Parameter path: Path to save the JSON config
+    public func save(to path: String) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(self)
+        try data.write(to: URL(fileURLWithPath: path))
     }
 }
 

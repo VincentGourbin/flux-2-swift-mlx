@@ -83,6 +83,9 @@ struct TextToImage: AsyncParsableCommand {
     @Option(name: .long, help: "LoRA scale factor (default: 1.0)")
     var loraScale: Float = 1.0
 
+    @Option(name: .long, help: "LoRA config JSON file (alternative to --lora, includes scheduler overrides)")
+    var loraConfigPath: String?
+
     func run() async throws {
         // Configure debug logging
         if debug {
@@ -100,16 +103,43 @@ struct TextToImage: AsyncParsableCommand {
             throw ValidationError("Invalid model: \(model). Use dev, klein-4b, or klein-9b")
         }
 
+        // Load LoRA config early to get scheduler overrides
+        var loraConfig: LoRAConfig? = nil
+        if let configPath = loraConfigPath {
+            guard FileManager.default.fileExists(atPath: configPath) else {
+                throw ValidationError("LoRA config file not found: \(configPath)")
+            }
+            do {
+                loraConfig = try LoRAConfig.load(from: configPath)
+                guard FileManager.default.fileExists(atPath: loraConfig!.filePath) else {
+                    throw ValidationError("LoRA file specified in config not found: \(loraConfig!.filePath)")
+                }
+            } catch let error as DecodingError {
+                throw ValidationError("Invalid LoRA config JSON: \(error)")
+            }
+        } else if let loraPath = lora {
+            guard FileManager.default.fileExists(atPath: loraPath) else {
+                throw ValidationError("LoRA file not found: \(loraPath)")
+            }
+            loraConfig = LoRAConfig(filePath: loraPath, scale: loraScale)
+        }
+
         // Apply model-specific defaults for Klein (distilled for 4 steps, guidance 1.0)
+        // LoRA scheduler overrides take precedence if not explicitly set by user
         let actualSteps: Int
         let actualGuidance: Float
+
+        // Check if LoRA has scheduler overrides
+        let loraOverrides = loraConfig?.schedulerOverrides
+
         switch modelVariant {
         case .dev:
-            actualSteps = steps ?? 50
-            actualGuidance = guidance ?? 4.0
+            // Priority: CLI flag > LoRA override > model default
+            actualSteps = steps ?? loraOverrides?.numSteps ?? 50
+            actualGuidance = guidance ?? loraOverrides?.guidance ?? 4.0
         case .klein4B, .klein9B:
-            actualSteps = steps ?? 4
-            actualGuidance = guidance ?? 1.0
+            actualSteps = steps ?? loraOverrides?.numSteps ?? 4
+            actualGuidance = guidance ?? loraOverrides?.guidance ?? 1.0
         }
 
         // Parse quantization settings
@@ -154,15 +184,6 @@ struct TextToImage: AsyncParsableCommand {
             interpretImagePaths.append(path)
         }
 
-        // Validate LoRA if specified
-        var loraConfig: LoRAConfig? = nil
-        if let loraPath = lora {
-            guard FileManager.default.fileExists(atPath: loraPath) else {
-                throw ValidationError("LoRA file not found: \(loraPath)")
-            }
-            loraConfig = LoRAConfig(filePath: loraPath, scale: loraScale)
-        }
-
         print("Generating image...")
         print("  Prompt: \"\(prompt)\"")
         if !interpretImagePaths.isEmpty {
@@ -175,7 +196,18 @@ struct TextToImage: AsyncParsableCommand {
             print("  Prompt upsampling: enabled (will enhance prompt with visual details)")
         }
         if let loraConfig = loraConfig {
-            print("  LoRA: \(loraConfig.name) (scale: \(loraConfig.scale))")
+            print("  LoRA: \(loraConfig.name) (scale: \(loraConfig.effectiveScale))")
+            if let overrides = loraConfig.schedulerOverrides, overrides.hasOverrides {
+                if overrides.customSigmas != nil {
+                    print("    - Custom sigmas: \(overrides.customSigmas!.count) values")
+                }
+                if let recSteps = overrides.numSteps, steps == nil {
+                    print("    - Using recommended steps: \(recSteps)")
+                }
+                if let recGuidance = overrides.guidance, guidance == nil {
+                    print("    - Using recommended guidance: \(recGuidance)")
+                }
+            }
         }
         print("  Size: \(width)x\(height)")
         print("  Steps: \(actualSteps)")
@@ -342,6 +374,9 @@ struct ImageToImage: AsyncParsableCommand {
     @Option(name: .long, help: "LoRA scale factor (default: 1.0)")
     var loraScale: Float = 1.0
 
+    @Option(name: .long, help: "LoRA config JSON file (alternative to --lora, includes scheduler overrides)")
+    var loraConfigPath: String?
+
     func run() async throws {
         let startTime = Date()
 
@@ -350,16 +385,40 @@ struct ImageToImage: AsyncParsableCommand {
             throw ValidationError("Invalid model: \(model). Use dev, klein-4b, or klein-9b")
         }
 
+        // Load LoRA config early to get scheduler overrides
+        var loraConfig: LoRAConfig? = nil
+        if let configPath = loraConfigPath {
+            guard FileManager.default.fileExists(atPath: configPath) else {
+                throw ValidationError("LoRA config file not found: \(configPath)")
+            }
+            do {
+                loraConfig = try LoRAConfig.load(from: configPath)
+                guard FileManager.default.fileExists(atPath: loraConfig!.filePath) else {
+                    throw ValidationError("LoRA file specified in config not found: \(loraConfig!.filePath)")
+                }
+            } catch let error as DecodingError {
+                throw ValidationError("Invalid LoRA config JSON: \(error)")
+            }
+        } else if let loraPath = lora {
+            guard FileManager.default.fileExists(atPath: loraPath) else {
+                throw ValidationError("LoRA file not found: \(loraPath)")
+            }
+            loraConfig = LoRAConfig(filePath: loraPath, scale: loraScale)
+        }
+
         // Apply model-specific defaults for Klein (distilled for 4 steps, guidance 1.0)
+        // LoRA scheduler overrides take precedence if not explicitly set by user
         let actualSteps: Int
         let actualGuidance: Float
+        let loraOverrides = loraConfig?.schedulerOverrides
+
         switch modelVariant {
         case .dev:
-            actualSteps = steps ?? 28
-            actualGuidance = guidance ?? 4.0
+            actualSteps = steps ?? loraOverrides?.numSteps ?? 28
+            actualGuidance = guidance ?? loraOverrides?.guidance ?? 4.0
         case .klein4B, .klein9B:
-            actualSteps = steps ?? 4
-            actualGuidance = guidance ?? 1.0
+            actualSteps = steps ?? loraOverrides?.numSteps ?? 4
+            actualGuidance = guidance ?? loraOverrides?.guidance ?? 1.0
         }
 
         // Validate image count (1-3 reference images)
@@ -442,14 +501,20 @@ struct ImageToImage: AsyncParsableCommand {
             }
         }
 
-        // Validate LoRA if specified
-        var loraConfig: LoRAConfig? = nil
-        if let loraPath = lora {
-            guard FileManager.default.fileExists(atPath: loraPath) else {
-                throw ValidationError("LoRA file not found: \(loraPath)")
+        // Print LoRA info if specified
+        if let loraConfig = loraConfig {
+            print("LoRA: \(loraConfig.name) (scale: \(loraConfig.effectiveScale))")
+            if let overrides = loraConfig.schedulerOverrides, overrides.hasOverrides {
+                if overrides.customSigmas != nil {
+                    print("  - Custom sigmas: \(overrides.customSigmas!.count) values")
+                }
+                if let recSteps = overrides.numSteps, steps == nil {
+                    print("  - Using recommended steps: \(recSteps)")
+                }
+                if let recGuidance = overrides.guidance, guidance == nil {
+                    print("  - Using recommended guidance: \(recGuidance)")
+                }
             }
-            loraConfig = LoRAConfig(filePath: loraPath, scale: loraScale)
-            print("LoRA: \(loraConfig!.name) (scale: \(loraConfig!.scale))")
         }
 
         // Create pipeline

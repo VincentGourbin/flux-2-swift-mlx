@@ -19,6 +19,44 @@ flux2 i2i "your prompt" \
 |--------|---------|-------------|
 | `--lora` | none | Path to LoRA safetensors file |
 | `--lora-scale` | `1.0` | LoRA scale factor (typically 0.5-1.5) |
+| `--lora-config` | none | Path to JSON config file (for advanced LoRAs) |
+
+### JSON Config Format
+
+For LoRAs that require special settings (like Turbo LoRAs with custom sigmas), use a JSON config file:
+
+```json
+{
+  "filePath": "/path/to/lora.safetensors",
+  "scale": 1.0,
+  "activationKeyword": "optional trigger word",
+  "schedulerOverrides": {
+    "customSigmas": [1.0, 0.6509, 0.4374, 0.2932, 0.1893, 0.1108, 0.0495, 0.00031],
+    "numSteps": 8,
+    "guidance": 2.5
+  }
+}
+```
+
+All fields except `filePath` are optional:
+
+| Field | Description |
+|-------|-------------|
+| `filePath` | Path to LoRA safetensors (required) |
+| `scale` | LoRA scale factor (default: 1.0) |
+| `activationKeyword` | Trigger word to prepend to prompt |
+| `schedulerOverrides.customSigmas` | Custom noise schedule (for Turbo LoRAs) |
+| `schedulerOverrides.numSteps` | Recommended inference steps |
+| `schedulerOverrides.guidance` | Recommended guidance scale |
+| `schedulerOverrides.strength` | Recommended I2I strength |
+
+**Example usage:**
+```bash
+flux2 t2i "a beautiful landscape" \
+  --lora-config turbo-lora.json \
+  --model dev \
+  -o output.png
+```
 
 ## How It Works
 
@@ -187,6 +225,41 @@ flux2 i2i "<sks> back view high-angle shot medium shot" \
 
 ---
 
+### Turbo 8-Step (Dev)
+
+**LoRA:** [fal/FLUX.2-dev-Turbo](https://huggingface.co/fal/FLUX.2-dev-Turbo)
+
+Enables 8-step inference (6x faster) with custom sigma schedule. Requires JSON config.
+
+**JSON Config (`turbo-lora.json`):**
+```json
+{
+  "filePath": "/path/to/flux.2-turbo-lora.safetensors",
+  "scale": 1.0,
+  "schedulerOverrides": {
+    "customSigmas": [1.0, 0.6509, 0.4374, 0.2932, 0.1893, 0.1108, 0.0495, 0.00031],
+    "numSteps": 8,
+    "guidance": 2.5
+  }
+}
+```
+
+**Command:**
+```bash
+flux2 t2i "a beautiful mountain landscape" \
+  --lora-config turbo-lora.json \
+  --model dev \
+  -o output.png
+# Automatically uses 8 steps, guidance 2.5, and custom sigmas
+```
+
+**Notes:**
+- Requires JSON config with `customSigmas` for optimal results
+- 6x faster than standard Dev inference (8 steps vs 50)
+- Dev LoRA (uses 6144 inner dim)
+
+---
+
 ## Finding LoRAs
 
 ### Recommended Sources
@@ -210,9 +283,10 @@ flux2 i2i "<sks> back view high-angle shot medium shot" \
 
 ### Known Dev LoRAs
 
-| LoRA | Purpose | Prompt | Scale |
-|------|---------|--------|-------|
-| [Multi-Angles](https://huggingface.co/lovis93/Flux-2-Multi-Angles-LoRA-v2) | 72 viewpoint poses | "`<sks>` [view] [elevation] shot [distance]" | 1.0 |
+| LoRA | Purpose | Prompt | Scale | Notes |
+|------|---------|--------|-------|-------|
+| [Multi-Angles](https://huggingface.co/lovis93/Flux-2-Multi-Angles-LoRA-v2) | 72 viewpoint poses | "`<sks>` [view] [elevation] shot [distance]" | 1.0 | |
+| [Turbo](https://huggingface.co/fal/FLUX.2-dev-Turbo) | 8-step fast inference | any | 1.0 | Requires JSON config |
 
 ---
 

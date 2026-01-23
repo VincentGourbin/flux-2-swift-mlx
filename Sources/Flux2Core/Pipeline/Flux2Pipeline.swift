@@ -73,6 +73,9 @@ public class Flux2Pipeline: @unchecked Sendable {
     /// LoRA adapter manager
     private var loraManager: LoRAManager?
 
+    /// Active LoRA scheduler overrides (from loaded LoRA config)
+    private var loraSchedulerOverrides: SchedulerOverrides?
+
     /// Whether models are loaded
     public private(set) var isLoaded: Bool = false
 
@@ -243,6 +246,21 @@ public class Flux2Pipeline: @unchecked Sendable {
 
         let info = try loraManager!.loadLoRA(config)
 
+        // Store scheduler overrides if present
+        if let overrides = config.schedulerOverrides, overrides.hasOverrides {
+            loraSchedulerOverrides = overrides
+            Flux2Debug.log("[LoRA] Scheduler overrides detected:")
+            if let sigmas = overrides.customSigmas {
+                Flux2Debug.log("  - Custom sigmas: \(sigmas.count) values")
+            }
+            if let steps = overrides.numSteps {
+                Flux2Debug.log("  - Recommended steps: \(steps)")
+            }
+            if let guidance = overrides.guidance {
+                Flux2Debug.log("  - Recommended guidance: \(guidance)")
+            }
+        }
+
         // Validate compatibility
         if info.targetModel != .unknown {
             let expectedModel: LoRAInfo.TargetModel
@@ -268,16 +286,27 @@ public class Flux2Pipeline: @unchecked Sendable {
     /// Unload a LoRA by name
     public func unloadLoRA(name: String) {
         loraManager?.unloadLoRA(name: name)
+        // Clear overrides if no more LoRAs are loaded
+        if loraManager?.count == 0 {
+            loraSchedulerOverrides = nil
+        }
     }
 
     /// Unload all LoRAs
     public func unloadAllLoRAs() {
         loraManager?.unloadAll()
+        loraSchedulerOverrides = nil
     }
 
     /// Whether any LoRAs are loaded
     public var hasLoRA: Bool {
         loraManager?.count ?? 0 > 0
+    }
+
+    /// Get active LoRA scheduler overrides (if any)
+    /// The CLI can use this to apply recommended settings
+    public var activeSchedulerOverrides: SchedulerOverrides? {
+        loraSchedulerOverrides
     }
 
     /// Load VAE for Phase 2
@@ -686,7 +715,12 @@ public class Flux2Pipeline: @unchecked Sendable {
             Flux2Debug.log("Combined image IDs: \(combinedImageIds.shape)")
 
             // Setup scheduler for FULL denoising (no timestep skip in Flux.2 I2I)
-            scheduler.setTimesteps(numInferenceSteps: steps, imageSeqLen: outputSeqLen, strength: 1.0)
+            // Check for custom sigmas from LoRA (e.g., Turbo LoRAs)
+            if let customSigmas = loraSchedulerOverrides?.customSigmas {
+                scheduler.setCustomSigmas(customSigmas)
+            } else {
+                scheduler.setTimesteps(numInferenceSteps: steps, imageSeqLen: outputSeqLen, strength: 1.0)
+            }
 
             let effectiveSteps = scheduler.sigmas.count - 1
             Flux2Debug.log("Starting I2I denoising loop (\(effectiveSteps) steps)...")
@@ -820,7 +854,12 @@ public class Flux2Pipeline: @unchecked Sendable {
         Flux2Debug.log("Image sequence length: \(imageSeqLen)")
 
         // Setup scheduler (T2I always uses strength 1.0)
-        scheduler.setTimesteps(numInferenceSteps: steps, imageSeqLen: imageSeqLen, strength: 1.0)
+        // Check for custom sigmas from LoRA (e.g., Turbo LoRAs)
+        if let customSigmas = loraSchedulerOverrides?.customSigmas {
+            scheduler.setCustomSigmas(customSigmas)
+        } else {
+            scheduler.setTimesteps(numInferenceSteps: steps, imageSeqLen: imageSeqLen, strength: 1.0)
+        }
 
         let effectiveSteps = scheduler.sigmas.count - 1
         Flux2Debug.log("Starting denoising loop (\(effectiveSteps) steps)...")

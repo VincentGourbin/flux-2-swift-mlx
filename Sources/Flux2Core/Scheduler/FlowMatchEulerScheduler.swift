@@ -217,6 +217,30 @@ public class FlowMatchEulerScheduler: @unchecked Sendable {
     public func reset() {
         stepIndex = 0
     }
+
+    /// Set timesteps with custom sigmas (for Turbo LoRAs)
+    ///
+    /// This bypasses the normal mu/timeshift computation and directly uses
+    /// the provided sigma schedule. Used by specialized LoRAs like Flux.2 Turbo
+    /// that require pre-computed noise schedules.
+    ///
+    /// - Parameter customSigmas: Pre-computed sigma schedule.
+    ///   Should start near 1.0 and end near 0.0.
+    ///   Example for 8-step Turbo: [1.0, 0.6509, 0.4374, 0.2932, 0.1893, 0.1108, 0.0495, 0.00031]
+    public func setCustomSigmas(_ customSigmas: [Float]) {
+        guard !customSigmas.isEmpty else {
+            Flux2Debug.log("[Scheduler] Warning: Empty custom sigmas provided, ignoring")
+            return
+        }
+
+        self.sigmas = customSigmas
+        self.timesteps = customSigmas.map { $0 * Float(numTrainTimesteps) }
+        self.stepIndex = 0
+
+        let effectiveSteps = sigmas.count - 1
+        Flux2Debug.log("[Scheduler] Set custom sigmas: \(effectiveSteps) effective steps")
+        Flux2Debug.verbose("[Scheduler] Sigmas: \(sigmas)")
+    }
 }
 
 // MARK: - Progress Tracking

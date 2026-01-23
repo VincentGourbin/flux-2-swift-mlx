@@ -140,7 +140,7 @@ public class LoRAManager: @unchecked Sendable {
 
         return mappings.map { mapping in
             (
-                scale: mapping.loader.config.scale,
+                scale: mapping.loader.config.effectiveScale,
                 loraA: mapping.pair.loraA.array,
                 loraB: mapping.pair.loraB.array
             )
