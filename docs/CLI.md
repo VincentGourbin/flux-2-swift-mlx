@@ -34,13 +34,24 @@ flux2 t2i <prompt> [options]
 | `--output` | `-o` | `output.png` | Output file path |
 | `--width` | `-w` | `1024` | Image width in pixels |
 | `--height` | `-h` | `1024` | Image height in pixels |
-| `--steps` | `-s` | `50` | Number of inference steps |
-| `--guidance` | `-g` | `4.0` | Guidance scale (CFG) |
+| `--model` | | `dev` | Model variant: `dev` (32B), `klein-4b` (4B), `klein-9b` (9B) |
+| `--steps` | `-s` | varies* | Number of inference steps |
+| `--guidance` | `-g` | varies* | Guidance scale (CFG) |
 | `--seed` | | random | Random seed for reproducibility |
 | `--text-quant` | | `8bit` | Text encoder quantization: `bf16`, `8bit`, `6bit`, `4bit` |
 | `--transformer-quant` | | `qint8` | Transformer quantization: `bf16`, `qint8`, `qint4` |
+| `--upsample-prompt` | | | Enhance prompt with visual details before encoding |
+| `--interpret` | | | Image to analyze with VLM and inject into prompt (all models) |
 | `--checkpoint` | | | Save intermediate images every N steps |
 | `--debug` | | | Enable verbose debug output |
+| `--profile` | | | Enable performance profiling |
+
+\* **Model-specific defaults:**
+| Model | Steps | Guidance |
+|-------|-------|----------|
+| `dev` | 50 | 4.0 |
+| `klein-4b` | **4** | **1.0** |
+| `klein-9b` | **4** | **1.0** |
 
 ### Examples
 
@@ -81,6 +92,85 @@ flux2 t2i "landscape painting" \
   --transformer-quant qint8 \
   --output landscape.png
 ```
+
+### Klein 4B (Fast Generation)
+
+Klein 4B is optimized for speed with only 4 steps and guidance=1.0. These defaults are applied automatically when using `--model klein-4b`.
+
+**Basic Klein generation:**
+```bash
+flux2 t2i "a beaver building a dam" --model klein-4b
+# Uses: steps=4, guidance=1.0 automatically
+```
+
+**Klein at higher resolution:**
+```bash
+flux2 t2i "a majestic eagle flying over mountains at sunset" \
+  --model klein-4b \
+  --width 1536 --height 1024 \
+  -o eagle.png
+```
+
+**Klein at maximum resolution (2048×2048):**
+```bash
+flux2 t2i "a futuristic city with flying cars and neon lights" \
+  --model klein-4b \
+  --width 2048 --height 2048 \
+  -o city.png
+```
+
+> **Note:** Klein 4B uses ~13GB VRAM (vs ~60GB for Dev) and generates images in ~33s at 1024×1024 (vs ~35min for Dev).
+
+### Klein 4B Quantization Options
+
+Klein 4B supports both full precision (bf16) and quantized (qint8) modes:
+
+| Quantization | Memory | Speed (4 steps) | Quality |
+|--------------|--------|-----------------|---------|
+| `bf16` | ~8GB | ~26s | Best |
+| `qint8` | ~5GB | ~27s | Excellent |
+
+**Full precision (bf16):**
+```bash
+flux2 t2i "a beaver building a dam" \
+  --model klein-4b \
+  --transformer-quant bf16 \
+  -o beaver_bf16.png
+```
+
+**Quantized (qint8) - default:**
+```bash
+flux2 t2i "a beaver building a dam" \
+  --model klein-4b \
+  --transformer-quant qint8 \
+  -o beaver_qint8.png
+```
+
+> **Recommendation:** For most use cases, the default qint8 quantization provides excellent quality with lower memory usage. Use bf16 when maximum quality is required and memory is not constrained.
+
+### Klein 9B (Quality/Speed Balance)
+
+Klein 9B offers better quality than Klein 4B while remaining much faster than Dev. It uses the same 4-step distillation with guidance=1.0.
+
+**Basic Klein 9B generation:**
+```bash
+flux2 t2i "a beaver building a dam" --model klein-9b
+# Uses: steps=4, guidance=1.0 automatically
+# Time: ~56s at 1024x1024
+```
+
+**Klein 9B is ideal for:**
+- Better quality than Klein 4B without Dev's long generation time
+- Non-commercial projects where quality matters
+- When you have ~32GB+ RAM available
+
+| Model | Time (1024x1024) | Memory | Quality |
+|-------|------------------|--------|---------|
+| Klein 4B | ~26s | ~5-8GB | Good |
+| **Klein 9B** | **~56s** | **~20GB** | **Better** |
+| Dev | ~35min | ~60GB | Best |
+
+> **Note:** Klein 9B only has bf16 available. No quantized (qint8) variant exists yet. The text encoder uses Qwen3-8B (8bit) which provides excellent quality.
 
 ---
 
@@ -224,6 +314,50 @@ flux2 i2i "create a scene combining these elements" \
 ```
 
 > **Note:** Multi-image mode ignores the `--strength` parameter and always performs full denoising. Reference images provide visual context that guides the transformer's attention during generation.
+
+### I2I with Klein Models
+
+Klein 4B and 9B support Image-to-Image generation with the same VAE-based encoding as Dev.
+
+**Klein I2I example:**
+```bash
+flux2 i2i "transform into watercolor style" \
+  --model klein-4b \
+  --images photo.jpg \
+  --strength 0.7 \
+  -o watercolor.png
+```
+
+**Multi-image with Klein:**
+```bash
+flux2 i2i "a cat wearing this hat" \
+  --model klein-9b \
+  --images cat.jpg \
+  --images hat.jpg \
+  --steps 4 \
+  -o cat_hat.png
+```
+
+#### Token Limits per Model
+
+Reference images consume tokens in the transformer's attention. Here are practical limits:
+
+| Model | VRAM | Recommended Max Images | Max Tokens |
+|-------|------|------------------------|------------|
+| Klein 4B | ~8GB | 2-3 images | ~16k |
+| Klein 9B | ~20GB | 3-5 images | ~25k |
+| Dev | ~60GB | 5-10 images | ~45k |
+
+**Token calculation:** Each 1024×1024 reference image = ~4,096 tokens
+
+#### Upsampling Behavior
+
+| Model | T2I Upsampling | I2I Upsampling |
+|-------|----------------|----------------|
+| **Dev** | Mistral VLM (text) | Mistral VLM (sees images) ✅ |
+| **Klein** | Qwen3 (text only) | **Mistral VLM (sees images)** ✅ |
+
+> **Note:** For Klein I2I with `--upsample-prompt`, the pipeline automatically loads Mistral VLM temporarily to analyze reference images, then unloads it and uses Qwen3 for the final text encoding. This matches the official Flux.2 implementation and provides context-aware upsampling.
 
 ---
 

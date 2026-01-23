@@ -188,7 +188,7 @@ public class Flux2Transformer2DModel: Module, @unchecked Sendable {
         // Remove text tokens from the concatenated stream
         imgHS = combinedHS[0..., textSeqLen..., 0...]
         Flux2Debug.verbose("After single blocks (image only): \(imgHS.shape)")
-
+        
         // --- Output ---
         // Final adaptive layer norm
         imgHS = normOut(imgHS, conditioning: temb)

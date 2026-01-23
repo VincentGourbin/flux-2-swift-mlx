@@ -44,14 +44,17 @@ struct TextToImage: AsyncParsableCommand {
     @Option(name: .shortAndLong, help: "Image height")
     var height: Int = 1024
 
-    @Option(name: .shortAndLong, help: "Number of inference steps")
-    var steps: Int = 50
+    @Option(name: .shortAndLong, help: "Number of inference steps (default: 50 for Dev, 4 for Klein)")
+    var steps: Int?
 
-    @Option(name: .shortAndLong, help: "Guidance scale")
-    var guidance: Float = 4.0
+    @Option(name: .shortAndLong, help: "Guidance scale (default: 4.0 for Dev, 1.0 for Klein)")
+    var guidance: Float?
 
     @Option(name: .long, help: "Random seed")
     var seed: UInt64?
+
+    @Option(name: .long, help: "Model variant: dev (32B), klein-4b (4B, Apache 2.0), klein-9b (9B)")
+    var model: String = "dev"
 
     @Option(name: .long, help: "Text encoder quantization: bf16, 8bit, 6bit, 4bit")
     var textQuant: String = "8bit"
@@ -86,6 +89,23 @@ struct TextToImage: AsyncParsableCommand {
         if profile {
             Flux2Profiler.shared.enable()
         }
+        // Parse model variant
+        guard let modelVariant = Flux2Model(rawValue: model) else {
+            throw ValidationError("Invalid model: \(model). Use dev, klein-4b, or klein-9b")
+        }
+
+        // Apply model-specific defaults for Klein (distilled for 4 steps, guidance 1.0)
+        let actualSteps: Int
+        let actualGuidance: Float
+        switch modelVariant {
+        case .dev:
+            actualSteps = steps ?? 50
+            actualGuidance = guidance ?? 4.0
+        case .klein4B, .klein9B:
+            actualSteps = steps ?? 4
+            actualGuidance = guidance ?? 1.0
+        }
+
         // Parse quantization settings
         guard let textQuantization = MistralQuantization(rawValue: textQuant) else {
             throw ValidationError("Invalid text quantization: \(textQuant). Use bf16, 8bit, 6bit, or 4bit")
@@ -102,6 +122,7 @@ struct TextToImage: AsyncParsableCommand {
 
         if debug {
             print("Configuration:")
+            print("  Model: \(modelVariant.displayName)")
             print("  Text encoder: \(textQuantization.displayName)")
             print("  Transformer: \(transformerQuantization.displayName)")
             print("  Estimated memory: ~\(quantConfig.estimatedTotalMemoryGB)GB")
@@ -129,8 +150,8 @@ struct TextToImage: AsyncParsableCommand {
             print("  Prompt upsampling: enabled (will enhance prompt with visual details)")
         }
         print("  Size: \(width)x\(height)")
-        print("  Steps: \(steps)")
-        print("  Guidance: \(guidance)")
+        print("  Steps: \(actualSteps)")
+        print("  Guidance: \(actualGuidance)")
         if let seed = seed {
             print("  Seed: \(seed)")
         }
@@ -140,14 +161,14 @@ struct TextToImage: AsyncParsableCommand {
         print()
 
         // Create pipeline
-        let pipeline = Flux2Pipeline(quantization: quantConfig)
+        let pipeline = Flux2Pipeline(model: modelVariant, quantization: quantConfig)
 
         // Check for missing models
         if !pipeline.hasRequiredModels {
             let missing = pipeline.missingModels
             print("Missing models:")
-            for model in missing {
-                print("  - \(model.displayName)")
+            for m in missing {
+                print("  - \(m.displayName)")
             }
             print()
             print("Please download the required models first.")
@@ -181,8 +202,8 @@ struct TextToImage: AsyncParsableCommand {
             interpretImagePaths: interpretImagePaths.isEmpty ? nil : interpretImagePaths,
             height: height,
             width: width,
-            steps: steps,
-            guidance: guidance,
+            steps: actualSteps,
+            guidance: actualGuidance,
             seed: seed,
             upsamplePrompt: upsamplePrompt,
             checkpointInterval: checkpoint
@@ -233,14 +254,14 @@ struct ImageToImage: AsyncParsableCommand {
     @Option(name: .shortAndLong, help: "Output file path")
     var output: String = "output.png"
 
-    @Option(name: .shortAndLong, help: "Number of effective denoising steps (what you actually get)")
-    var steps: Int = 28
+    @Option(name: .shortAndLong, help: "Number of effective denoising steps (default: 28 for Dev, 4 for Klein)")
+    var steps: Int?
 
     @Flag(name: .long, help: "Interpret --steps as total steps before strength reduction (legacy behavior)")
     var totalSteps: Bool = false
 
-    @Option(name: .shortAndLong, help: "Guidance scale")
-    var guidance: Float = 4.0
+    @Option(name: .shortAndLong, help: "Guidance scale (default: 4.0 for Dev, 1.0 for Klein)")
+    var guidance: Float?
 
     @Option(name: .long, help: "Random seed for reproducibility")
     var seed: UInt64?
@@ -263,6 +284,9 @@ struct ImageToImage: AsyncParsableCommand {
     @Flag(name: .long, help: "Show detailed performance profiling")
     var profile: Bool = false
 
+    @Option(name: .long, help: "Model variant: dev (32B), klein-4b (4B, Apache 2.0), klein-9b (9B)")
+    var model: String = "dev"
+
     @Option(name: .long, help: "Text encoder quantization: bf16, 8bit, 6bit, 4bit")
     var textQuant: String = "8bit"
 
@@ -271,6 +295,23 @@ struct ImageToImage: AsyncParsableCommand {
 
     func run() async throws {
         let startTime = Date()
+
+        // Parse model variant
+        guard let modelVariant = Flux2Model(rawValue: model) else {
+            throw ValidationError("Invalid model: \(model). Use dev, klein-4b, or klein-9b")
+        }
+
+        // Apply model-specific defaults for Klein (distilled for 4 steps, guidance 1.0)
+        let actualSteps: Int
+        let actualGuidance: Float
+        switch modelVariant {
+        case .dev:
+            actualSteps = steps ?? 28
+            actualGuidance = guidance ?? 4.0
+        case .klein4B, .klein9B:
+            actualSteps = steps ?? 4
+            actualGuidance = guidance ?? 1.0
+        }
 
         // Validate image count (1-3 reference images)
         guard !images.isEmpty && images.count <= 3 else {
@@ -321,8 +362,8 @@ struct ImageToImage: AsyncParsableCommand {
         // Note: Flux.2 I2I uses conditioning mode, not SD-style noise injection
         // The reference image provides visual context to the transformer
         // Strength parameter is accepted for API compatibility but doesn't skip timesteps
-        let actualSteps = steps
         print("Steps: \(actualSteps)")
+        print("Guidance: \(actualGuidance)")
 
         if upsamplePrompt {
             print("Prompt upsampling: enabled")
@@ -343,7 +384,7 @@ struct ImageToImage: AsyncParsableCommand {
         )
 
         // Create pipeline
-        let pipeline = Flux2Pipeline(quantization: quantConfig)
+        let pipeline = Flux2Pipeline(model: modelVariant, quantization: quantConfig)
 
         // Setup checkpoint directory if needed
         let checkpointDir: String?
@@ -368,7 +409,7 @@ struct ImageToImage: AsyncParsableCommand {
             height: height,
             width: width,
             steps: actualSteps,
-            guidance: guidance,
+            guidance: actualGuidance,
             seed: seed,
             strength: strength,
             upsamplePrompt: upsamplePrompt,
@@ -419,7 +460,10 @@ struct Download: AsyncParsableCommand {
     @Option(name: .long, help: "HuggingFace token for gated models")
     var hfToken: String?
 
-    @Option(name: .long, help: "Transformer quantization to download: bf16, qint8, qint4")
+    @Option(name: .long, help: "Model to download: dev, klein-4b, klein-9b")
+    var model: String = "dev"
+
+    @Option(name: .long, help: "Transformer quantization: bf16, qint8/8bit, qint4")
     var transformerQuant: String = "qint8"
 
     @Flag(name: .long, help: "Download all model variants")
@@ -440,6 +484,11 @@ struct Download: AsyncParsableCommand {
             print()
         }
 
+        // Parse model variant
+        guard let modelVariant = Flux2Model(rawValue: model) else {
+            throw ValidationError("Invalid model: \(model). Use dev, klein-4b, or klein-9b")
+        }
+
         let downloader = Flux2ModelDownloader(hfToken: token)
 
         if vaeOnly {
@@ -450,22 +499,30 @@ struct Download: AsyncParsableCommand {
         }
 
         if all {
-            print("Downloading all model variants...")
-            for variant in ModelRegistry.TransformerVariant.allCases {
+            print("Downloading all model variants for \(modelVariant.displayName)...")
+            let variants = ModelRegistry.TransformerVariant.allCases.filter { $0.modelType == modelVariant }
+            for variant in variants {
                 let component = ModelRegistry.ModelComponent.transformer(variant)
                 try await downloadComponent(downloader, component)
             }
         } else {
-            guard let variant = ModelRegistry.TransformerVariant(rawValue: transformerQuant) else {
-                throw ValidationError("Invalid transformer quantization: \(transformerQuant). Use bf16, qint8, or qint4")
+            // Parse quantization and get the right variant for this model type
+            let quant: TransformerQuantization
+            switch transformerQuant {
+            case "bf16": quant = .bf16
+            case "qint8", "8bit": quant = .qint8
+            case "qint4", "4bit": quant = .qint4
+            default:
+                throw ValidationError("Invalid transformer quantization: \(transformerQuant). Use bf16, qint8/8bit, or qint4")
             }
 
-            print("Downloading Flux.2 Transformer (\(variant.rawValue))...")
+            let variant = ModelRegistry.TransformerVariant.variant(for: modelVariant, quantization: quant)
+            print("Downloading \(modelVariant.displayName) Transformer (\(variant.rawValue))...")
             let component = ModelRegistry.ModelComponent.transformer(variant)
             try await downloadComponent(downloader, component)
         }
 
-        // Always download VAE
+        // Always download VAE (shared between all models)
         print("Downloading VAE...")
         let vaeComponent = ModelRegistry.ModelComponent.vae(.standard)
         try await downloadComponent(downloader, vaeComponent)
@@ -473,6 +530,14 @@ struct Download: AsyncParsableCommand {
         print()
         print("✅ Download complete!")
         print("   Models stored in: \(ModelRegistry.modelsDirectory.path)")
+
+        // Text encoder info
+        switch modelVariant {
+        case .dev:
+            print("   Note: Text encoder (Mistral) will be auto-downloaded on first run")
+        case .klein4B, .klein9B:
+            print("   Note: Text encoder (Qwen3) will be auto-downloaded on first run")
+        }
     }
 
     private func downloadComponent(_ downloader: Flux2ModelDownloader, _ component: ModelRegistry.ModelComponent) async throws {

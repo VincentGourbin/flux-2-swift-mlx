@@ -3,6 +3,74 @@
 
 import Foundation
 
+// MARK: - Model Selection
+
+/// Flux.2 model variants
+public enum Flux2Model: String, CaseIterable, Sendable {
+    /// Flux.2 Dev - 32B parameters, Mistral text encoder
+    case dev = "dev"
+
+    /// Flux.2 Klein 4B - 4B parameters, Qwen3-4B text encoder (Apache 2.0)
+    case klein4B = "klein-4b"
+
+    /// Flux.2 Klein 9B - 9B parameters, Qwen3-8B text encoder (Non-commercial)
+    case klein9B = "klein-9b"
+
+    public var displayName: String {
+        switch self {
+        case .dev: return "Flux.2 Dev (32B)"
+        case .klein4B: return "Flux.2 Klein 4B"
+        case .klein9B: return "Flux.2 Klein 9B"
+        }
+    }
+
+    /// Whether this model uses guidance embeddings
+    public var usesGuidanceEmbeds: Bool {
+        switch self {
+        case .dev: return true
+        case .klein4B, .klein9B: return false
+        }
+    }
+
+    /// Joint attention dimension (text encoder output)
+    public var jointAttentionDim: Int {
+        switch self {
+        case .dev: return 15360      // Mistral: 3 × 5120
+        case .klein4B: return 7680   // Qwen3-4B: 3 × 2560
+        case .klein9B: return 12288  // Qwen3-8B: 3 × 4096
+        }
+    }
+
+    /// Get the transformer configuration for this model
+    public var transformerConfig: Flux2TransformerConfig {
+        switch self {
+        case .dev: return .flux2Dev
+        case .klein4B: return .klein4B
+        case .klein9B: return .klein9B
+        }
+    }
+
+    /// Estimated VRAM usage in GB
+    public var estimatedVRAM: Int {
+        switch self {
+        case .dev: return 60     // ~32GB transformer + ~25GB Mistral
+        case .klein4B: return 13  // ~8GB transformer + ~5GB Qwen3-4B
+        case .klein9B: return 29  // ~18GB transformer + ~10GB Qwen3-8B
+        }
+    }
+
+    /// License information
+    public var license: String {
+        switch self {
+        case .dev: return "FLUX.2 Non-Commercial"
+        case .klein4B: return "Apache 2.0"
+        case .klein9B: return "Non-Commercial"
+        }
+    }
+}
+
+// MARK: - Transformer Configuration
+
 /// Configuration for the Flux.2 diffusion transformer
 public struct Flux2TransformerConfig: Codable, Sendable {
     /// Patch size for input embedding (1 for Flux.2)
@@ -84,8 +152,46 @@ public struct Flux2TransformerConfig: Codable, Sendable {
         self.activationFunction = activationFunction
     }
 
-    /// Default Flux.2 configuration
+    /// Default Flux.2 Dev configuration (32B)
     public static let flux2Dev = Flux2TransformerConfig()
+
+    /// Flux.2 Klein 4B configuration
+    /// 4B parameters, 5 double + 20 single blocks
+    public static let klein4B = Flux2TransformerConfig(
+        patchSize: 1,
+        inChannels: 128,
+        outChannels: 128,
+        numLayers: 5,
+        numSingleLayers: 20,
+        attentionHeadDim: 128,
+        numAttentionHeads: 24,      // 24 × 128 = 3072
+        jointAttentionDim: 7680,    // Qwen3-4B: 3 × 2560
+        pooledProjectionDim: 768,
+        guidanceEmbeds: false,
+        axesDimsRope: [32, 32, 32, 32],
+        ropeTheta: 2000.0,
+        mlpRatio: 3.0,
+        activationFunction: "silu"
+    )
+
+    /// Flux.2 Klein 9B configuration
+    /// 9B parameters, 8 double + 24 single blocks
+    public static let klein9B = Flux2TransformerConfig(
+        patchSize: 1,
+        inChannels: 128,
+        outChannels: 128,
+        numLayers: 8,
+        numSingleLayers: 24,
+        attentionHeadDim: 128,
+        numAttentionHeads: 32,      // 32 × 128 = 4096
+        jointAttentionDim: 12288,   // Qwen3-8B: 3 × 4096
+        pooledProjectionDim: 768,
+        guidanceEmbeds: false,
+        axesDimsRope: [32, 32, 32, 32],
+        ropeTheta: 2000.0,
+        mlpRatio: 3.0,
+        activationFunction: "silu"
+    )
 
     // MARK: - Codable
 

@@ -10,19 +10,26 @@ A native Swift implementation of [Flux.2 Dev](https://blackforestlabs.ai/) image
 
 - **Native Swift**: Pure Swift implementation, no Python dependencies at runtime
 - **MLX Acceleration**: Optimized for Apple Silicon (M1/M2/M3/M4) using MLX
-- **Quantized Models**: Support for 8-bit quantized transformer (~32GB VRAM)
+- **Multiple Models**: Dev (32B), Klein 4B, and Klein 9B variants
+- **Quantized Models**: Support for 8-bit quantized transformer (~32GB VRAM for Dev)
 - **Text-to-Image**: Generate images from text prompts
 - **Image-to-Image**: Transform images with text prompts and configurable strength
 - **Multi-Image Conditioning**: Combine elements from up to 3 reference images
-- **Prompt Upsampling**: Enhance prompts with Mistral before generation
+- **Prompt Upsampling**: Enhance prompts with Mistral/Qwen3 before generation
 - **CLI Tool**: Full-featured command-line interface for image generation
 
 ## Requirements
 
 - macOS 14.0 (Sonoma) or later
 - Apple Silicon Mac (M1/M2/M3/M4)
-- **Minimum 64GB unified memory** (for transformer + text encoder)
 - Xcode 15.0 or later
+
+**Memory requirements by model:**
+| Model | Minimum RAM | Recommended |
+|-------|-------------|-------------|
+| Klein 4B | 16GB | 32GB+ |
+| Klein 9B | 32GB | 48GB+ |
+| Dev (32B) | 64GB | 96GB+ |
 
 ## Installation
 
@@ -42,21 +49,33 @@ cd flux-2-swift-mlx
 
 ### Download Models
 
-The models are downloaded automatically from HuggingFace on first run. You'll need:
+The models are downloaded automatically from HuggingFace on first run.
 
-- **Text Encoder**: Mistral Small 3.2 (~25GB 8-bit)
-- **Transformer**: Flux.2 Dev qint8 (~32GB)
-- **VAE**: Flux.2 VAE (~3GB)
+**For Dev (32B):**
+- Text Encoder: Mistral Small 3.2 (~25GB 8-bit)
+- Transformer: Flux.2 Dev qint8 (~32GB)
+- VAE: Flux.2 VAE (~3GB)
 
-Models are cached in `~/.cache/huggingface/`.
+**For Klein 4B/9B:**
+- Text Encoder: Qwen3-4B or Qwen3-8B (~4-8GB 8-bit)
+- Transformer: Klein 4B (~8GB) or Klein 9B (~18GB)
+- VAE: Flux.2 VAE (~3GB)
+
+Models are cached in `~/Library/Caches/models/`.
 
 ## Usage
 
 ### CLI
 
 ```bash
-# Basic text-to-image generation
-flux2 t2i "a beautiful sunset over mountains" --output sunset.png
+# Fast generation with Klein 4B (~26s, commercial OK)
+flux2 t2i "a beaver building a dam" --model klein-4b
+
+# Better quality with Klein 9B (~62s)
+flux2 t2i "a beaver building a dam" --model klein-9b
+
+# Maximum quality with Dev (~35min, requires 64GB+ RAM)
+flux2 t2i "a beautiful sunset over mountains" --model dev
 
 # With custom parameters
 flux2 t2i "a red apple on a white table" \
@@ -67,12 +86,6 @@ flux2 t2i "a red apple on a white table" \
   --seed 42 \
   --output apple.png
 
-# Save intermediate checkpoints
-flux2 t2i "cosmic nebula in deep space" \
-  --steps 30 \
-  --checkpoint 5 \
-  --output nebula.png
-
 # Image-to-Image with reference image
 flux2 i2i "transform into a watercolor painting" \
   --images photo.jpg \
@@ -80,14 +93,7 @@ flux2 i2i "transform into a watercolor painting" \
   --steps 28 \
   --output watercolor.png
 
-# Image-to-Image with prompt upsampling
-flux2 i2i "make it look cyberpunk" \
-  --images original.jpg \
-  --strength 0.6 \
-  --upsample-prompt \
-  --output cyberpunk.png
-
-# Multi-image conditioning (combine elements from references)
+# Multi-image conditioning (combine elements)
 flux2 i2i "a cat wearing this jacket" \
   --images cat.jpg \
   --images jacket.jpg \
@@ -131,9 +137,10 @@ Text encoding uses [Mistral Small 3.2](https://github.com/VincentGourbin/mistral
 
 ## Current Limitations
 
-- **Performance**: Generation takes ~15-20 min for 1024×1024 images
-- **Memory**: Requires 64GB+ unified memory
+- **Dev Performance**: Generation takes ~35 min for 1024x1024 images (use Klein for faster results)
+- **Dev Memory**: Requires 64GB+ unified memory (Klein 4B works with 16GB)
 - **No LoRA support**: Adapter loading not yet available
+- **Klein 9B**: Only bf16 available (no quantized variants yet)
 
 ## Roadmap
 
@@ -143,10 +150,11 @@ See [GitHub Issues](https://github.com/VincentGourbin/flux-2-swift-mlx/issues) f
 - [x] Image-to-Image support (single image with strength)
 - [x] Multi-image conditioning (up to 3 reference images)
 - [x] Prompt upsampling
+- [x] Flux.2 Klein 4B (4B, ~26s, Apache 2.0)
+- [x] Flux.2 Klein 9B (9B, ~62s, non-commercial)
 - [ ] Performance optimizations
 - [ ] Demo SwiftUI application
 - [ ] LoRA adapter support
-- [ ] Flux.2 Klein (smaller model)
 
 ## Acknowledgments
 

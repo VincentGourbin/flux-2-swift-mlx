@@ -37,7 +37,12 @@ public class Flux2ModelDownloader: @unchecked Sendable {
     public static func findModelPath(for component: ModelRegistry.ModelComponent) -> URL? {
         // Check our local models directory
         let localPath = ModelRegistry.localPath(for: component)
-        if FileManager.default.fileExists(atPath: localPath.appendingPathComponent("config.json").path) {
+
+        // Check for config.json OR model_index.json (Klein models use the latter)
+        let hasConfig = FileManager.default.fileExists(atPath: localPath.appendingPathComponent("config.json").path)
+        let hasModelIndex = FileManager.default.fileExists(atPath: localPath.appendingPathComponent("model_index.json").path)
+
+        if hasConfig || hasModelIndex {
             let verification = verifyModel(at: localPath)
             if verification.complete {
                 return localPath
@@ -53,7 +58,10 @@ public class Flux2ModelDownloader: @unchecked Sendable {
                 path = path.appendingPathComponent(String(part))
             }
 
-            if FileManager.default.fileExists(atPath: path.appendingPathComponent("config.json").path) {
+            let cacheHasConfig = FileManager.default.fileExists(atPath: path.appendingPathComponent("config.json").path)
+            let cacheHasModelIndex = FileManager.default.fileExists(atPath: path.appendingPathComponent("model_index.json").path)
+
+            if cacheHasConfig || cacheHasModelIndex {
                 let verification = verifyModel(at: path)
                 if verification.complete {
                     return path
@@ -105,9 +113,14 @@ public class Flux2ModelDownloader: @unchecked Sendable {
         let contents = (try? FileManager.default.contentsOfDirectory(atPath: path.path)) ?? []
         let safetensorsFiles = contents.filter { $0.hasSuffix(".safetensors") }
 
-        // Single file model
+        // Single file model (various naming conventions)
         if safetensorsFiles.contains("model.safetensors") ||
            safetensorsFiles.contains("diffusion_pytorch_model.safetensors") {
+            return (true, [])
+        }
+
+        // Klein bf16 models use flux-2-klein-*.safetensors naming
+        if safetensorsFiles.contains(where: { $0.hasPrefix("flux-2-klein") }) {
             return (true, [])
         }
 
