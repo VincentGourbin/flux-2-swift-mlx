@@ -406,64 +406,22 @@ flux2 download --transformer-quant bf16
 
 Apply LoRA (Low-Rank Adaptation) weights to customize model behavior for specific tasks.
 
-### Options
-
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--lora` | none | Path to LoRA safetensors file |
 | `--lora-scale` | `1.0` | LoRA scale factor (typically 0.5-1.5) |
 
-### Usage
-
-```bash
-flux2 t2i "prompt" --lora path/to/lora.safetensors --lora-scale 1.0
-flux2 i2i "prompt" --images input.jpg --lora path/to/lora.safetensors --lora-scale 1.1
-```
-
-### Example: Object Removal
-
-Using [fal/flux-2-klein-4B-object-remove-lora](https://huggingface.co/fal/flux-2-klein-4B-object-remove-lora):
-
-```bash
-flux2 i2i "Remove the highlighted object from the scene" \
-  --images input.jpg \
-  --lora flux-object-remove-lora.safetensors \
-  --lora-scale 1.1 \
-  --model klein-4b \
-  --transformer-quant bf16 \
-  --strength 0.8 \
-  -s 4 \
-  -o output.png
-```
-
-### Example: Spritesheet Generation
-
-Using [fal/flux-2-klein-4b-spritesheet-lora](https://huggingface.co/fal/flux-2-klein-4b-spritesheet-lora):
-
+**Quick example:**
 ```bash
 flux2 i2i "2x2 sprite sheet" \
   --images object.png \
   --lora flux-spritesheet-lora.safetensors \
   --lora-scale 1.1 \
   --model klein-4b \
-  --transformer-quant bf16 \
-  --strength 0.8 \
-  -s 4 \
   -o spritesheet.png
 ```
 
-Generates a 2×2 grid with isometric, side, and top-down views.
-
-**Notes:**
-- LoRA files must be compatible with the model architecture (e.g., Klein 4B LoRAs for `--model klein-4b`)
-- Some LoRAs require specific prompts or activation keywords
-- Best results often achieved with `--transformer-quant bf16`
-- LoRA weights are merged into the transformer at load time
-
-### Supported LoRA Sources
-
-- [HuggingFace](https://huggingface.co/models?other=flux) - Search for "flux-2-klein" or "flux2"
-- [Civitai](https://civitai.com/) - Filter by Flux.2 compatible LoRAs
+For complete LoRA documentation, examples, and troubleshooting, see **[LoRA.md](LoRA.md)**.
 
 ---
 
