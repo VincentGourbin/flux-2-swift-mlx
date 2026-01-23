@@ -69,7 +69,7 @@ public final class Flux2MemoryManager: @unchecked Sendable {
             return .insufficientMemory(
                 required: required,
                 available: available,
-                suggestion: "Use qint4 transformer quantization or reduce image size"
+                suggestion: "Use qint8 transformer quantization or reduce image size"
             )
         }
 

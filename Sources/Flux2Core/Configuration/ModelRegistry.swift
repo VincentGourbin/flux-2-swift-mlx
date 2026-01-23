@@ -13,7 +13,6 @@ public enum ModelRegistry {
         // Flux.2 Dev variants (32B)
         case bf16 = "bf16"
         case qint8 = "qint8"
-        case qint4 = "qint4"
 
         // Flux.2 Klein 4B variants
         case klein4B_bf16 = "klein4b-bf16"
@@ -27,7 +26,7 @@ public enum ModelRegistry {
             switch self {
             case .bf16:
                 return "black-forest-labs/FLUX.2-dev"
-            case .qint8, .qint4:
+            case .qint8:
                 return "VincentGOURBIN/flux_qint_8bit"
             case .klein4B_bf16:
                 return "black-forest-labs/FLUX.2-klein-4B"
@@ -46,8 +45,6 @@ public enum ModelRegistry {
                 return "transformer"
             case .qint8:
                 return "flux-2-dev/transformer/qint8"
-            case .qint4:
-                return "flux-2-dev/transformer/qint4"
             case .klein4B_bf16, .klein4B_8bit, .klein9B_bf16:
                 // Klein models have transformer weights in root folder
                 return nil
@@ -58,7 +55,6 @@ public enum ModelRegistry {
             switch self {
             case .bf16: return 64
             case .qint8: return 32
-            case .qint4: return 16
             case .klein4B_bf16: return 8
             case .klein4B_8bit: return 4
             case .klein9B_bf16: return 18
@@ -69,14 +65,13 @@ public enum ModelRegistry {
             switch self {
             case .bf16, .klein4B_bf16, .klein9B_bf16: return .bf16
             case .qint8, .klein4B_8bit: return .qint8
-            case .qint4: return .qint4
             }
         }
 
         /// The Flux.2 model type this variant belongs to
         public var modelType: Flux2Model {
             switch self {
-            case .bf16, .qint8, .qint4:
+            case .bf16, .qint8:
                 return .dev
             case .klein4B_bf16, .klein4B_8bit:
                 return .klein4B
@@ -90,11 +85,10 @@ public enum ModelRegistry {
             switch (model, quantization) {
             case (.dev, .bf16): return .bf16
             case (.dev, .qint8): return .qint8
-            case (.dev, .qint4): return .qint4
             case (.klein4B, .bf16): return .klein4B_bf16
-            case (.klein4B, .qint8), (.klein4B, .qint4): return .klein4B_8bit
+            case (.klein4B, .qint8): return .klein4B_8bit
             // Klein 9B only has bf16 available - fallback to bf16 for any quantization request
-            case (.klein9B, .bf16), (.klein9B, .qint8), (.klein9B, .qint4): return .klein9B_bf16
+            case (.klein9B, .bf16), (.klein9B, .qint8): return .klein9B_bf16
             }
         }
     }
@@ -189,7 +183,7 @@ public enum ModelRegistry {
         case .transformer(let variant):
             let modelName: String
             switch variant {
-            case .bf16, .qint8, .qint4:
+            case .bf16, .qint8:
                 modelName = "FLUX.2-dev-transformer-\(variant.rawValue)"
             case .klein4B_bf16, .klein4B_8bit:
                 modelName = "FLUX.2-klein-4B-\(variant.rawValue)"

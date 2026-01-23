@@ -39,7 +39,7 @@ flux2 t2i <prompt> [options]
 | `--guidance` | `-g` | varies* | Guidance scale (CFG) |
 | `--seed` | | random | Random seed for reproducibility |
 | `--text-quant` | | `8bit` | Text encoder quantization: `bf16`, `8bit`, `6bit`, `4bit` |
-| `--transformer-quant` | | `qint8` | Transformer quantization: `bf16`, `qint8`, `qint4` |
+| `--transformer-quant` | | `qint8` | Transformer quantization: `bf16`, `qint8` |
 | `--upsample-prompt` | | | Enhance prompt with visual details before encoding |
 | `--interpret` | | | Image to analyze with VLM and inject into prompt (all models) |
 | `--checkpoint` | | | Save intermediate images every N steps |
@@ -426,7 +426,7 @@ Available Quantization Presets:
   High Quality (~90GB): bf16 text + bf16 transformer
   Balanced (~60GB): 8bit text + qint8 transformer
   Memory Efficient (~50GB): 4bit text + qint8 transformer
-  Minimal (~35GB): 4bit text + qint4 transformer
+  Minimal (~40GB): 4bit text + qint8 transformer
 
 Model Status:
   [✓] Flux.2 Transformer (qint8)
@@ -452,18 +452,17 @@ Model Status:
 
 | Option | Memory | Quality |
 |--------|--------|---------|
-| `bf16` | ~64GB | Best |
+| `bf16` | ~64GB | Best (requires 96GB+ RAM) |
 | `qint8` | ~32GB | Excellent (recommended) |
-| `qint4` | ~16GB | Good (experimental) |
 
 ### Recommended Configurations
 
 | Config | Text | Transformer | Total Memory | Use Case |
 |--------|------|-------------|--------------|----------|
-| High Quality | bf16 | bf16 | ~90GB | Maximum quality |
+| High Quality | bf16 | bf16 | ~90GB | Maximum quality (96GB+ RAM) |
 | **Balanced** | 8bit | qint8 | ~60GB | **Recommended** |
 | Memory Efficient | 4bit | qint8 | ~50GB | 64GB Macs |
-| Minimal | 4bit | qint4 | ~35GB | Testing only |
+| Minimal | 4bit | qint8 | ~40GB | 48GB Macs |
 
 ---
 
