@@ -436,6 +436,24 @@ flux2 i2i "Remove the highlighted object from the scene" \
   -o output.png
 ```
 
+### Example: Spritesheet Generation
+
+Using [fal/flux-2-klein-4b-spritesheet-lora](https://huggingface.co/fal/flux-2-klein-4b-spritesheet-lora):
+
+```bash
+flux2 i2i "2x2 sprite sheet" \
+  --images object.png \
+  --lora flux-spritesheet-lora.safetensors \
+  --lora-scale 1.1 \
+  --model klein-4b \
+  --transformer-quant bf16 \
+  --strength 0.8 \
+  -s 4 \
+  -o spritesheet.png
+```
+
+Generates a 2×2 grid with isometric, side, and top-down views.
+
 **Notes:**
 - LoRA files must be compatible with the model architecture (e.g., Klein 4B LoRAs for `--model klein-4b`)
 - Some LoRAs require specific prompts or activation keywords

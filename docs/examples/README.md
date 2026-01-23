@@ -119,6 +119,33 @@ flux2 i2i "Remove the highlighted object from the scene" \
 - Recommended scale: 1.1
 - Best results with `--transformer-quant bf16`
 
+### Spritesheet LoRA
+
+Using [fal/flux-2-klein-4b-spritesheet-lora](https://huggingface.co/fal/flux-2-klein-4b-spritesheet-lora) to generate 2x2 sprite sheets from objects.
+
+| Input | Output |
+|-------|--------|
+| ![Input](lora_spritesheet/input.png) | ![Output](lora_spritesheet/output.png) |
+
+**Command:**
+```bash
+flux2 i2i "2x2 sprite sheet" \
+  --images input.png \
+  --lora flux-spritesheet-lora.safetensors \
+  --lora-scale 1.1 \
+  --model klein-4b \
+  --transformer-quant bf16 \
+  --strength 0.8 \
+  -s 4 \
+  -o output.png
+```
+
+**Output views:**
+- **Top-Left**: Isometric view (↘)
+- **Top-Right**: Isometric view (↙)
+- **Bottom-Left**: Side profile (←)
+- **Bottom-Right**: Top-down view (↑)
+
 ---
 
 ## Hardware Used
