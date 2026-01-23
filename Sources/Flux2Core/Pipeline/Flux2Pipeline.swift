@@ -70,6 +70,9 @@ public class Flux2Pipeline: @unchecked Sendable {
     /// Model downloader
     private var downloader: Flux2ModelDownloader?
 
+    /// LoRA adapter manager
+    private var loraManager: LoRAManager?
+
     /// Whether models are loaded
     public private(set) var isLoaded: Bool = false
 
@@ -215,11 +218,66 @@ public class Flux2Pipeline: @unchecked Sendable {
         let weights = try Flux2WeightLoader.loadWeights(from: modelPath)
         try Flux2WeightLoader.applyTransformerWeights(weights, to: transformer!)
 
+        // Merge LoRA weights if any are loaded
+        if let loraManager = loraManager, loraManager.count > 0 {
+            Flux2WeightLoader.mergeLoRAWeights(from: loraManager, into: transformer!)
+        }
+
         // Ensure weights are evaluated
         eval(transformer!.parameters())
 
         memoryManager.logMemoryState()
         Flux2Debug.log("Transformer loaded successfully")
+    }
+
+    // MARK: - LoRA Support
+
+    /// Load a LoRA adapter
+    /// - Parameter config: LoRA configuration
+    /// - Returns: Information about the loaded LoRA
+    @discardableResult
+    public func loadLoRA(_ config: LoRAConfig) throws -> LoRAInfo {
+        if loraManager == nil {
+            loraManager = LoRAManager()
+        }
+
+        let info = try loraManager!.loadLoRA(config)
+
+        // Validate compatibility
+        if info.targetModel != .unknown {
+            let expectedModel: LoRAInfo.TargetModel
+            switch model {
+            case .dev: expectedModel = .dev
+            case .klein4B: expectedModel = .klein4B
+            case .klein9B: expectedModel = .klein9B
+            }
+
+            if info.targetModel != expectedModel {
+                Flux2Debug.log("[LoRA] Warning: LoRA was trained for \(info.targetModel.rawValue), but using \(model.rawValue)")
+            }
+        }
+
+        // If transformer is already loaded, merge LoRA weights immediately
+        if let transformer = transformer {
+            Flux2WeightLoader.mergeLoRAWeights(from: loraManager!, into: transformer)
+        }
+
+        return info
+    }
+
+    /// Unload a LoRA by name
+    public func unloadLoRA(name: String) {
+        loraManager?.unloadLoRA(name: name)
+    }
+
+    /// Unload all LoRAs
+    public func unloadAllLoRAs() {
+        loraManager?.unloadAll()
+    }
+
+    /// Whether any LoRAs are loaded
+    public var hasLoRA: Bool {
+        loraManager?.count ?? 0 > 0
     }
 
     /// Load VAE for Phase 2

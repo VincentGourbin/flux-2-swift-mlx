@@ -77,6 +77,12 @@ struct TextToImage: AsyncParsableCommand {
     @Option(name: .long, help: "Save intermediate images at each N steps (e.g., 5 saves every 5 steps)")
     var checkpoint: Int?
 
+    @Option(name: .long, help: "LoRA adapter file (.safetensors) for style or capability adaptation")
+    var lora: String?
+
+    @Option(name: .long, help: "LoRA scale factor (default: 1.0)")
+    var loraScale: Float = 1.0
+
     func run() async throws {
         // Configure debug logging
         if debug {
@@ -148,6 +154,15 @@ struct TextToImage: AsyncParsableCommand {
             interpretImagePaths.append(path)
         }
 
+        // Validate LoRA if specified
+        var loraConfig: LoRAConfig? = nil
+        if let loraPath = lora {
+            guard FileManager.default.fileExists(atPath: loraPath) else {
+                throw ValidationError("LoRA file not found: \(loraPath)")
+            }
+            loraConfig = LoRAConfig(filePath: loraPath, scale: loraScale)
+        }
+
         print("Generating image...")
         print("  Prompt: \"\(prompt)\"")
         if !interpretImagePaths.isEmpty {
@@ -158,6 +173,9 @@ struct TextToImage: AsyncParsableCommand {
         }
         if upsamplePrompt {
             print("  Prompt upsampling: enabled (will enhance prompt with visual details)")
+        }
+        if let loraConfig = loraConfig {
+            print("  LoRA: \(loraConfig.name) (scale: \(loraConfig.scale))")
         }
         print("  Size: \(width)x\(height)")
         print("  Steps: \(actualSteps)")
@@ -172,6 +190,21 @@ struct TextToImage: AsyncParsableCommand {
 
         // Create pipeline
         let pipeline = Flux2Pipeline(model: modelVariant, quantization: quantConfig)
+
+        // Load LoRA if specified
+        if let loraConfig = loraConfig {
+            do {
+                let info = try pipeline.loadLoRA(loraConfig)
+                print("LoRA loaded: \(info.numLayers) layers, rank \(info.rank), \(String(format: "%.1f", info.memorySizeMB)) MB")
+                if info.targetModel != .unknown {
+                    if info.targetModel.rawValue != modelVariant.rawValue {
+                        print("⚠️  Warning: LoRA was trained for \(info.targetModel.rawValue), but using \(modelVariant.rawValue)")
+                    }
+                }
+            } catch {
+                throw ValidationError("Failed to load LoRA: \(error.localizedDescription)")
+            }
+        }
 
         // Check for missing models
         if !pipeline.hasRequiredModels {
@@ -303,6 +336,12 @@ struct ImageToImage: AsyncParsableCommand {
     @Option(name: .long, help: "Transformer quantization: bf16, qint8")
     var transformerQuant: String = "qint8"
 
+    @Option(name: .long, help: "LoRA adapter file (.safetensors) for style or capability adaptation")
+    var lora: String?
+
+    @Option(name: .long, help: "LoRA scale factor (default: 1.0)")
+    var loraScale: Float = 1.0
+
     func run() async throws {
         let startTime = Date()
 
@@ -403,8 +442,33 @@ struct ImageToImage: AsyncParsableCommand {
             }
         }
 
+        // Validate LoRA if specified
+        var loraConfig: LoRAConfig? = nil
+        if let loraPath = lora {
+            guard FileManager.default.fileExists(atPath: loraPath) else {
+                throw ValidationError("LoRA file not found: \(loraPath)")
+            }
+            loraConfig = LoRAConfig(filePath: loraPath, scale: loraScale)
+            print("LoRA: \(loraConfig!.name) (scale: \(loraConfig!.scale))")
+        }
+
         // Create pipeline
         let pipeline = Flux2Pipeline(model: modelVariant, quantization: quantConfig)
+
+        // Load LoRA if specified
+        if let loraConfig = loraConfig {
+            do {
+                let info = try pipeline.loadLoRA(loraConfig)
+                print("LoRA loaded: \(info.numLayers) layers, rank \(info.rank), \(String(format: "%.1f", info.memorySizeMB)) MB")
+                if info.targetModel != .unknown {
+                    if info.targetModel.rawValue != modelVariant.rawValue {
+                        print("⚠️  Warning: LoRA was trained for \(info.targetModel.rawValue), but using \(modelVariant.rawValue)")
+                    }
+                }
+            } catch {
+                throw ValidationError("Failed to load LoRA: \(error.localizedDescription)")
+            }
+        }
 
         // Setup checkpoint directory if needed
         let checkpointDir: String?

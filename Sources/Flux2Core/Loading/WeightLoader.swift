@@ -670,6 +670,79 @@ public class Flux2WeightLoader {
         return (missing.isEmpty, missing)
     }
 
+    // MARK: - LoRA Weight Merging
+
+    /// Merge LoRA weights into a transformer model
+    ///
+    /// This computes `newWeight = originalWeight + scale * (loraB @ loraA)` for each LoRA pair
+    /// and updates the model weights in place.
+    ///
+    /// - Parameters:
+    ///   - loraManager: The LoRA manager containing loaded LoRA weights
+    ///   - model: The transformer model to merge weights into
+    public static func mergeLoRAWeights(
+        from loraManager: LoRAManager,
+        into model: Flux2Transformer2DModel
+    ) {
+        // Get flattened model parameters
+        let flattenedArray = model.parameters().flattened()
+        var flatParameters: [String: MLXArray] = [:]
+        for (key, value) in flattenedArray {
+            flatParameters[key] = value
+        }
+
+        var updates: [String: MLXArray] = [:]
+        var mergedCount = 0
+        var notFoundCount = 0
+
+        Flux2Debug.log("[LoRA] Merging weights into transformer...")
+
+        // Iterate through all LoRA pairs
+        for layerPath in loraManager.loadedLayerPaths {
+            let pairs = loraManager.getLoRAPairs(for: layerPath)
+            guard !pairs.isEmpty else { continue }
+
+            // The layer path needs ".weight" suffix to match model parameters
+            let weightKey = layerPath + ".weight"
+
+            guard let originalWeight = flatParameters[weightKey] else {
+                notFoundCount += 1
+                if notFoundCount <= 10 {
+                    Flux2Debug.log("[LoRA] Warning: No weight found for layer: \(weightKey)")
+                }
+                continue
+            }
+
+            // Start with the original weight
+            var mergedWeight = originalWeight
+
+            // Apply all LoRA pairs for this layer
+            for (scale, loraA, loraB) in pairs {
+                // Compute LoRA delta: scale * (loraB @ loraA)
+                // loraA: [rank, in_features], loraB: [out_features, rank]
+                // Result: [out_features, in_features]
+                let loraDelta = scale * matmul(loraB, loraA)
+
+                // Add to weight
+                mergedWeight = mergedWeight + loraDelta
+            }
+
+            updates[weightKey] = mergedWeight
+            mergedCount += 1
+        }
+
+        if notFoundCount > 10 {
+            Flux2Debug.log("[LoRA] ... and \(notFoundCount - 10) more layers not found")
+        }
+
+        // Apply merged weights to model
+        if !updates.isEmpty {
+            _ = model.update(parameters: ModuleParameters.unflattened(updates))
+            eval(model.parameters())
+            Flux2Debug.log("[LoRA] Merged \(mergedCount) layers (\(notFoundCount) not found)")
+        }
+    }
+
     /// Get summary of loaded weights
     public static func summarizeWeights(_ weights: [String: MLXArray]) {
         var totalParams: Int64 = 0
