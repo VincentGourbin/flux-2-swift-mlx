@@ -45,7 +45,6 @@ struct SettingsView: View {
                 Picker("Diffusion Transformer", selection: $transformerQuantization) {
                     Text("Full Precision (bf16) - ~64GB").tag("bf16")
                     Text("8-bit (qint8) - ~32GB").tag("qint8")
-                    Text("4-bit (qint4) - ~16GB (experimental)").tag("qint4")
                 }
 
                 Text("Higher precision = better image quality")
@@ -85,10 +84,10 @@ struct SettingsView: View {
 
                     PresetButton(
                         title: "Minimal",
-                        subtitle: "~35GB",
+                        subtitle: "~40GB",
                         action: {
                             textQuantization = "4bit"
-                            transformerQuantization = "qint4"
+                            transformerQuantization = "qint8"
                         }
                     )
                 }
@@ -149,7 +148,7 @@ struct SettingsView: View {
                     tip("Close other apps to free RAM before generation")
                     tip("Lower quantization if you experience memory issues")
                     tip("Smaller images use less memory during generation")
-                    tip("qint4 transformer may show some quality degradation")
+                    tip("bf16 requires ~90GB RAM - use qint8 for lower memory")
                 }
                 .font(.caption)
                 .foregroundColor(.secondary)

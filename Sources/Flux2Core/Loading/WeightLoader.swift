@@ -635,7 +635,7 @@ public class Flux2WeightLoader {
     ) throws -> [String: MLXArray] {
         let weights = try loadWeights(from: modelPath)
 
-        // For qint4/qint8, weights may already be quantized in safetensors
+        // For qint8, weights may already be quantized in safetensors
         // If not, we need to quantize them here
         if quantization != .bf16 {
             Flux2Debug.log("Loading \(quantization.rawValue) quantized weights")

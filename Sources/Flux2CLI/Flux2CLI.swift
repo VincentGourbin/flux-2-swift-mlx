@@ -59,7 +59,7 @@ struct TextToImage: AsyncParsableCommand {
     @Option(name: .long, help: "Text encoder quantization: bf16, 8bit, 6bit, 4bit")
     var textQuant: String = "8bit"
 
-    @Option(name: .long, help: "Transformer quantization: bf16, qint8, qint4")
+    @Option(name: .long, help: "Transformer quantization: bf16, qint8")
     var transformerQuant: String = "qint8"
 
     @Flag(name: .long, help: "Enable debug logs (verbose output)")
@@ -112,13 +112,23 @@ struct TextToImage: AsyncParsableCommand {
         }
 
         guard let transformerQuantization = TransformerQuantization(rawValue: transformerQuant) else {
-            throw ValidationError("Invalid transformer quantization: \(transformerQuant). Use bf16, qint8, or qint4")
+            throw ValidationError("Invalid transformer quantization: \(transformerQuant). Use bf16 or qint8")
         }
 
         let quantConfig = Flux2QuantizationConfig(
             textEncoder: textQuantization,
             transformer: transformerQuantization
         )
+
+        // Warn if bf16 with insufficient RAM
+        if transformerQuantization == .bf16 {
+            let systemRAM = ModelRegistry.systemRAMGB
+            if systemRAM < 96 {
+                print("⚠️  Warning: bf16 transformer requires ~90GB RAM, you have \(systemRAM)GB")
+                print("   Consider using --transformer-quant qint8 for lower memory usage")
+                print()
+            }
+        }
 
         if debug {
             print("Configuration:")
@@ -290,7 +300,7 @@ struct ImageToImage: AsyncParsableCommand {
     @Option(name: .long, help: "Text encoder quantization: bf16, 8bit, 6bit, 4bit")
     var textQuant: String = "8bit"
 
-    @Option(name: .long, help: "Transformer quantization: bf16, qint8, qint4")
+    @Option(name: .long, help: "Transformer quantization: bf16, qint8")
     var transformerQuant: String = "qint8"
 
     func run() async throws {
@@ -375,13 +385,23 @@ struct ImageToImage: AsyncParsableCommand {
         }
 
         guard let transformerQuantization = TransformerQuantization(rawValue: transformerQuant) else {
-            throw ValidationError("Invalid transformer quantization: \(transformerQuant). Use: bf16, qint8, qint4")
+            throw ValidationError("Invalid transformer quantization: \(transformerQuant). Use: bf16 or qint8")
         }
 
         let quantConfig = Flux2QuantizationConfig(
             textEncoder: textQuantization,
             transformer: transformerQuantization
         )
+
+        // Warn if bf16 with insufficient RAM
+        if transformerQuantization == .bf16 {
+            let systemRAM = ModelRegistry.systemRAMGB
+            if systemRAM < 96 {
+                print("⚠️  Warning: bf16 transformer requires ~90GB RAM, you have \(systemRAM)GB")
+                print("   Consider using --transformer-quant qint8 for lower memory usage")
+                print()
+            }
+        }
 
         // Create pipeline
         let pipeline = Flux2Pipeline(model: modelVariant, quantization: quantConfig)
@@ -463,7 +483,7 @@ struct Download: AsyncParsableCommand {
     @Option(name: .long, help: "Model to download: dev, klein-4b, klein-9b")
     var model: String = "dev"
 
-    @Option(name: .long, help: "Transformer quantization: bf16, qint8/8bit, qint4")
+    @Option(name: .long, help: "Transformer quantization: bf16, qint8")
     var transformerQuant: String = "qint8"
 
     @Flag(name: .long, help: "Download all model variants")
@@ -511,9 +531,8 @@ struct Download: AsyncParsableCommand {
             switch transformerQuant {
             case "bf16": quant = .bf16
             case "qint8", "8bit": quant = .qint8
-            case "qint4", "4bit": quant = .qint4
             default:
-                throw ValidationError("Invalid transformer quantization: \(transformerQuant). Use bf16, qint8/8bit, or qint4")
+                throw ValidationError("Invalid transformer quantization: \(transformerQuant). Use bf16 or qint8")
             }
 
             let variant = ModelRegistry.TransformerVariant.variant(for: modelVariant, quantization: quant)
@@ -578,7 +597,7 @@ struct Info: ParsableCommand {
         print("  High Quality (~90GB): bf16 text + bf16 transformer")
         print("  Balanced (~60GB): 8bit text + qint8 transformer")
         print("  Memory Efficient (~50GB): 4bit text + qint8 transformer")
-        print("  Minimal (~35GB): 4bit text + qint4 transformer")
+        print("  Minimal (~40GB): 4bit text + qint8 transformer")
         print()
 
         print("Model Status:")

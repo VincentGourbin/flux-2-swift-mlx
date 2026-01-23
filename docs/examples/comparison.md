@@ -113,9 +113,8 @@ All images generated at 1024×1024 with seed=42 for direct comparison.
 
 | Quantization | Memory | Quality |
 |--------------|--------|---------|
-| bf16 | ~64GB | Best |
+| bf16 | ~64GB | Best (requires 96GB+ RAM) |
 | qint8 | ~32GB | Excellent (recommended) |
-| qint4 | ~16GB | Good (experimental) |
 
 ### Flux.2 Klein 4B
 

@@ -33,13 +33,11 @@ public enum MistralQuantization: String, CaseIterable, Codable, Sendable {
 public enum TransformerQuantization: String, CaseIterable, Codable, Sendable {
     case bf16 = "bf16"      // Full precision ~64GB
     case qint8 = "qint8"    // 8-bit ~32GB
-    case qint4 = "qint4"    // 4-bit ~16GB (experimental)
 
     public var estimatedMemoryGB: Int {
         switch self {
         case .bf16: return 64
         case .qint8: return 32
-        case .qint4: return 16
         }
     }
 
@@ -47,7 +45,6 @@ public enum TransformerQuantization: String, CaseIterable, Codable, Sendable {
         switch self {
         case .bf16: return "Full Precision (bf16)"
         case .qint8: return "8-bit (qint8)"
-        case .qint4: return "4-bit (qint4) - Experimental"
         }
     }
 
@@ -55,7 +52,6 @@ public enum TransformerQuantization: String, CaseIterable, Codable, Sendable {
         switch self {
         case .bf16: return 16
         case .qint8: return 8
-        case .qint4: return 4
         }
     }
 
@@ -115,10 +111,10 @@ public struct Flux2QuantizationConfig: Codable, Sendable {
         transformer: .qint8
     )
 
-    /// Minimal preset - requires ~35GB RAM
+    /// Minimal preset - requires ~40GB RAM
     public static let minimal = Flux2QuantizationConfig(
         textEncoder: .mlx4bit,
-        transformer: .qint4
+        transformer: .qint8
     )
 
     /// Default preset (balanced)

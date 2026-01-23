@@ -382,7 +382,6 @@ public class Flux2ModelDownloader: @unchecked Sendable {
 
         let components: [ModelRegistry.ModelComponent] = [
             .transformer(.qint8),
-            .transformer(.qint4),
             .transformer(.bf16),
             .vae(.standard)
         ]
