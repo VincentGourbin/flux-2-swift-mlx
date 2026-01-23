@@ -111,6 +111,72 @@ flux2 t2i "a futuristic city with flying cars and neon lights" \
 
 ---
 
+## Image-to-Image Examples
+
+### Style Transfer: Comic Book
+
+Transform a generated beaver image into comic book style.
+
+**Input:** `beaver_1024.png` (from T2I above)
+
+**Prompt:** `"transform into a comic book style illustration with bold outlines and vibrant colors"`
+
+**Parameters:**
+- Size: 1024×1024
+- Steps: 4
+- Strength: 0.7
+
+| Input | Output (Comic Style) |
+|-------|---------------------|
+| ![Input](klein_9b/beaver_1024.png) | ![Comic](klein_9b_i2i/beaver_comic_style.png) |
+
+**Command:**
+```bash
+flux2 i2i "transform into a comic book style illustration with bold outlines and vibrant colors" \
+  --model klein-9b \
+  --images beaver_1024.png \
+  --strength 0.7 \
+  --steps 4 \
+  -o beaver_comic_style.png
+```
+
+**Time:** 149.2s
+
+---
+
+### Multi-Image Conditioning: Beaver + Hat + Jacket
+
+Combine elements from multiple reference images. This test uses neutral prompts that reference images by position (not by describing their content) to verify the model follows visual references.
+
+**Reference Images:**
+
+| Image 1 (Subject) | Image 2 (Hat) | Image 3 (Jacket) |
+|-------------------|---------------|------------------|
+| ![Beaver](klein_9b/beaver_1024.png) | ![Hat](klein_9b_i2i/hat.png) | ![Jacket](klein_9b_i2i/jacket.png) |
+
+**Prompt:** `"a beaver wearing the hat from image 2 and the jacket from image 3"`
+
+> **Note:** The prompt intentionally does NOT describe the hat color (red) or jacket style (denim blue) to test if the model actually follows the visual references.
+
+**Result:**
+
+![Result](klein_9b_i2i/beaver_hat_jacket.png)
+
+**Command:**
+```bash
+flux2 i2i "a beaver wearing the hat from image 2 and the jacket from image 3" \
+  --model klein-9b \
+  --images beaver_1024.png \
+  --images hat.png \
+  --images jacket.png \
+  --steps 4 \
+  -o beaver_hat_jacket.png
+```
+
+**Time:** 198.8s
+
+---
+
 ## Performance Report (1024x1024)
 
 ```
@@ -208,6 +274,20 @@ flux2 t2i "a beaver building a dam" \
   --model klein-9b \
   --profile \
   -o beaver.png
+
+# Image-to-Image style transfer
+flux2 i2i "transform into comic book style" \
+  --model klein-9b \
+  --images input.png \
+  --strength 0.7 \
+  -o output.png
+
+# Multi-image conditioning (combine elements)
+flux2 i2i "a beaver wearing the hat from image 2" \
+  --model klein-9b \
+  --images beaver.png \
+  --images hat.png \
+  -o beaver_with_hat.png
 ```
 
 ---
