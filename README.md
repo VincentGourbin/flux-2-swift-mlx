@@ -8,6 +8,7 @@ A native Swift implementation of [Flux.2 Dev](https://blackforestlabs.ai/) image
 
 ## Features
 
+### Image Generation (Flux2Core)
 - **Native Swift**: Pure Swift implementation, no Python dependencies at runtime
 - **MLX Acceleration**: Optimized for Apple Silicon (M1/M2/M3/M4) using MLX
 - **Multiple Models**: Dev (32B), Klein 4B, and Klein 9B variants
@@ -16,7 +17,18 @@ A native Swift implementation of [Flux.2 Dev](https://blackforestlabs.ai/) image
 - **Image-to-Image**: Transform images with text prompts and configurable strength
 - **Multi-Image Conditioning**: Combine elements from up to 3 reference images
 - **Prompt Upsampling**: Enhance prompts with Mistral/Qwen3 before generation
-- **CLI Tool**: Full-featured command-line interface for image generation
+- **LoRA Support**: Load and apply LoRA adapters for style transfer
+- **CLI Tool**: Full-featured command-line interface (`Flux2CLI`)
+
+### Text Encoders (FluxTextEncoders)
+- **Mistral Small 3.2 (24B)**: Text encoder for FLUX.2 dev/pro
+- **Qwen3 (4B/8B)**: Text encoder for FLUX.2 Klein
+- **Text Generation**: Streaming text generation with configurable parameters
+- **Interactive Chat**: Multi-turn conversation with chat template support
+- **Vision Analysis**: Image understanding via Pixtral vision encoder (VLM)
+- **FLUX.2 Embeddings**: Extract embeddings compatible with FLUX.2 image generation
+- **CLI Tool**: Complete command-line interface (`FluxEncodersCLI`)
+- **macOS App**: Full-featured SwiftUI application (`FluxEncodersApp`)
 
 ## Requirements
 
@@ -139,7 +151,6 @@ Text encoding uses [Mistral Small 3.2](https://github.com/VincentGourbin/mistral
 
 - **Dev Performance**: Generation takes ~35 min for 1024x1024 images (use Klein for faster results)
 - **Dev Memory**: Requires 64GB+ unified memory (Klein 4B works with 16GB)
-- **No LoRA support**: Adapter loading not yet available
 - **Klein 9B**: Only bf16 available (no quantized variants yet)
 
 ## Roadmap
@@ -152,9 +163,15 @@ See [GitHub Issues](https://github.com/VincentGourbin/flux-2-swift-mlx/issues) f
 - [x] Prompt upsampling
 - [x] Flux.2 Klein 4B (4B, ~26s, Apache 2.0)
 - [x] Flux.2 Klein 9B (9B, ~62s, non-commercial)
+- [x] LoRA adapter support
 - [ ] Performance optimizations
 - [ ] Demo SwiftUI application
-- [ ] LoRA adapter support
+
+## Documentation
+
+- [CLI Documentation](docs/CLI.md) - Command-line interface usage
+- [LoRA Guide](docs/LoRA.md) - LoRA adapter configuration and usage
+- [Text Encoders](docs/TextEncoders.md) - FluxTextEncoders library API and CLI
 
 ## Acknowledgments
 
