@@ -398,6 +398,16 @@ public class Flux2TextEncoder: @unchecked Sendable {
     ///   - upsample: Whether to enhance the prompt before encoding (default: false)
     /// - Returns: Embeddings tensor [1, 512, 15360]
     public func encode(_ prompt: String, upsample: Bool = false) throws -> MLXArray {
+        let (embeddings, _) = try encodeWithPrompt(prompt, upsample: upsample)
+        return embeddings
+    }
+
+    /// Encode a text prompt to Flux.2 embeddings and return the used prompt
+    /// - Parameters:
+    ///   - prompt: Text prompt to encode
+    ///   - upsample: Whether to enhance the prompt before encoding (default: false)
+    /// - Returns: Tuple of (embeddings tensor [1, 512, 15360], used prompt string)
+    public func encodeWithPrompt(_ prompt: String, upsample: Bool = false) throws -> (embeddings: MLXArray, usedPrompt: String) {
         guard FluxTextEncoders.shared.isModelLoaded else {
             throw Flux2Error.modelNotLoaded("Text encoder not loaded")
         }
@@ -420,7 +430,7 @@ public class Flux2TextEncoder: @unchecked Sendable {
 
         Flux2Debug.log("Embeddings shape: \(embeddings.shape)")
 
-        return embeddings
+        return (embeddings: embeddings, usedPrompt: finalPrompt)
     }
 
     // MARK: - Memory Management

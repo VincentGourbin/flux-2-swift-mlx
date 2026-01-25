@@ -114,6 +114,16 @@ public class KleinTextEncoder: @unchecked Sendable {
     ///           Klein 4B: [1, 512, 7680]
     ///           Klein 9B: [1, 512, 12288]
     public func encode(_ prompt: String, upsample: Bool = false) throws -> MLXArray {
+        let (embeddings, _) = try encodeWithPrompt(prompt, upsample: upsample)
+        return embeddings
+    }
+
+    /// Encode a text prompt to Klein embeddings and return the used prompt
+    /// - Parameters:
+    ///   - prompt: Text prompt to encode
+    ///   - upsample: Whether to enhance the prompt before encoding (default: false)
+    /// - Returns: Tuple of (embeddings tensor, used prompt string)
+    public func encodeWithPrompt(_ prompt: String, upsample: Bool = false) throws -> (embeddings: MLXArray, usedPrompt: String) {
         guard FluxTextEncoders.shared.isKleinLoaded else {
             throw Flux2Error.modelNotLoaded("Klein text encoder not loaded")
         }
@@ -136,7 +146,7 @@ public class KleinTextEncoder: @unchecked Sendable {
 
         Flux2Debug.log("Embeddings shape: \(embeddings.shape)")
 
-        return embeddings
+        return (embeddings: embeddings, usedPrompt: finalPrompt)
     }
 
     // MARK: - Memory Management

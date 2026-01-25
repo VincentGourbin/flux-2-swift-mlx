@@ -708,3 +708,128 @@ final class EmpiricalMuTests: XCTestCase {
         XCTAssertNotEqual(mu50, mu20)
     }
 }
+
+// MARK: - Generation Result Tests
+
+final class GenerationResultTests: XCTestCase {
+
+    func testGenerationResultInitialization() {
+        // Create a minimal test image (1x1 pixel)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let context = CGContext(
+            data: nil,
+            width: 1,
+            height: 1,
+            bitsPerComponent: 8,
+            bytesPerRow: 4,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo
+        ), let testImage = context.makeImage() else {
+            XCTFail("Failed to create test image")
+            return
+        }
+
+        let result = Flux2GenerationResult(
+            image: testImage,
+            usedPrompt: "enhanced: a beautiful sunset",
+            wasUpsampled: true,
+            originalPrompt: "a beautiful sunset"
+        )
+
+        XCTAssertEqual(result.usedPrompt, "enhanced: a beautiful sunset")
+        XCTAssertEqual(result.originalPrompt, "a beautiful sunset")
+        XCTAssertTrue(result.wasUpsampled)
+        XCTAssertEqual(result.image.width, 1)
+        XCTAssertEqual(result.image.height, 1)
+    }
+
+    func testGenerationResultNoUpsampling() {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let context = CGContext(
+            data: nil,
+            width: 1,
+            height: 1,
+            bitsPerComponent: 8,
+            bytesPerRow: 4,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo
+        ), let testImage = context.makeImage() else {
+            XCTFail("Failed to create test image")
+            return
+        }
+
+        let prompt = "a cat sitting on a chair"
+        let result = Flux2GenerationResult(
+            image: testImage,
+            usedPrompt: prompt,
+            wasUpsampled: false,
+            originalPrompt: prompt
+        )
+
+        XCTAssertFalse(result.wasUpsampled)
+        XCTAssertEqual(result.usedPrompt, result.originalPrompt)
+    }
+
+    func testGenerationResultPromptDifference() {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let context = CGContext(
+            data: nil,
+            width: 1,
+            height: 1,
+            bitsPerComponent: 8,
+            bytesPerRow: 4,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo
+        ), let testImage = context.makeImage() else {
+            XCTFail("Failed to create test image")
+            return
+        }
+
+        let original = "cat"
+        let enhanced = "A majestic orange tabby cat sitting gracefully on a velvet chair, soft lighting, detailed fur"
+
+        let result = Flux2GenerationResult(
+            image: testImage,
+            usedPrompt: enhanced,
+            wasUpsampled: true,
+            originalPrompt: original
+        )
+
+        XCTAssertTrue(result.wasUpsampled)
+        XCTAssertNotEqual(result.usedPrompt, result.originalPrompt)
+        XCTAssertTrue(result.usedPrompt.count > result.originalPrompt.count)
+    }
+
+    func testGenerationResultSendable() {
+        // Verify Flux2GenerationResult conforms to Sendable
+        // This test ensures the struct can be safely passed across concurrency boundaries
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let context = CGContext(
+            data: nil,
+            width: 1,
+            height: 1,
+            bitsPerComponent: 8,
+            bytesPerRow: 4,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo
+        ), let testImage = context.makeImage() else {
+            XCTFail("Failed to create test image")
+            return
+        }
+
+        let result = Flux2GenerationResult(
+            image: testImage,
+            usedPrompt: "test prompt",
+            wasUpsampled: false,
+            originalPrompt: "test prompt"
+        )
+
+        // If this compiles, the type is Sendable
+        let _: any Sendable = result
+        XCTAssertTrue(true)
+    }
+}

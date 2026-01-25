@@ -32,6 +32,29 @@ public typealias Flux2ProgressCallback = @Sendable (Int, Int) -> Void
 /// Checkpoint callback for saving intermediate images (step, image)
 public typealias Flux2CheckpointCallback = @Sendable (Int, CGImage) -> Void
 
+/// Result of image generation including the image and metadata
+public struct Flux2GenerationResult: Sendable {
+    /// The generated image
+    public let image: CGImage
+
+    /// The prompt that was actually used for generation
+    /// If upsampling was enabled, this contains the enhanced prompt
+    public let usedPrompt: String
+
+    /// Whether the prompt was upsampled/enhanced
+    public let wasUpsampled: Bool
+
+    /// The original prompt before any enhancement
+    public let originalPrompt: String
+
+    public init(image: CGImage, usedPrompt: String, wasUpsampled: Bool, originalPrompt: String) {
+        self.image = image
+        self.usedPrompt = usedPrompt
+        self.wasUpsampled = wasUpsampled
+        self.originalPrompt = originalPrompt
+    }
+}
+
 /// Flux.2 Image Generation Pipeline
 ///
 /// Supports:
@@ -446,7 +469,85 @@ public class Flux2Pipeline: @unchecked Sendable {
         )
     }
 
-    /// Unified generation method
+    // MARK: - Generation with Result (includes used prompt)
+
+    /// Generate an image from text with full result including the used prompt
+    /// - Returns: Flux2GenerationResult containing image and prompt metadata
+    public func generateTextToImageWithResult(
+        prompt: String,
+        interpretImagePaths: [String]? = nil,
+        height: Int = 1024,
+        width: Int = 1024,
+        steps: Int = 50,
+        guidance: Float = 4.0,
+        seed: UInt64? = nil,
+        upsamplePrompt: Bool = false,
+        checkpointInterval: Int? = nil,
+        onProgress: Flux2ProgressCallback? = nil,
+        onCheckpoint: Flux2CheckpointCallback? = nil
+    ) async throws -> Flux2GenerationResult {
+        try await generateWithResult(
+            mode: .textToImage,
+            prompt: prompt,
+            interpretImagePaths: interpretImagePaths,
+            height: height,
+            width: width,
+            steps: steps,
+            guidance: guidance,
+            seed: seed,
+            upsamplePrompt: upsamplePrompt,
+            checkpointInterval: checkpointInterval,
+            onProgress: onProgress,
+            onCheckpoint: onCheckpoint
+        )
+    }
+
+    /// Generate an image from reference images with full result including the used prompt
+    /// - Returns: Flux2GenerationResult containing image and prompt metadata
+    public func generateImageToImageWithResult(
+        prompt: String,
+        images: [CGImage],
+        interpretImagePaths: [String]? = nil,
+        height: Int? = nil,
+        width: Int? = nil,
+        steps: Int = 50,
+        guidance: Float = 4.0,
+        seed: UInt64? = nil,
+        strength: Float = 0.8,
+        upsamplePrompt: Bool = false,
+        checkpointInterval: Int? = nil,
+        onProgress: Flux2ProgressCallback? = nil,
+        onCheckpoint: Flux2CheckpointCallback? = nil
+    ) async throws -> Flux2GenerationResult {
+        guard !images.isEmpty && images.count <= 3 else {
+            throw Flux2Error.invalidConfiguration("Provide 1-3 reference images")
+        }
+
+        guard strength > 0.0 && strength <= 1.0 else {
+            throw Flux2Error.invalidConfiguration("Strength must be between 0.0 and 1.0")
+        }
+
+        // Infer dimensions from first image if not provided
+        let targetHeight = height ?? images[0].height
+        let targetWidth = width ?? images[0].width
+
+        return try await generateWithResult(
+            mode: .imageToImage(images: images, strength: strength),
+            prompt: prompt,
+            interpretImagePaths: interpretImagePaths,
+            height: targetHeight,
+            width: targetWidth,
+            steps: steps,
+            guidance: guidance,
+            seed: seed,
+            upsamplePrompt: upsamplePrompt,
+            checkpointInterval: checkpointInterval,
+            onProgress: onProgress,
+            onCheckpoint: onCheckpoint
+        )
+    }
+
+    /// Unified generation method (backward compatible - returns just the image)
     public func generate(
         mode: Flux2GenerationMode,
         prompt: String,
@@ -461,6 +562,38 @@ public class Flux2Pipeline: @unchecked Sendable {
         onProgress: Flux2ProgressCallback?,
         onCheckpoint: Flux2CheckpointCallback?
     ) async throws -> CGImage {
+        let result = try await generateWithResult(
+            mode: mode,
+            prompt: prompt,
+            interpretImagePaths: interpretImagePaths,
+            height: height,
+            width: width,
+            steps: steps,
+            guidance: guidance,
+            seed: seed,
+            upsamplePrompt: upsamplePrompt,
+            checkpointInterval: checkpointInterval,
+            onProgress: onProgress,
+            onCheckpoint: onCheckpoint
+        )
+        return result.image
+    }
+
+    /// Unified generation method with full result including used prompt
+    public func generateWithResult(
+        mode: Flux2GenerationMode,
+        prompt: String,
+        interpretImagePaths: [String]? = nil,
+        height: Int,
+        width: Int,
+        steps: Int,
+        guidance: Float,
+        seed: UInt64?,
+        upsamplePrompt: Bool,
+        checkpointInterval: Int?,
+        onProgress: Flux2ProgressCallback?,
+        onCheckpoint: Flux2CheckpointCallback?
+    ) async throws -> Flux2GenerationResult {
         // Validate dimensions
         let (validHeight, validWidth) = LatentUtils.validateDimensions(
             height: height,
@@ -571,16 +704,25 @@ public class Flux2Pipeline: @unchecked Sendable {
 
         profiler.start("2. Text Encoding")
         // Use vision-based upsampling for I2I if enabled (Dev only)
+        // Track the final prompt used for generation
         let textEmbeddings: MLXArray
+        var finalUsedPrompt: String = enrichedPrompt
+        var wasPromptUpsampled: Bool = false
+
         switch model {
         case .dev:
             if upsamplePrompt, case .imageToImage(let images, _) = mode {
                 // Use VLM to analyze reference images and enhance prompt
                 Flux2Debug.log("Using vision-based prompt upsampling for I2I with \(images.count) image(s)")
                 let enhancedPrompt = try await textEncoder!.upsamplePromptWithImages(enrichedPrompt, images: images)
+                finalUsedPrompt = enhancedPrompt
+                wasPromptUpsampled = true
                 textEmbeddings = try textEncoder!.encode(enhancedPrompt, upsample: false)
             } else {
-                textEmbeddings = try textEncoder!.encode(enrichedPrompt, upsample: upsamplePrompt)
+                let (embeddings, usedPrompt) = try textEncoder!.encodeWithPrompt(enrichedPrompt, upsample: upsamplePrompt)
+                textEmbeddings = embeddings
+                finalUsedPrompt = usedPrompt
+                wasPromptUpsampled = upsamplePrompt && (usedPrompt != enrichedPrompt)
             }
 
         case .klein4B, .klein9B:
@@ -602,6 +744,8 @@ public class Flux2Pipeline: @unchecked Sendable {
                 // Step 3: Upsample prompt with images using Mistral VLM
                 Flux2Debug.log("Upsampling prompt with \(images.count) reference image(s)...")
                 let enhancedPrompt = try await tempMistralEncoder.upsamplePromptWithImages(enrichedPrompt, images: images)
+                finalUsedPrompt = enhancedPrompt
+                wasPromptUpsampled = true
 
                 // Step 4: Unload Mistral to free memory
                 Flux2Debug.log("Unloading Mistral VLM...")
@@ -616,7 +760,10 @@ public class Flux2Pipeline: @unchecked Sendable {
                 textEmbeddings = try kleinEncoder!.encode(enhancedPrompt, upsample: false)
             } else {
                 // Standard Klein encoding (text-only upsampling if enabled)
-                textEmbeddings = try kleinEncoder!.encode(enrichedPrompt, upsample: upsamplePrompt)
+                let (embeddings, usedPrompt) = try kleinEncoder!.encodeWithPrompt(enrichedPrompt, upsample: upsamplePrompt)
+                textEmbeddings = embeddings
+                finalUsedPrompt = usedPrompt
+                wasPromptUpsampled = upsamplePrompt && (usedPrompt != enrichedPrompt)
             }
         }
         eval(textEmbeddings)
@@ -826,7 +973,12 @@ public class Flux2Pipeline: @unchecked Sendable {
                 print(profiler.generateReport())
             }
 
-            return image
+            return Flux2GenerationResult(
+                image: image,
+                usedPrompt: finalUsedPrompt,
+                wasUpsampled: wasPromptUpsampled,
+                originalPrompt: prompt
+            )
         }
 
         // === TEXT-TO-IMAGE PATH (I2I returns earlier) ===
@@ -987,7 +1139,12 @@ public class Flux2Pipeline: @unchecked Sendable {
             print(profiler.generateReport())
         }
 
-        return image
+        return Flux2GenerationResult(
+            image: image,
+            usedPrompt: finalUsedPrompt,
+            wasUpsampled: wasPromptUpsampled,
+            originalPrompt: prompt
+        )
     }
 
     // MARK: - Private Methods
