@@ -70,6 +70,12 @@ public class Flux2Pipeline: @unchecked Sendable {
     /// Model downloader
     private var downloader: Flux2ModelDownloader?
 
+    /// LoRA adapter manager
+    private var loraManager: LoRAManager?
+
+    /// Active LoRA scheduler overrides (from loaded LoRA config)
+    private var loraSchedulerOverrides: SchedulerOverrides?
+
     /// Whether models are loaded
     public private(set) var isLoaded: Bool = false
 
@@ -215,11 +221,92 @@ public class Flux2Pipeline: @unchecked Sendable {
         let weights = try Flux2WeightLoader.loadWeights(from: modelPath)
         try Flux2WeightLoader.applyTransformerWeights(weights, to: transformer!)
 
+        // Merge LoRA weights if any are loaded
+        if let loraManager = loraManager, loraManager.count > 0 {
+            Flux2WeightLoader.mergeLoRAWeights(from: loraManager, into: transformer!)
+        }
+
         // Ensure weights are evaluated
         eval(transformer!.parameters())
 
         memoryManager.logMemoryState()
         Flux2Debug.log("Transformer loaded successfully")
+    }
+
+    // MARK: - LoRA Support
+
+    /// Load a LoRA adapter
+    /// - Parameter config: LoRA configuration
+    /// - Returns: Information about the loaded LoRA
+    @discardableResult
+    public func loadLoRA(_ config: LoRAConfig) throws -> LoRAInfo {
+        if loraManager == nil {
+            loraManager = LoRAManager()
+        }
+
+        let info = try loraManager!.loadLoRA(config)
+
+        // Store scheduler overrides if present
+        if let overrides = config.schedulerOverrides, overrides.hasOverrides {
+            loraSchedulerOverrides = overrides
+            Flux2Debug.log("[LoRA] Scheduler overrides detected:")
+            if let sigmas = overrides.customSigmas {
+                Flux2Debug.log("  - Custom sigmas: \(sigmas.count) values")
+            }
+            if let steps = overrides.numSteps {
+                Flux2Debug.log("  - Recommended steps: \(steps)")
+            }
+            if let guidance = overrides.guidance {
+                Flux2Debug.log("  - Recommended guidance: \(guidance)")
+            }
+        }
+
+        // Validate compatibility
+        if info.targetModel != .unknown {
+            let expectedModel: LoRAInfo.TargetModel
+            switch model {
+            case .dev: expectedModel = .dev
+            case .klein4B: expectedModel = .klein4B
+            case .klein9B: expectedModel = .klein9B
+            }
+
+            if info.targetModel != expectedModel {
+                Flux2Debug.log("[LoRA] Warning: LoRA was trained for \(info.targetModel.rawValue), but using \(model.rawValue)")
+            }
+        }
+
+        // If transformer is already loaded, merge LoRA weights immediately
+        if let transformer = transformer {
+            Flux2WeightLoader.mergeLoRAWeights(from: loraManager!, into: transformer)
+        }
+
+        return info
+    }
+
+    /// Unload a LoRA by name
+    public func unloadLoRA(name: String) {
+        loraManager?.unloadLoRA(name: name)
+        // Clear overrides if no more LoRAs are loaded
+        if loraManager?.count == 0 {
+            loraSchedulerOverrides = nil
+        }
+    }
+
+    /// Unload all LoRAs
+    public func unloadAllLoRAs() {
+        loraManager?.unloadAll()
+        loraSchedulerOverrides = nil
+    }
+
+    /// Whether any LoRAs are loaded
+    public var hasLoRA: Bool {
+        loraManager?.count ?? 0 > 0
+    }
+
+    /// Get active LoRA scheduler overrides (if any)
+    /// The CLI can use this to apply recommended settings
+    public var activeSchedulerOverrides: SchedulerOverrides? {
+        loraSchedulerOverrides
     }
 
     /// Load VAE for Phase 2
@@ -628,7 +715,12 @@ public class Flux2Pipeline: @unchecked Sendable {
             Flux2Debug.log("Combined image IDs: \(combinedImageIds.shape)")
 
             // Setup scheduler for FULL denoising (no timestep skip in Flux.2 I2I)
-            scheduler.setTimesteps(numInferenceSteps: steps, imageSeqLen: outputSeqLen, strength: 1.0)
+            // Check for custom sigmas from LoRA (e.g., Turbo LoRAs)
+            if let customSigmas = loraSchedulerOverrides?.customSigmas {
+                scheduler.setCustomSigmas(customSigmas)
+            } else {
+                scheduler.setTimesteps(numInferenceSteps: steps, imageSeqLen: outputSeqLen, strength: 1.0)
+            }
 
             let effectiveSteps = scheduler.sigmas.count - 1
             Flux2Debug.log("Starting I2I denoising loop (\(effectiveSteps) steps)...")
@@ -762,7 +854,12 @@ public class Flux2Pipeline: @unchecked Sendable {
         Flux2Debug.log("Image sequence length: \(imageSeqLen)")
 
         // Setup scheduler (T2I always uses strength 1.0)
-        scheduler.setTimesteps(numInferenceSteps: steps, imageSeqLen: imageSeqLen, strength: 1.0)
+        // Check for custom sigmas from LoRA (e.g., Turbo LoRAs)
+        if let customSigmas = loraSchedulerOverrides?.customSigmas {
+            scheduler.setCustomSigmas(customSigmas)
+        } else {
+            scheduler.setTimesteps(numInferenceSteps: steps, imageSeqLen: imageSeqLen, strength: 1.0)
+        }
 
         let effectiveSteps = scheduler.sigmas.count - 1
         Flux2Debug.log("Starting denoising loop (\(effectiveSteps) steps)...")
@@ -975,7 +1072,9 @@ public class Flux2Pipeline: @unchecked Sendable {
             let processed = preprocessImageForVAE(image, targetHeight: targetHeight, targetWidth: targetWidth)
 
             // Encode with VAE -> [1, 32, H/8, W/8]
-            let rawLatents = vae.encode(processed)
+            // IMPORTANT: Use samplePosterior=false to get deterministic mean (like diffusers argmax)
+            // This preserves color information better than sampling with noise
+            let rawLatents = vae.encode(processed, samplePosterior: false)
 
             // Patchify: [1, 32, H/8, W/8] -> [1, 128, H/16, W/16]
             var patchified = LatentUtils.packLatentsToPatchified(rawLatents)

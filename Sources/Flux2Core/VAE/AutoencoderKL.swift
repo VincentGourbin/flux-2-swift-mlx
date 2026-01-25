@@ -85,8 +85,9 @@ public class AutoencoderKLFlux2: Module, @unchecked Sendable {
         // and encode produces unpatchified latents (32 channels).
         // Normalization is handled later in the pipeline after patchifying.
 
-        // Scale
-        latent = latent * scalingFactor
+        // NOTE: Flux.2 VAE does NOT apply scaling factor during encode!
+        // (Standard SD VAE uses scalingFactor=0.18215, but Flux.2 does not)
+        // See: diffusers AutoencoderKL.encode() for Flux.2
 
         return latent
     }

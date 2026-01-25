@@ -402,6 +402,38 @@ flux2 download --transformer-quant bf16
 
 ---
 
+## LoRA Adapters
+
+Apply LoRA (Low-Rank Adaptation) weights to customize model behavior for specific tasks.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--lora` | none | Path to LoRA safetensors file |
+| `--lora-scale` | `1.0` | LoRA scale factor (typically 0.5-1.5) |
+| `--lora-config` | none | JSON config file (for advanced LoRAs with scheduler overrides) |
+
+**Quick example:**
+```bash
+flux2 i2i "2x2 sprite sheet" \
+  --images object.png \
+  --lora flux-spritesheet-lora.safetensors \
+  --lora-scale 1.1 \
+  --model klein-4b \
+  -o spritesheet.png
+```
+
+**With JSON config (for Turbo LoRAs):**
+```bash
+flux2 t2i "a mountain landscape" \
+  --lora-config turbo-lora.json \
+  --model dev \
+  -o output.png
+```
+
+For complete LoRA documentation, examples, and troubleshooting, see **[LoRA.md](LoRA.md)**.
+
+---
+
 ## System Information
 
 Show system information and model status.

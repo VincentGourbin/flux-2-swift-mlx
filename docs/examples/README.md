@@ -88,6 +88,22 @@ Klein 9B offers better quality than Klein 4B while remaining much faster than De
 
 ---
 
+## LoRA Adapters
+
+LoRA (Low-Rank Adaptation) allows fine-tuning models for specific tasks without modifying the base weights.
+
+| LoRA | Model | Example |
+|------|-------|---------|
+| **[Object Removal](https://huggingface.co/fal/flux-2-klein-4B-object-remove-lora)** | Klein 4B | ![Object Removal](lora_object_removal/output.png) |
+| **[Spritesheet](https://huggingface.co/fal/flux-2-klein-4b-spritesheet-lora)** | Klein 4B | ![Spritesheet](lora_spritesheet/output.png) |
+| **[h4rd8are](https://huggingface.co/siraxe/h4rd8are_klein9b)** | Klein 9B | ![h4rd8are](lora_h4rd8are/output.png) |
+| **[Multi-Angles](https://huggingface.co/lovis93/Flux-2-Multi-Angles-LoRA-v2)** | Dev | ![Multi-Angles](lora_multi_angles/output.png) |
+| **[Turbo 8-Step](https://huggingface.co/fal/FLUX.2-dev-Turbo)** | Dev | ![Turbo](lora_turbo/output.png) |
+
+For complete LoRA documentation, usage examples, and troubleshooting, see **[LoRA.md](../LoRA.md)**.
+
+---
+
 ## Hardware Used
 
 All examples generated on:
