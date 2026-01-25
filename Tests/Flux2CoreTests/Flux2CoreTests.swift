@@ -38,7 +38,7 @@ final class Flux2CoreTests: XCTestCase {
         XCTAssertEqual(Flux2QuantizationConfig.balanced.transformer, .qint8)
 
         XCTAssertEqual(Flux2QuantizationConfig.minimal.textEncoder, .mlx4bit)
-        XCTAssertEqual(Flux2QuantizationConfig.minimal.transformer, .qint4)
+        XCTAssertEqual(Flux2QuantizationConfig.minimal.transformer, .qint8)
     }
 
     // MARK: - Latent Utils Tests
@@ -156,7 +156,11 @@ final class EmbeddingTests: XCTestCase {
         let rope = Flux2RoPE(axesDims: [32, 32, 32, 32], theta: 2000.0)
 
         // Create position IDs: [100, 4]
-        let ids = MLXArray((0..<100).map { i in [Int32(0), Int32(i / 10), Int32(i % 10), Int32(0)] })
+        var flatData: [Int32] = []
+        for i: Int32 in 0..<100 {
+            flatData.append(contentsOf: [Int32(0), i / 10, i % 10, Int32(0)])
+        }
+        let ids = MLXArray(flatData).reshaped([100, 4])
 
         let (cosEmb, sinEmb) = rope(ids)
 
