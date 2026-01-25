@@ -5,6 +5,7 @@
 
 import SwiftUI
 import FluxTextEncoders
+import Flux2Core
 import MLX
 
 struct ContentView: View {
@@ -19,30 +20,39 @@ struct ContentView: View {
                 get: { selectedTab },
                 set: { selectedTab = $0 }
             )) {
-                Section("Mistral 24B") {
+                Section("Text Encoders") {
                     Label("Chat", systemImage: "bubble.left.and.bubble.right")
                         .tag(0)
                     Label("Generate", systemImage: "text.cursor")
                         .tag(1)
                     Label("Vision", systemImage: "eye")
                         .tag(2)
+                    Label("Qwen3 Chat", systemImage: "message.fill")
+                        .tag(3)
+                        .foregroundStyle(.orange)
                 }
 
-                Section("Qwen3") {
-                    Label("Chat", systemImage: "message.fill")
+                Section("Image Generation") {
+                    Label("Text to Image", systemImage: "photo.badge.plus")
+                        .tag(4)
+                        .foregroundStyle(.purple)
+                    Label("Image to Image", systemImage: "photo.on.rectangle.angled")
                         .tag(5)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.purple)
                 }
 
                 Section("Tools") {
                     Label("FLUX.2 Tools", systemImage: "cube.transparent")
-                        .tag(3)
+                        .tag(6)
+                }
+
+                Section("Settings") {
                     Label("Models", systemImage: "square.stack.3d.down.right")
-                        .tag(4)
+                        .tag(7)
                 }
             }
             .listStyle(.sidebar)
-            .frame(minWidth: 180)
+            .frame(minWidth: 200)
 
         } detail: {
             // Main content
@@ -63,11 +73,15 @@ struct ContentView: View {
                     case 2:
                         VisionView()
                     case 3:
-                        FluxToolsView()
-                    case 4:
-                        ModelsManagementView()
-                    case 5:
                         Qwen3ChatView()
+                    case 4:
+                        TextToImageView()
+                    case 5:
+                        ImageToImageView()
+                    case 6:
+                        FluxToolsView()
+                    case 7:
+                        ModelsManagementView()
                     default:
                         ChatView(viewModel: chatViewModel)
                     }
@@ -88,17 +102,25 @@ struct ModelStatusBar: View {
 
     /// Is this a Qwen3-focused tab?
     private var isQwen3Tab: Bool {
-        selectedTab == 5  // Qwen3 Chat
+        selectedTab == 3  // Qwen3 Chat
+    }
+
+    /// Is this an Image Generation tab?
+    private var isImageGenerationTab: Bool {
+        selectedTab == 4 || selectedTab == 5  // T2I or I2I
     }
 
     /// Is this a Tools tab (shows both models)?
     private var isToolsTab: Bool {
-        selectedTab == 3 || selectedTab == 4  // FLUX.2 Tools or Models
+        selectedTab == 6 || selectedTab == 7  // FLUX.2 Tools or Models
     }
 
     var body: some View {
         HStack {
-            if isQwen3Tab {
+            if isImageGenerationTab {
+                // === IMAGE GENERATION STATUS BAR ===
+                imageGenerationStatusBar
+            } else if isQwen3Tab {
                 // === QWEN3 STATUS BAR ===
                 qwen3StatusBar
             } else if isToolsTab {
@@ -111,7 +133,11 @@ struct ModelStatusBar: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
-        .background(isQwen3Tab ? Color.orange.opacity(0.05) : Color(NSColor.controlBackgroundColor))
+        .background(
+            isImageGenerationTab ? Color.purple.opacity(0.05) :
+            isQwen3Tab ? Color.orange.opacity(0.05) :
+            Color(NSColor.controlBackgroundColor)
+        )
         .onAppear {
             FluxProfiler.shared.isEnabled = detailedProfiling
         }
@@ -357,6 +383,70 @@ struct ModelStatusBar: View {
         Text("Manage models in Models tab")
             .font(.caption)
             .foregroundStyle(.secondary)
+    }
+
+    // MARK: - Image Generation Status Bar
+
+    @ViewBuilder
+    private var imageGenerationStatusBar: some View {
+        // Diffusion models status
+        HStack(spacing: 4) {
+            Image(systemName: "photo.stack.fill")
+                .foregroundStyle(.purple)
+            Text("Image Generation")
+                .font(.caption.bold())
+                .foregroundStyle(.purple)
+        }
+
+        Divider()
+            .frame(height: 16)
+            .padding(.horizontal, 8)
+
+        // Transformer status summary
+        let downloadedCount = modelManager.downloadedTransformers.count
+        let totalCount = ModelRegistry.TransformerVariant.allCases.count
+        HStack(spacing: 4) {
+            Circle()
+                .fill(downloadedCount > 0 ? Color.green : Color.gray)
+                .frame(width: 6, height: 6)
+            Text("Transformers: \(downloadedCount)/\(totalCount)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
+        // VAE status
+        HStack(spacing: 4) {
+            Circle()
+                .fill(modelManager.isVAEDownloaded ? Color.green : Color.gray)
+                .frame(width: 6, height: 6)
+            Text("VAE")
+                .font(.caption)
+                .foregroundStyle(modelManager.isVAEDownloaded ? .primary : .secondary)
+        }
+
+        Spacer()
+
+        // Memory info
+        HStack(spacing: 8) {
+            Text("MLX: \(ModelManager.formatBytes(modelManager.memoryStats.active))")
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+
+            if modelManager.memoryStats.cache > 0 {
+                Button(action: { modelManager.clearCache() }) {
+                    Label("Clear \(ModelManager.formatBytes(modelManager.memoryStats.cache))", systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            }
+        }
+
+        // Link to Models tab
+        Button(action: { /* Navigate to models tab - handled by parent */ }) {
+            Text("Manage Models")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
     }
 
     // MARK: - Helpers
@@ -1861,6 +1951,12 @@ struct ModelsManagementView: View {
                 }
                 .padding(.bottom)
                 .background(Color.orange.opacity(0.05))
+
+                Divider()
+
+                // ===== DIFFUSION MODELS SECTION =====
+                DiffusionModelsSection()
+                    .environmentObject(modelManager)
             }
         }
         .alert("Delete Model", isPresented: $showDeleteConfirmation, presenting: modelToDelete) { model in
@@ -2101,6 +2197,215 @@ struct AvailableQwen3ModelCard: View {
         .frame(width: 160)
         .background(Color.orange.opacity(0.1))
         .cornerRadius(8)
+    }
+}
+
+// MARK: - Diffusion Models Section
+
+struct DiffusionModelsSection: View {
+    @EnvironmentObject var modelManager: ModelManager
+    @State private var transformerToDelete: ModelRegistry.TransformerVariant?
+    @State private var showDeleteAlert = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("Diffusion Models (Flux2Core)", systemImage: "photo.stack.fill")
+                    .font(.headline)
+                    .foregroundStyle(.purple)
+
+                Spacer()
+
+                Button(action: {
+                    modelManager.refreshDownloadedDiffusionModels()
+                }) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help("Refresh")
+            }
+            .padding(.horizontal)
+            .padding(.top)
+
+            Text("Transformer and VAE models for image generation")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal)
+
+            // Transformers grouped by model type
+            TransformerSection(
+                title: "Flux.2 Dev (32B)",
+                variants: [.bf16, .qint8],
+                transformerToDelete: $transformerToDelete,
+                showDeleteAlert: $showDeleteAlert
+            )
+            .environmentObject(modelManager)
+
+            TransformerSection(
+                title: "Flux.2 Klein 4B",
+                variants: [.klein4B_bf16, .klein4B_8bit],
+                transformerToDelete: $transformerToDelete,
+                showDeleteAlert: $showDeleteAlert
+            )
+            .environmentObject(modelManager)
+
+            TransformerSection(
+                title: "Flux.2 Klein 9B",
+                variants: [.klein9B_bf16],
+                transformerToDelete: $transformerToDelete,
+                showDeleteAlert: $showDeleteAlert
+            )
+            .environmentObject(modelManager)
+
+            // VAE Section
+            VAESection()
+                .environmentObject(modelManager)
+        }
+        .padding(.bottom)
+        .background(Color.purple.opacity(0.05))
+        .alert("Delete Transformer", isPresented: $showDeleteAlert, presenting: transformerToDelete) { variant in
+            Button("Cancel", role: .cancel) { }
+            Button("Delete", role: .destructive) {
+                try? modelManager.deleteTransformer(variant)
+            }
+        } message: { variant in
+            let info = modelManager.transformerDisplayInfo(variant)
+            Text("Are you sure you want to delete \(info.name)? This cannot be undone.")
+        }
+    }
+}
+
+struct TransformerSection: View {
+    @EnvironmentObject var modelManager: ModelManager
+    let title: String
+    let variants: [ModelRegistry.TransformerVariant]
+    @Binding var transformerToDelete: ModelRegistry.TransformerVariant?
+    @Binding var showDeleteAlert: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.subheadline.bold())
+                .foregroundStyle(.secondary)
+                .padding(.horizontal)
+
+            ForEach(variants, id: \.self) { variant in
+                let info = modelManager.transformerDisplayInfo(variant)
+                let isDownloaded = modelManager.isTransformerDownloaded(variant)
+                let size = modelManager.transformerSizes[variant.rawValue]
+
+                HStack {
+                    // Status indicator
+                    Circle()
+                        .fill(isDownloaded ? Color.green : Color.gray.opacity(0.3))
+                        .frame(width: 8, height: 8)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(info.name)
+                            .font(.caption.bold())
+                        HStack(spacing: 4) {
+                            Text("~\(info.size)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            if let size = size {
+                                Text("(\(ModelManager.formatBytes(Int(size))))")
+                                    .font(.caption2)
+                                    .foregroundStyle(.blue)
+                            }
+                        }
+                    }
+
+                    Spacer()
+
+                    if isDownloaded {
+                        Button(action: {
+                            transformerToDelete = variant
+                            showDeleteAlert = true
+                        }) {
+                            Image(systemName: "trash")
+                                .foregroundStyle(.red)
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Button(action: {
+                            Task { await modelManager.downloadTransformer(variant) }
+                        }) {
+                            Label("Download", systemImage: "arrow.down.circle")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(modelManager.isDownloading)
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 4)
+            }
+        }
+    }
+}
+
+struct VAESection: View {
+    @EnvironmentObject var modelManager: ModelManager
+    @State private var showDeleteAlert = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("VAE")
+                .font(.subheadline.bold())
+                .foregroundStyle(.secondary)
+                .padding(.horizontal)
+
+            HStack {
+                Circle()
+                    .fill(modelManager.isVAEDownloaded ? Color.green : Color.gray.opacity(0.3))
+                    .frame(width: 8, height: 8)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Standard VAE")
+                        .font(.caption.bold())
+                    HStack(spacing: 4) {
+                        Text("~3GB")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        if modelManager.isVAEDownloaded && modelManager.vaeSize > 0 {
+                            Text("(\(ModelManager.formatBytes(Int(modelManager.vaeSize))))")
+                                .font(.caption2)
+                                .foregroundStyle(.blue)
+                        }
+                    }
+                }
+
+                Spacer()
+
+                if modelManager.isVAEDownloaded {
+                    Button(action: { showDeleteAlert = true }) {
+                        Image(systemName: "trash")
+                            .foregroundStyle(.red)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Button(action: {
+                        Task { await modelManager.downloadVAE() }
+                    }) {
+                        Label("Download", systemImage: "arrow.down.circle")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(modelManager.isDownloading)
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 4)
+        }
+        .alert("Delete VAE", isPresented: $showDeleteAlert) {
+            Button("Cancel", role: .cancel) { }
+            Button("Delete", role: .destructive) {
+                try? modelManager.deleteVAE()
+            }
+        } message: {
+            Text("Are you sure you want to delete the VAE? This cannot be undone.")
+        }
     }
 }
 

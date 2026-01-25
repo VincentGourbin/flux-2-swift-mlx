@@ -651,7 +651,6 @@ public class Flux2Pipeline: @unchecked Sendable {
         // Generate initial latents in PATCHIFIED format [B, 128, H/16, W/16]
         // This is the format expected by the BatchNorm normalization
         var patchifiedLatents: MLXArray
-        var i2iStrength: Float = 1.0  // Default for T2I (full denoising)
 
         switch mode {
         case .textToImage:
@@ -663,8 +662,7 @@ public class Flux2Pipeline: @unchecked Sendable {
             Flux2Debug.log("Generated patchified latents: \(patchifiedLatents.shape)")
 
         case .imageToImage(let images, let strength):
-            i2iStrength = strength
-            _ = strength  // Note: Flux.2 doesn't use strength like SD - see docs
+            _ = strength  // Note: Flux.2 doesn't use strength like SD - it uses conditioning mode
 
             // === FLUX.2 IMAGE-TO-IMAGE MODE ===
             // Flux.2 uses CONDITIONING mode for all I2I:
@@ -771,28 +769,24 @@ public class Flux2Pipeline: @unchecked Sendable {
                 if let interval = checkpointInterval,
                    let checkpointCallback = onCheckpoint,
                    (stepIdx + 1) % interval == 0 {
-                    do {
-                        var checkpointPatchified = LatentUtils.unpackSequenceToPatchified(
-                            packedOutputLatents,
-                            height: validHeight,
-                            width: validWidth
-                        )
-                        checkpointPatchified = LatentUtils.denormalizeLatentsWithBatchNorm(
-                            checkpointPatchified,
-                            runningMean: vae!.batchNormRunningMean,
-                            runningVar: vae!.batchNormRunningVar
-                        )
-                        let checkpointLatents = LatentUtils.unpatchifyLatents(checkpointPatchified)
-                        eval(checkpointLatents)
+                    var checkpointPatchified = LatentUtils.unpackSequenceToPatchified(
+                        packedOutputLatents,
+                        height: validHeight,
+                        width: validWidth
+                    )
+                    checkpointPatchified = LatentUtils.denormalizeLatentsWithBatchNorm(
+                        checkpointPatchified,
+                        runningMean: vae!.batchNormRunningMean,
+                        runningVar: vae!.batchNormRunningVar
+                    )
+                    let checkpointLatents = LatentUtils.unpatchifyLatents(checkpointPatchified)
+                    eval(checkpointLatents)
 
-                        let checkpointDecoded = vae!.decode(checkpointLatents)
-                        eval(checkpointDecoded)
+                    let checkpointDecoded = vae!.decode(checkpointLatents)
+                    eval(checkpointDecoded)
 
-                        if let checkpointImage = postprocessVAEOutput(checkpointDecoded) {
-                            checkpointCallback(stepIdx + 1, checkpointImage)
-                        }
-                    } catch {
-                        Flux2Debug.log("Checkpoint error at step \(stepIdx + 1): \(error)")
+                    if let checkpointImage = postprocessVAEOutput(checkpointDecoded) {
+                        checkpointCallback(stepIdx + 1, checkpointImage)
                     }
                 }
 
@@ -912,32 +906,28 @@ public class Flux2Pipeline: @unchecked Sendable {
                (stepIdx + 1) % interval == 0 {
                 Flux2Debug.verbose("Generating checkpoint at step \(stepIdx + 1)...")
 
-                do {
-                    // Decode current latents to image
-                    var checkpointPatchified = LatentUtils.unpackSequenceToPatchified(
-                        packedLatents,
-                        height: validHeight,
-                        width: validWidth
-                    )
-                    checkpointPatchified = LatentUtils.denormalizeLatentsWithBatchNorm(
-                        checkpointPatchified,
-                        runningMean: vae!.batchNormRunningMean,
-                        runningVar: vae!.batchNormRunningVar
-                    )
-                    let checkpointLatents = LatentUtils.unpatchifyLatents(checkpointPatchified)
-                    eval(checkpointLatents)
+                // Decode current latents to image
+                var checkpointPatchified = LatentUtils.unpackSequenceToPatchified(
+                    packedLatents,
+                    height: validHeight,
+                    width: validWidth
+                )
+                checkpointPatchified = LatentUtils.denormalizeLatentsWithBatchNorm(
+                    checkpointPatchified,
+                    runningMean: vae!.batchNormRunningMean,
+                    runningVar: vae!.batchNormRunningVar
+                )
+                let checkpointLatents = LatentUtils.unpatchifyLatents(checkpointPatchified)
+                eval(checkpointLatents)
 
-                    let checkpointDecoded = vae!.decode(checkpointLatents)
-                    eval(checkpointDecoded)
-                    Flux2Debug.verbose("Checkpoint VAE output shape: \(checkpointDecoded.shape)")
+                let checkpointDecoded = vae!.decode(checkpointLatents)
+                eval(checkpointDecoded)
+                Flux2Debug.verbose("Checkpoint VAE output shape: \(checkpointDecoded.shape)")
 
-                    if let checkpointImage = postprocessVAEOutput(checkpointDecoded) {
-                        checkpointCallback(stepIdx + 1, checkpointImage)
-                    } else {
-                        Flux2Debug.log("Warning: Failed to convert checkpoint to image at step \(stepIdx + 1)")
-                    }
-                } catch {
-                    Flux2Debug.log("Checkpoint error at step \(stepIdx + 1): \(error)")
+                if let checkpointImage = postprocessVAEOutput(checkpointDecoded) {
+                    checkpointCallback(stepIdx + 1, checkpointImage)
+                } else {
+                    Flux2Debug.log("Warning: Failed to convert checkpoint to image at step \(stepIdx + 1)")
                 }
             }
 

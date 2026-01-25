@@ -57,7 +57,6 @@ public class Flux2RoPE: Module, @unchecked Sendable {
             // Compute frequencies for this axis dimension
             // diffusers: freqs = 1.0 / (theta ** (arange(0, dim, 2) / dim))
             // For dim=32: arange(0, 32, 2) = [0, 2, 4, ..., 30] and /32 gives [0, 1/16, 2/16, ...]
-            let halfDim = axisDim / 2
             let freqSeq = MLXArray(stride(from: 0, to: axisDim, by: 2)).asType(.float32)
             let invFreq = 1.0 / pow(MLXArray(theta), freqSeq / Float(axisDim))
 

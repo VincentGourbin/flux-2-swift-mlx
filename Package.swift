@@ -8,11 +8,10 @@ let package = Package(
         // Libraries
         .library(name: "FluxTextEncoders", targets: ["FluxTextEncoders"]),
         .library(name: "Flux2Core", targets: ["Flux2Core"]),
-        // Executables - Text Encoders
+        // CLI Tools
         .executable(name: "FluxEncodersCLI", targets: ["FluxEncodersCLI"]),
-        .executable(name: "FluxEncodersApp", targets: ["FluxEncodersApp"]),
-        // Executables - Image Generation
         .executable(name: "Flux2CLI", targets: ["Flux2CLI"]),
+        // Main Application
         .executable(name: "Flux2App", targets: ["Flux2App"]),
     ],
     dependencies: [
@@ -43,7 +42,7 @@ let package = Package(
                 .product(name: "Transformers", package: "swift-transformers"),
             ]
         ),
-        // MARK: - Text Encoder Executables
+        // MARK: - CLI Tools
         .executableTarget(
             name: "FluxEncodersCLI",
             dependencies: [
@@ -52,20 +51,16 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "FluxEncodersApp",
-            dependencies: ["FluxTextEncoders"]
-        ),
-        // MARK: - Image Generation Executables
-        .executableTarget(
             name: "Flux2CLI",
             dependencies: [
                 "Flux2Core",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
+        // MARK: - Main Application
         .executableTarget(
             name: "Flux2App",
-            dependencies: ["Flux2Core"]
+            dependencies: ["FluxTextEncoders", "Flux2Core"]
         ),
         // MARK: - Tests
         .testTarget(

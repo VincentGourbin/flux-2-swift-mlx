@@ -5,6 +5,7 @@
 
 import SwiftUI
 import FluxTextEncoders
+import Flux2Core
 import MLX
 
 // MARK: - Memory Stats
@@ -44,6 +45,12 @@ class ModelManager: ObservableObject {
     @Published var downloadedQwen3Models: Set<String> = []
     @Published var qwen3ModelSizes: [String: Int64] = [:]
 
+    // MARK: - Diffusion Models State (Flux2Core)
+    @Published var downloadedTransformers: Set<String> = []  // Stores TransformerVariant.rawValue
+    @Published var transformerSizes: [String: Int64] = [:]
+    @Published var isVAEDownloaded = false
+    @Published var vaeSize: Int64 = 0
+
     // MARK: - Download State
     @Published var isDownloading = false
     @Published var downloadProgress: Double = 0
@@ -78,6 +85,7 @@ class ModelManager: ObservableObject {
         }
         refreshDownloadedModels()
         refreshDownloadedQwen3Models()
+        refreshDownloadedDiffusionModels()
         selectSmallestDownloadedModel()
     }
 
@@ -276,6 +284,158 @@ class ModelManager: ObservableObject {
         isQwen3Loaded = false
         loadedQwen3Variant = nil
         memoryStats = MemoryStats.current
+    }
+
+    // MARK: - Diffusion Models (Flux2Core)
+
+    /// All available transformer variants
+    var availableTransformerVariants: [ModelRegistry.TransformerVariant] {
+        ModelRegistry.TransformerVariant.allCases
+    }
+
+    /// Refresh downloaded diffusion models status
+    func refreshDownloadedDiffusionModels() {
+        var downloaded: Set<String> = []
+        var sizes: [String: Int64] = [:]
+
+        for variant in ModelRegistry.TransformerVariant.allCases {
+            let component = ModelRegistry.ModelComponent.transformer(variant)
+            if Flux2ModelDownloader.isDownloaded(component),
+               let path = Flux2ModelDownloader.findModelPath(for: component) {
+                downloaded.insert(variant.rawValue)
+                sizes[variant.rawValue] = calculateDirectorySize(at: path)
+            }
+        }
+
+        downloadedTransformers = downloaded
+        transformerSizes = sizes
+
+        // Check VAE
+        let vaeComponent = ModelRegistry.ModelComponent.vae(.standard)
+        isVAEDownloaded = Flux2ModelDownloader.isDownloaded(vaeComponent)
+        if isVAEDownloaded, let path = Flux2ModelDownloader.findModelPath(for: vaeComponent) {
+            vaeSize = calculateDirectorySize(at: path)
+        } else {
+            vaeSize = 0
+        }
+
+        memoryStats = MemoryStats.current
+    }
+
+    /// Download a transformer variant
+    func downloadTransformer(_ variant: ModelRegistry.TransformerVariant) async {
+        guard !isDownloading else { return }
+
+        isDownloading = true
+        downloadProgress = 0
+        downloadMessage = "Starting download of \(variant.rawValue) transformer..."
+
+        do {
+            let downloader = Flux2ModelDownloader(
+                hfToken: ProcessInfo.processInfo.environment["HF_TOKEN"]
+                    ?? UserDefaults.standard.string(forKey: "hfToken")
+            )
+
+            let component = ModelRegistry.ModelComponent.transformer(variant)
+            _ = try await downloader.download(component) { progress, message in
+                Task { @MainActor in
+                    self.downloadProgress = progress
+                    self.downloadMessage = message
+                }
+            }
+
+            downloadedTransformers.insert(variant.rawValue)
+            refreshDownloadedDiffusionModels()
+            downloadMessage = "Download complete!"
+
+        } catch {
+            errorMessage = "Download failed: \(error.localizedDescription)"
+        }
+
+        isDownloading = false
+    }
+
+    /// Delete a transformer variant
+    func deleteTransformer(_ variant: ModelRegistry.TransformerVariant) throws {
+        let component = ModelRegistry.ModelComponent.transformer(variant)
+        try Flux2ModelDownloader.delete(component)
+        downloadedTransformers.remove(variant.rawValue)
+        transformerSizes.removeValue(forKey: variant.rawValue)
+        refreshDownloadedDiffusionModels()
+    }
+
+    /// Download VAE
+    func downloadVAE() async {
+        guard !isDownloading else { return }
+
+        isDownloading = true
+        downloadProgress = 0
+        downloadMessage = "Starting VAE download..."
+
+        do {
+            let downloader = Flux2ModelDownloader(
+                hfToken: ProcessInfo.processInfo.environment["HF_TOKEN"]
+                    ?? UserDefaults.standard.string(forKey: "hfToken")
+            )
+
+            let component = ModelRegistry.ModelComponent.vae(.standard)
+            _ = try await downloader.download(component) { progress, message in
+                Task { @MainActor in
+                    self.downloadProgress = progress
+                    self.downloadMessage = message
+                }
+            }
+
+            isVAEDownloaded = true
+            refreshDownloadedDiffusionModels()
+            downloadMessage = "VAE download complete!"
+
+        } catch {
+            errorMessage = "VAE download failed: \(error.localizedDescription)"
+        }
+
+        isDownloading = false
+    }
+
+    /// Delete VAE
+    func deleteVAE() throws {
+        let component = ModelRegistry.ModelComponent.vae(.standard)
+        try Flux2ModelDownloader.delete(component)
+        isVAEDownloaded = false
+        vaeSize = 0
+        refreshDownloadedDiffusionModels()
+    }
+
+    /// Check if a transformer variant is downloaded
+    func isTransformerDownloaded(_ variant: ModelRegistry.TransformerVariant) -> Bool {
+        downloadedTransformers.contains(variant.rawValue)
+    }
+
+    /// Get transformer display info
+    func transformerDisplayInfo(_ variant: ModelRegistry.TransformerVariant) -> (name: String, size: String, modelType: String) {
+        let name: String
+        let modelType: String
+
+        switch variant {
+        case .bf16:
+            name = "Dev bf16"
+            modelType = "Flux.2 Dev"
+        case .qint8:
+            name = "Dev qint8"
+            modelType = "Flux.2 Dev"
+        case .klein4B_bf16:
+            name = "Klein 4B bf16"
+            modelType = "Flux.2 Klein 4B"
+        case .klein4B_8bit:
+            name = "Klein 4B 8-bit"
+            modelType = "Flux.2 Klein 4B"
+        case .klein9B_bf16:
+            name = "Klein 9B bf16"
+            modelType = "Flux.2 Klein 9B"
+        }
+
+        let size = "\(variant.estimatedSizeGB)GB"
+        return (name, size, modelType)
     }
 
     // MARK: - Load Model

@@ -123,7 +123,7 @@ public enum LatentUtils {
     ) -> MLXArray {
         let shape = patchified.shape
         let B = shape[0]
-        let patchifiedC = shape[1]  // 128 = 32 * 2 * 2
+        // shape[1] is patchifiedC = 128 = 32 * 2 * 2
         let patchifiedH = shape[2]
         let patchifiedW = shape[3]
 

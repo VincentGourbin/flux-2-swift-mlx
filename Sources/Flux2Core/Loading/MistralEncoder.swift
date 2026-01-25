@@ -221,7 +221,7 @@ public class Flux2TextEncoder: @unchecked Sendable {
             fflush(stdout)
             FluxTextEncoders.shared.unloadModel()
             // Extra GPU memory clearing and synchronization
-            MLX.GPU.clearCache()
+            Memory.clearCache()
             eval([])  // Force GPU synchronization
             print("[VLM-DEBUG] GPU cache cleared and synchronized")
             fflush(stdout)
