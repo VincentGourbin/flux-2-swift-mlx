@@ -64,6 +64,13 @@ public class LoRALoader {
         Flux2Debug.log("[LoRA] Mapped \(weights.count) layer pairs")
     }
 
+    /// Detect if LoRA uses Diffusers format (vs BFL format)
+    private func isDiffusersFormat(_ keys: [String]) -> Bool {
+        // Diffusers format uses "transformer.transformer_blocks" or "transformer.single_transformer_blocks"
+        // BFL format uses "double_blocks" or "single_blocks" directly
+        return keys.contains { $0.contains("transformer_blocks") || $0.contains("single_transformer_blocks") }
+    }
+
     /// Parse raw weights and map to our layer naming scheme
     private func parseAndMapWeights(_ rawWeights: [String: MLXArray]) throws {
         // Group weights by layer (strip lora_A/lora_B suffix)
@@ -76,6 +83,7 @@ public class LoRALoader {
             // Extract base layer path
             // Format: base_model.model.{layer_path}.lora_A.weight
             //      or base_model.model.{layer_path}.lora_B.weight
+            //      or transformer.{layer_path}.lora_A.weight (Diffusers format)
             let basePath: String
             let isLoraA: Bool
 
@@ -90,10 +98,14 @@ public class LoRALoader {
                 continue
             }
 
-            // Strip "base_model.model." prefix if present
-            let layerPath = basePath.hasPrefix("base_model.model.")
-                ? String(basePath.dropFirst("base_model.model.".count))
-                : basePath
+            // Strip common prefixes
+            var layerPath = basePath
+            if layerPath.hasPrefix("base_model.model.") {
+                layerPath = String(layerPath.dropFirst("base_model.model.".count))
+            }
+            if layerPath.hasPrefix("transformer.") {
+                layerPath = String(layerPath.dropFirst("transformer.".count))
+            }
 
             if layerGroups[layerPath] == nil {
                 layerGroups[layerPath] = (nil, nil)
@@ -106,13 +118,17 @@ public class LoRALoader {
             }
         }
 
+        // Detect format
+        let isDiffusers = isDiffusersFormat(Array(layerGroups.keys))
+        Flux2Debug.log("[LoRA] Detected format: \(isDiffusers ? "Diffusers" : "BFL")")
+
         // Convert to weight pairs and map to our naming scheme
         var rank: Int = 0
         var totalParams = 0
 
-        for (bflPath, pair) in layerGroups {
+        for (rawPath, pair) in layerGroups {
             guard let loraA = pair.loraA, let loraB = pair.loraB else {
-                Flux2Debug.log("[LoRA] Warning: Missing pair for \(bflPath)")
+                Flux2Debug.log("[LoRA] Warning: Missing pair for \(rawPath)")
                 continue
             }
 
@@ -123,25 +139,33 @@ public class LoRALoader {
                 Flux2Debug.log("[LoRA] loraA dtype: \(loraA.dtype), loraB dtype: \(loraB.dtype)")
             }
 
-            // Check if this is a combined QKV layer that needs splitting
-            if isCombinedQKVLayer(bflPath) {
-                // Split the combined QKV LoRA into separate Q, K, V parts
-                let splitPairs = splitQKVLoRA(bflPath: bflPath, loraA: loraA, loraB: loraB)
-                for (swiftPath, splitLoraA, splitLoraB) in splitPairs {
-                    weights[swiftPath] = LoRAWeightPair(
-                        loraA: MLXArrayWrapper(splitLoraA),
-                        loraB: MLXArrayWrapper(splitLoraB)
-                    )
-                    totalParams += splitLoraA.size + splitLoraB.size
-                }
-            } else {
-                // Direct 1:1 mapping
-                let swiftPath = mapBFLPathToSwiftPath(bflPath)
+            if isDiffusers {
+                // Diffusers format: direct 1:1 mapping with name conversion
+                let swiftPath = mapDiffusersPathToSwiftPath(rawPath)
                 weights[swiftPath] = LoRAWeightPair(
                     loraA: MLXArrayWrapper(loraA),
                     loraB: MLXArrayWrapper(loraB)
                 )
                 totalParams += loraA.size + loraB.size
+            } else {
+                // BFL format: may need QKV splitting
+                if isCombinedQKVLayer(rawPath) {
+                    let splitPairs = splitQKVLoRA(bflPath: rawPath, loraA: loraA, loraB: loraB)
+                    for (swiftPath, splitLoraA, splitLoraB) in splitPairs {
+                        weights[swiftPath] = LoRAWeightPair(
+                            loraA: MLXArrayWrapper(splitLoraA),
+                            loraB: MLXArrayWrapper(splitLoraB)
+                        )
+                        totalParams += splitLoraA.size + splitLoraB.size
+                    }
+                } else {
+                    let swiftPath = mapBFLPathToSwiftPath(rawPath)
+                    weights[swiftPath] = LoRAWeightPair(
+                        loraA: MLXArrayWrapper(loraA),
+                        loraB: MLXArrayWrapper(loraB)
+                    )
+                    totalParams += loraA.size + loraB.size
+                }
             }
         }
 
@@ -192,6 +216,61 @@ public class LoRALoader {
                 ("transformerBlocks.\(blockIdx).attn.addVProj", loraA, loraBV)
             ]
         }
+    }
+
+    /// Map Diffusers format layer path to Swift module path
+    /// Diffusers uses names like:
+    ///   - single_transformer_blocks.X.attn.to_qkv_mlp_proj → singleTransformerBlocks.X.attn.toQkvMlp
+    ///   - transformer_blocks.X.attn.to_q → transformerBlocks.X.attn.toQ
+    ///   - transformer_blocks.X.attn.add_q_proj → transformerBlocks.X.attn.addQProj
+    private func mapDiffusersPathToSwiftPath(_ diffusersPath: String) -> String {
+        var path = diffusersPath
+
+        // Map block names
+        path = path.replacingOccurrences(of: "single_transformer_blocks.", with: "singleTransformerBlocks.")
+        path = path.replacingOccurrences(of: "transformer_blocks.", with: "transformerBlocks.")
+
+        // Map attention projections (single blocks)
+        path = path.replacingOccurrences(of: ".attn.to_qkv_mlp_proj", with: ".attn.toQkvMlp")
+        // Note: Single blocks use ".attn.to_out" without .0
+        // Double blocks use ".attn.to_out.0" with .0
+        path = path.replacingOccurrences(of: ".attn.to_out.0", with: ".attn.toOut")  // Double blocks first (more specific)
+        path = path.replacingOccurrences(of: ".attn.to_out", with: ".attn.toOut")    // Single blocks (fallback)
+
+        // Map attention projections (double blocks - image)
+        path = path.replacingOccurrences(of: ".attn.to_q", with: ".attn.toQ")
+        path = path.replacingOccurrences(of: ".attn.to_k", with: ".attn.toK")
+        path = path.replacingOccurrences(of: ".attn.to_v", with: ".attn.toV")
+        // Note: ".attn.to_out.0" becomes ".attn.toOut" (the .0 is already stripped)
+
+        // Map attention projections (double blocks - text/context)
+        path = path.replacingOccurrences(of: ".attn.add_q_proj", with: ".attn.addQProj")
+        path = path.replacingOccurrences(of: ".attn.add_k_proj", with: ".attn.addKProj")
+        path = path.replacingOccurrences(of: ".attn.add_v_proj", with: ".attn.addVProj")
+        path = path.replacingOccurrences(of: ".attn.to_add_out", with: ".attn.toAddOut")
+
+        // Map time/guidance embeddings
+        path = path.replacingOccurrences(of: "time_guidance_embed.", with: "timeGuidanceEmbed.")
+        path = path.replacingOccurrences(of: "time_text_embed.", with: "timeGuidanceEmbed.")
+        path = path.replacingOccurrences(of: "timestep_embedder.", with: "timestepEmbedder.")
+        path = path.replacingOccurrences(of: "guidance_embedder.", with: "guidanceEmbedder.")
+        path = path.replacingOccurrences(of: ".linear_1", with: ".linear1")
+        path = path.replacingOccurrences(of: ".linear_2", with: ".linear2")
+
+        // Map modulation layers
+        path = path.replacingOccurrences(of: "double_stream_modulation_img.", with: "doubleStreamModulationImg.")
+        path = path.replacingOccurrences(of: "double_stream_modulation_txt.", with: "doubleStreamModulationTxt.")
+        path = path.replacingOccurrences(of: "single_stream_modulation.", with: "singleStreamModulation.")
+
+        // Map embedders
+        path = path.replacingOccurrences(of: "x_embedder", with: "xEmbedder")
+        path = path.replacingOccurrences(of: "context_embedder", with: "contextEmbedder")
+
+        // Map output
+        path = path.replacingOccurrences(of: "norm_out.", with: "normOut.")
+        path = path.replacingOccurrences(of: "proj_out", with: "projOut")
+
+        return path
     }
 
     /// Map BFL layer path to Swift module path
@@ -261,16 +340,24 @@ public class LoRALoader {
 
     /// Detect target model based on layer structure
     private func detectTargetModel(_ layers: [String]) -> LoRAInfo.TargetModel {
-        // Count double and single blocks
-        let doubleBlocks = Set(layers.compactMap { path -> Int? in
-            guard path.hasPrefix("double_blocks.") else { return nil }
-            return extractBlockIndex(from: path, prefix: "double_blocks.")
-        })
+        // Count double and single blocks (support both BFL and Diffusers formats)
+        var doubleBlocks = Set<Int>()
+        var singleBlocks = Set<Int>()
 
-        let singleBlocks = Set(layers.compactMap { path -> Int? in
-            guard path.hasPrefix("single_blocks.") else { return nil }
-            return extractBlockIndex(from: path, prefix: "single_blocks.")
-        })
+        for path in layers {
+            // BFL format: double_blocks.X, single_blocks.X
+            if path.hasPrefix("double_blocks.") {
+                doubleBlocks.insert(extractBlockIndex(from: path, prefix: "double_blocks."))
+            } else if path.hasPrefix("single_blocks.") {
+                singleBlocks.insert(extractBlockIndex(from: path, prefix: "single_blocks."))
+            }
+            // Diffusers format: transformer_blocks.X, single_transformer_blocks.X
+            else if path.hasPrefix("transformer_blocks.") {
+                doubleBlocks.insert(extractBlockIndex(from: path, prefix: "transformer_blocks."))
+            } else if path.hasPrefix("single_transformer_blocks.") {
+                singleBlocks.insert(extractBlockIndex(from: path, prefix: "single_transformer_blocks."))
+            }
+        }
 
         let maxDouble = doubleBlocks.max() ?? 0
         let maxSingle = singleBlocks.max() ?? 0

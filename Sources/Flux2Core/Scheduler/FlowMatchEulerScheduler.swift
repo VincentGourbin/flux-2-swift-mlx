@@ -224,21 +224,38 @@ public class FlowMatchEulerScheduler: @unchecked Sendable {
     /// the provided sigma schedule. Used by specialized LoRAs like Flux.2 Turbo
     /// that require pre-computed noise schedules.
     ///
+    /// The custom sigmas define the noise levels to denoise through. If the final sigma
+    /// is not 0.0, a terminal sigma of 0.0 is automatically appended to ensure proper
+    /// denoising completion. This matches the standard scheduler behavior where N sigmas
+    /// yield N-1 intervals, so N custom sigmas + terminal 0.0 = N denoising steps.
+    ///
     /// - Parameter customSigmas: Pre-computed sigma schedule.
-    ///   Should start near 1.0 and end near 0.0.
+    ///   Should start near 1.0 and end with the second-to-last noise level.
     ///   Example for 8-step Turbo: [1.0, 0.6509, 0.4374, 0.2932, 0.1893, 0.1108, 0.0495, 0.00031]
+    ///   This will produce 8 denoising steps (with terminal 0.0 appended).
     public func setCustomSigmas(_ customSigmas: [Float]) {
         guard !customSigmas.isEmpty else {
             Flux2Debug.log("[Scheduler] Warning: Empty custom sigmas provided, ignoring")
             return
         }
 
-        self.sigmas = customSigmas
-        self.timesteps = customSigmas.map { $0 * Float(numTrainTimesteps) }
+        // Append terminal sigma 0.0 if not already present
+        // This ensures N custom sigmas produce N denoising steps
+        // Even if the last sigma is very small (like 0.00031), we need to add 0.0
+        // to complete the final denoising step
+        var sigmasWithTerminal = customSigmas
+        let lastSigma = customSigmas.last ?? 0.0
+        if lastSigma != 0.0 {  // If last sigma is not exactly 0.0, append terminal
+            sigmasWithTerminal.append(0.0)
+            Flux2Debug.log("[Scheduler] Appended terminal sigma 0.0 (last was \(lastSigma))")
+        }
+
+        self.sigmas = sigmasWithTerminal
+        self.timesteps = sigmasWithTerminal.map { $0 * Float(numTrainTimesteps) }
         self.stepIndex = 0
 
         let effectiveSteps = sigmas.count - 1
-        Flux2Debug.log("[Scheduler] Set custom sigmas: \(effectiveSteps) effective steps")
+        Flux2Debug.log("[Scheduler] Set custom sigmas: \(effectiveSteps) effective steps from \(customSigmas.count) input sigmas")
         Flux2Debug.verbose("[Scheduler] Sigmas: \(sigmas)")
     }
 }

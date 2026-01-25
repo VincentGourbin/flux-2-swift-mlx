@@ -229,7 +229,14 @@ flux2 i2i "<sks> back view high-angle shot medium shot" \
 
 **LoRA:** [fal/FLUX.2-dev-Turbo](https://huggingface.co/fal/FLUX.2-dev-Turbo)
 
-Enables 8-step inference (6x faster) with custom sigma schedule. Requires JSON config.
+Enables 8-step inference (~3x faster) with custom sigma schedule. Requires JSON config.
+
+| Standard (28 steps) | Turbo (8 steps) |
+|---------------------|-----------------|
+| ![Standard](examples/lora_turbo/standard_28steps.png) | ![Turbo](examples/lora_turbo/output.png) |
+| 1503s (~25 min) | 542s (~9 min) |
+
+*Prompt: "a red panda sitting in a bamboo forest, soft morning light, professional wildlife photography"*
 
 **JSON Config (`turbo-lora.json`):**
 ```json
@@ -246,8 +253,8 @@ Enables 8-step inference (6x faster) with custom sigma schedule. Requires JSON c
 
 **Command:**
 ```bash
-flux2 t2i "a beautiful mountain landscape" \
-  --lora-config turbo-lora.json \
+flux2 t2i "a red panda sitting in a bamboo forest" \
+  --lora-config-path turbo-lora.json \
   --model dev \
   -o output.png
 # Automatically uses 8 steps, guidance 2.5, and custom sigmas
@@ -255,8 +262,8 @@ flux2 t2i "a beautiful mountain landscape" \
 
 **Notes:**
 - Requires JSON config with `customSigmas` for optimal results
-- 6x faster than standard Dev inference (8 steps vs 50)
-- Dev LoRA (uses 6144 inner dim)
+- ~3x faster than standard Dev inference (8 steps vs 28)
+- Dev LoRA (170 layers, rank 256, ~5.2 GB)
 
 ---
 
