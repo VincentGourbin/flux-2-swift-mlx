@@ -7,11 +7,17 @@ import MLXNN
 
 /// GEGLU activation: GELU-gated Linear Unit
 /// Used in some transformer variants
+/// Optimized with kernel fusion for the gating operation
 public class GEGLU: Module, @unchecked Sendable {
     let proj: Linear
     let dim: Int
     let innerDim: Int
 
+    /// Compiled gating function for kernel fusion
+    nonisolated(unsafe) private static let compiledGate: (MLXArray, MLXArray) -> MLXArray = compile { gate, value in
+        gelu(gate) * value
+    }
+
     public init(dim: Int, innerDim: Int, bias: Bool = false) {
         self.dim = dim
         self.innerDim = innerDim
@@ -25,17 +31,23 @@ public class GEGLU: Module, @unchecked Sendable {
         let chunks = split(projected, parts: 2, axis: -1)
         let gate = chunks[0]
         let value = chunks[1]
-        // GEGLU: gelu(gate) * value
-        return gelu(gate) * value
+        // GEGLU: gelu(gate) * value - compiled for kernel fusion
+        return Self.compiledGate(gate, value)
     }
 }
 
 /// SwiGLU activation: Swish-gated Linear Unit
 /// Used in Flux.2 transformer feedforward blocks
+/// Optimized with kernel fusion for the gating operation
 public class SwiGLU: Module, @unchecked Sendable {
     let proj: Linear
     let dim: Int
     let innerDim: Int
+
+    /// Compiled gating function for kernel fusion
+    nonisolated(unsafe) private static let compiledGate: (MLXArray, MLXArray) -> MLXArray = compile { gate, value in
+        silu(gate) * value
+    }
 
     public init(dim: Int, innerDim: Int, bias: Bool = false) {
         self.dim = dim
@@ -50,8 +62,8 @@ public class SwiGLU: Module, @unchecked Sendable {
         let chunks = split(projected, parts: 2, axis: -1)
         let gate = chunks[0]
         let value = chunks[1]
-        // SwiGLU: silu(gate) * value (silu = swish)
-        return silu(gate) * value
+        // SwiGLU: silu(gate) * value (silu = swish) - compiled for kernel fusion
+        return Self.compiledGate(gate, value)
     }
 }
 

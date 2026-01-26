@@ -7,6 +7,7 @@ import MLXNN
 import MLXFast
 
 /// RMS Normalization (Root Mean Square Layer Normalization)
+/// Optimized using MLXFast.rmsNorm for better performance
 public class RMSNorm: Module, @unchecked Sendable {
     let dim: Int
     let eps: Float
@@ -19,9 +20,8 @@ public class RMSNorm: Module, @unchecked Sendable {
     }
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
-        let variance = mean(x * x, axis: -1, keepDims: true)
-        let normalized = x * rsqrt(variance + eps)
-        return normalized * weight
+        // Use optimized MLXFast implementation
+        return MLXFast.rmsNorm(x, weight: weight, eps: eps)
     }
 }
 
