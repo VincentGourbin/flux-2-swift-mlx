@@ -27,8 +27,12 @@ public struct Qwen3ModelOutput {
 // MARK: - Main Model
 
 /// Qwen3 transformer model
+/// Supports memory optimization via periodic evaluation
 public class Qwen3Model: Module {
     public let config: Qwen3TextConfig
+
+    /// Memory optimization configuration
+    public var memoryConfig: TextEncoderMemoryConfig = .disabled
 
     @ModuleInfo public var embed_tokens: Embedding
     public var layers: [Qwen3DecoderLayer]
@@ -77,6 +81,14 @@ public class Qwen3Model: Module {
 
             let layerCache = cache?[i]
             hiddenStates = layer(hiddenStates, mask: mask, cache: layerCache)
+
+            // Memory optimization: periodic evaluation to prevent graph accumulation
+            if memoryConfig.evalFrequency > 0 && (i + 1) % memoryConfig.evalFrequency == 0 {
+                eval(hiddenStates)
+                if memoryConfig.clearCacheOnEval {
+                    MLX.Memory.clearCache()
+                }
+            }
         }
 
         // Final normalization
@@ -124,6 +136,14 @@ public class Qwen3Model: Module {
             let layerIdx = i + 1
             if layerSet.contains(layerIdx) {
                 extractedStates[layerIdx] = hiddenStates
+            }
+
+            // Memory optimization: periodic evaluation to prevent graph accumulation
+            if memoryConfig.evalFrequency > 0 && (i + 1) % memoryConfig.evalFrequency == 0 {
+                eval(hiddenStates)
+                if memoryConfig.clearCacheOnEval {
+                    MLX.Memory.clearCache()
+                }
             }
         }
 

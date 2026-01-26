@@ -105,8 +105,12 @@ public struct MistralVLMConfig: Codable, Sendable {
 // MARK: - VLM Model
 
 /// Full Vision-Language Model
+/// Supports memory optimization via periodic evaluation
 public class MistralVLM: Module {
     public let config: MistralVLMConfig
+
+    /// Memory optimization configuration
+    public var memoryConfig: TextEncoderMemoryConfig = .disabled
 
     @ModuleInfo(key: "vision_tower") var visionTower: VisionModel
     @ModuleInfo(key: "multi_modal_projector") var multiModalProjector: MultiModalProjector
@@ -407,6 +411,14 @@ public class MistralVLM: Module {
         for (i, layer) in languageModel.model.layers.enumerated() {
             let layerCache = cache?[i]
             h = layer(h, mask: mask, cache: layerCache)
+
+            // Memory optimization: periodic evaluation to prevent graph accumulation
+            if memoryConfig.evalFrequency > 0 && (i + 1) % memoryConfig.evalFrequency == 0 {
+                eval(h)
+                if memoryConfig.clearCacheOnEval {
+                    MLX.Memory.clearCache()
+                }
+            }
         }
 
         // Final norm
@@ -452,6 +464,14 @@ public class MistralVLM: Module {
             let stateIdx = i + 1
             if resolvedIndices.contains(stateIdx) {
                 collectedStates[stateIdx] = h
+            }
+
+            // Memory optimization: periodic evaluation to prevent graph accumulation
+            if memoryConfig.evalFrequency > 0 && (i + 1) % memoryConfig.evalFrequency == 0 {
+                eval(h)
+                if memoryConfig.clearCacheOnEval {
+                    MLX.Memory.clearCache()
+                }
             }
         }
 

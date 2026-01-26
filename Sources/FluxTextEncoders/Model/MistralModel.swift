@@ -68,8 +68,12 @@ public struct MistralModelOutput {
 // MARK: - Main Model
 
 /// Mistral transformer model
+/// Supports memory optimization via periodic evaluation
 public class MistralModel: Module {
     public let config: MistralTextConfig
+
+    /// Memory optimization configuration
+    public var memoryConfig: TextEncoderMemoryConfig = .disabled
 
     @ModuleInfo public var embed_tokens: Embedding
     public var layers: [MistralDecoderLayer]
@@ -118,6 +122,14 @@ public class MistralModel: Module {
 
             let layerCache = cache?[i]
             hiddenStates = layer(hiddenStates, mask: mask, cache: layerCache)
+
+            // Memory optimization: periodic evaluation to prevent graph accumulation
+            if memoryConfig.evalFrequency > 0 && (i + 1) % memoryConfig.evalFrequency == 0 {
+                eval(hiddenStates)
+                if memoryConfig.clearCacheOnEval {
+                    MLX.Memory.clearCache()
+                }
+            }
         }
 
         // Final normalization

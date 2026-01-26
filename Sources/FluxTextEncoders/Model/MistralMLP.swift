@@ -1,6 +1,7 @@
 /**
  * MistralMLP.swift
  * Feed-Forward Network with SwiGLU activation for Mistral
+ * Optimized with kernel fusion for the gating operation
  */
 
 import Foundation
@@ -8,12 +9,18 @@ import MLX
 import MLXNN
 
 /// Mistral MLP with SwiGLU activation (gate * silu(up))
-public class MistralMLP: Module {
+/// Optimized with kernel fusion for better performance
+public class MistralMLP: Module, @unchecked Sendable {
     let config: MistralTextConfig
 
     @ModuleInfo public var gate_proj: Linear
     @ModuleInfo public var up_proj: Linear
     @ModuleInfo public var down_proj: Linear
+
+    /// Compiled gating function for kernel fusion
+    nonisolated(unsafe) private static let compiledGate: (MLXArray, MLXArray) -> MLXArray = compile { gate, up in
+        silu(gate) * up
+    }
 
     public init(config: MistralTextConfig) {
         self.config = config
@@ -30,9 +37,9 @@ public class MistralMLP: Module {
     }
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
-        // SwiGLU: down(silu(gate(x)) * up(x))
-        let gate = silu(gate_proj(x))
-        let up = up_proj(x)
-        return down_proj(gate * up)
+        // SwiGLU: down(silu(gate(x)) * up(x)) - compiled for kernel fusion
+        let gateOut = gate_proj(x)
+        let upOut = up_proj(x)
+        return down_proj(Self.compiledGate(gateOut, upOut))
     }
 }

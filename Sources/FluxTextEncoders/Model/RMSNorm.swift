@@ -1,13 +1,15 @@
 /**
  * RMSNorm.swift
  * Root Mean Square Layer Normalization for Mistral
+ * Note: MLXFast.rmsNorm() causes type promotion issues with scaled_dot_product_attention,
+ * so we use the manual implementation for now.
  */
 
 import Foundation
 import MLX
 import MLXNN
 
-/// RMS Normalization layer used in Mistral models
+/// RMS Normalization layer used in Mistral and Qwen3 models
 public class RMSNorm: Module, UnaryLayer {
     var weight: MLXArray
     let eps: Float
@@ -20,6 +22,7 @@ public class RMSNorm: Module, UnaryLayer {
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
         // Manual RMSNorm implementation
+        // Note: MLXFast.rmsNorm() causes bfloat16 type promotion issues
         let variance = mean(x * x, axis: -1, keepDims: true)
         let normalized = x * rsqrt(variance + MLXArray([eps]))
         return weight * normalized

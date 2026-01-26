@@ -372,9 +372,13 @@ public class VisionTransformer: Module {
 // MARK: - Vision Encoder
 
 /// Pixtral Vision Encoder - 24 layer transformer
+/// Supports memory optimization via periodic evaluation
 public class VisionEncoder: Module {
     let config: PixtralVisionConfig
     fileprivate let rope: PixtralRoPE
+
+    /// Memory optimization configuration
+    public var memoryConfig: TextEncoderMemoryConfig = .disabled
 
     @ModuleInfo(key: "patch_conv") var patchConv: Conv2d
     @ModuleInfo(key: "ln_pre") var lnPre: RMSNorm
@@ -461,6 +465,14 @@ public class VisionEncoder: Module {
                 let maxAbs = MLX.max(MLX.abs(x)).item(Float.self)
                 print("[VisionEnc] Layer \(String(format: "%2d", i)): std=\(String(format: "%.4f", std)), max_abs=\(String(format: "%.4f", maxAbs))")
                 fflush(stdout)
+            }
+
+            // Memory optimization: periodic evaluation to prevent graph accumulation
+            if memoryConfig.evalFrequency > 0 && (i + 1) % memoryConfig.evalFrequency == 0 {
+                eval(x)
+                if memoryConfig.clearCacheOnEval {
+                    MLX.Memory.clearCache()
+                }
             }
         }
 
