@@ -4,13 +4,13 @@ A native Swift implementation of [Flux.2](https://blackforestlabs.ai/) image gen
 
 ## Downloads
 
-**[📦 Latest Release (v1.0.0)](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/tag/v1.0.0)** — Universal binaries for Apple Silicon and Intel
+**[📦 Latest Release (v1.0.1)](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/tag/v1.0.1)** — Universal binaries for Apple Silicon and Intel
 
 | Download | Description |
 |----------|-------------|
-| [Flux2App](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/download/v1.0.0/Flux2App-v1.0.0-macOS.zip) | Demo macOS app with T2I, I2I, chat ([guide](docs/Flux2App.md)) |
-| [Flux2CLI](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/download/v1.0.0/Flux2CLI-v1.0.0-macOS.zip) | Image generation CLI ([guide](docs/CLI.md)) |
-| [FluxEncodersCLI](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/download/v1.0.0/FluxEncodersCLI-v1.0.0-macOS.zip) | Text encoders CLI ([guide](docs/TextEncoders.md)) |
+| [Flux2App](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/download/v1.0.1/Flux2App-v1.0.1-macOS.zip) | Demo macOS app with T2I, I2I, chat ([guide](docs/Flux2App.md)) |
+| [Flux2CLI](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/download/v1.0.1/Flux2CLI-v1.0.1-macOS.zip) | Image generation CLI ([guide](docs/CLI.md)) |
+| [FluxEncodersCLI](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/download/v1.0.1/FluxEncodersCLI-v1.0.1-macOS.zip) | Text encoders CLI ([guide](docs/TextEncoders.md)) |
 
 > **Note**: On first launch, macOS may block unsigned apps. Right-click → Open to bypass Gatekeeper.
 
@@ -59,11 +59,11 @@ Download from the [Releases page](https://github.com/VincentGourbin/flux-2-swift
 
 ```bash
 # CLI
-unzip Flux2CLI-v1.0.0-macOS.zip
+unzip Flux2CLI-v1.0.1-macOS.zip
 ./Flux2CLI t2i "a cat" --model klein-4b
 
 # App
-unzip Flux2App-v1.0.0-macOS.zip
+unzip Flux2App-v1.0.1-macOS.zip
 open Flux2App.app
 ```
 
