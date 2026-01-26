@@ -61,6 +61,29 @@ public enum ModelRegistry {
             }
         }
 
+        /// Whether this model requires accepting a license on HuggingFace before downloading
+        public var isGated: Bool {
+            switch self {
+            case .bf16, .qint8:
+                // Dev models from black-forest-labs are gated
+                return true
+            case .klein4B_bf16:
+                // Official Klein 4B from black-forest-labs is gated
+                return true
+            case .klein4B_8bit:
+                // Community 8-bit quantization is NOT gated
+                return false
+            case .klein9B_bf16:
+                // Official Klein 9B from black-forest-labs is gated
+                return true
+            }
+        }
+
+        /// Full HuggingFace URL for the model
+        public var huggingFaceURL: String {
+            "https://huggingface.co/\(huggingFaceRepo)"
+        }
+
         public var quantization: TransformerQuantization {
             switch self {
             case .bf16, .klein4B_bf16, .klein9B_bf16: return .bf16
@@ -100,12 +123,43 @@ public enum ModelRegistry {
         case mlx6bit = "6bit"
         case mlx4bit = "4bit"
 
+        public var huggingFaceRepo: String {
+            switch self {
+            case .bf16:
+                // Original from Mistral AI (gated)
+                return "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+            case .mlx8bit:
+                return "lmstudio-community/Mistral-Small-3.2-24B-Instruct-2506-MLX-8bit"
+            case .mlx6bit:
+                return "lmstudio-community/Mistral-Small-3.2-24B-Instruct-2506-MLX-6bit"
+            case .mlx4bit:
+                return "lmstudio-community/Mistral-Small-3.2-24B-Instruct-2506-MLX-4bit"
+            }
+        }
+
+        /// Full HuggingFace URL for the model
+        public var huggingFaceURL: String {
+            "https://huggingface.co/\(huggingFaceRepo)"
+        }
+
         public var estimatedSizeGB: Int {
             switch self {
             case .bf16: return 48
             case .mlx8bit: return 25
             case .mlx6bit: return 19
             case .mlx4bit: return 14
+            }
+        }
+
+        /// Whether this model requires accepting a license on HuggingFace before downloading
+        public var isGated: Bool {
+            switch self {
+            case .bf16:
+                // Original Mistral AI model is gated
+                return true
+            case .mlx8bit, .mlx6bit, .mlx4bit:
+                // lmstudio-community quantized versions are NOT gated
+                return false
             }
         }
 
@@ -127,7 +181,23 @@ public enum ModelRegistry {
             "black-forest-labs/FLUX.2-dev"
         }
 
+        /// Subfolder within the HuggingFace repo
+        public var huggingFaceSubfolder: String {
+            "vae"
+        }
+
+        /// Full HuggingFace URL for the model
+        public var huggingFaceURL: String {
+            "https://huggingface.co/\(huggingFaceRepo)/tree/main/\(huggingFaceSubfolder)"
+        }
+
         public var estimatedSizeGB: Int { 3 }
+
+        /// Whether this model requires accepting a license on HuggingFace before downloading
+        public var isGated: Bool {
+            // VAE is from black-forest-labs/FLUX.2-dev which is gated
+            true
+        }
     }
 
     // MARK: - Model Component Identifier

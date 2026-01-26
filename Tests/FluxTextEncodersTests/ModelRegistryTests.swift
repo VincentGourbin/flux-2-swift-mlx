@@ -192,4 +192,94 @@ final class TextEncoderModelRegistryTests: XCTestCase {
         )
         XCTAssertNotNil(model)
     }
+
+    // MARK: - Gated Status Tests
+
+    func testModelVariantIsGated() {
+        // bf16 from mistralai is gated
+        XCTAssertTrue(ModelVariant.bf16.isGated)
+
+        // Quantized versions from lmstudio-community are NOT gated
+        XCTAssertFalse(ModelVariant.mlx8bit.isGated)
+        XCTAssertFalse(ModelVariant.mlx6bit.isGated)
+        XCTAssertFalse(ModelVariant.mlx4bit.isGated)
+    }
+
+    func testModelInfoIsGated() {
+        let models = TextEncoderModelRegistry.shared.allModels()
+
+        // Check bf16 model is gated
+        if let bf16Model = models.first(where: { $0.variant == .bf16 }) {
+            XCTAssertTrue(bf16Model.isGated)
+        }
+
+        // Check quantized models are NOT gated
+        if let mlx8bit = models.first(where: { $0.variant == .mlx8bit }) {
+            XCTAssertFalse(mlx8bit.isGated)
+        }
+    }
+
+    func testQwen3VariantIsGated() {
+        // All Qwen3 models from lmstudio-community are NOT gated
+        XCTAssertFalse(Qwen3Variant.qwen3_4B_8bit.isGated)
+        XCTAssertFalse(Qwen3Variant.qwen3_4B_4bit.isGated)
+        XCTAssertFalse(Qwen3Variant.qwen3_8B_8bit.isGated)
+        XCTAssertFalse(Qwen3Variant.qwen3_8B_4bit.isGated)
+    }
+
+    // MARK: - HuggingFace URL Tests
+
+    func testModelVariantHuggingFaceURL() {
+        for variant in ModelVariant.allCases {
+            XCTAssertTrue(variant.huggingFaceURL.starts(with: "https://huggingface.co/"))
+            XCTAssertTrue(variant.huggingFaceURL.contains(variant.repoId))
+        }
+    }
+
+    func testModelInfoHuggingFaceURL() {
+        let models = TextEncoderModelRegistry.shared.allModels()
+
+        for model in models {
+            XCTAssertTrue(model.huggingFaceURL.starts(with: "https://huggingface.co/"))
+            XCTAssertTrue(model.huggingFaceURL.contains(model.repoId))
+        }
+    }
+
+    func testQwen3VariantHuggingFaceURL() {
+        for variant in Qwen3Variant.allCases {
+            XCTAssertTrue(variant.huggingFaceURL.starts(with: "https://huggingface.co/"))
+            XCTAssertTrue(variant.huggingFaceURL.contains(variant.repoId))
+        }
+    }
+
+    func testModelVariantRepoIdValues() {
+        // bf16 should be from mistralai
+        XCTAssertTrue(ModelVariant.bf16.repoId.contains("mistralai"))
+
+        // Quantized should be from lmstudio-community
+        XCTAssertTrue(ModelVariant.mlx8bit.repoId.contains("lmstudio-community"))
+        XCTAssertTrue(ModelVariant.mlx6bit.repoId.contains("lmstudio-community"))
+        XCTAssertTrue(ModelVariant.mlx4bit.repoId.contains("lmstudio-community"))
+    }
+
+    func testQwen3VariantRepoIdValues() {
+        // All Qwen3 should be from lmstudio-community
+        for variant in Qwen3Variant.allCases {
+            XCTAssertTrue(variant.repoId.contains("lmstudio-community"))
+        }
+    }
+
+    func testModelVariantEstimatedSizeGB() {
+        XCTAssertEqual(ModelVariant.bf16.estimatedSizeGB, 48)
+        XCTAssertEqual(ModelVariant.mlx8bit.estimatedSizeGB, 25)
+        XCTAssertEqual(ModelVariant.mlx6bit.estimatedSizeGB, 19)
+        XCTAssertEqual(ModelVariant.mlx4bit.estimatedSizeGB, 14)
+    }
+
+    func testQwen3VariantEstimatedSizeGB() {
+        XCTAssertEqual(Qwen3Variant.qwen3_4B_8bit.estimatedSizeGB, 4)
+        XCTAssertEqual(Qwen3Variant.qwen3_4B_4bit.estimatedSizeGB, 2)
+        XCTAssertEqual(Qwen3Variant.qwen3_8B_8bit.estimatedSizeGB, 8)
+        XCTAssertEqual(Qwen3Variant.qwen3_8B_4bit.estimatedSizeGB, 4)
+    }
 }
