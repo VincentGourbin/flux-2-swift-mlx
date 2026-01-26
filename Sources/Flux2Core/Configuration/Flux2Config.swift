@@ -67,6 +67,39 @@ public enum Flux2Model: String, CaseIterable, Sendable {
         case .klein9B: return "Non-Commercial"
         }
     }
+
+    /// Whether this model can be used commercially
+    public var isCommercialUseAllowed: Bool {
+        switch self {
+        case .klein4B: return true
+        case .dev, .klein9B: return false
+        }
+    }
+
+    /// Recommended number of inference steps for optimal quality
+    public var defaultSteps: Int {
+        switch self {
+        case .dev: return 28
+        case .klein4B, .klein9B: return 4
+        }
+    }
+
+    /// Recommended guidance scale for optimal quality
+    public var defaultGuidance: Float {
+        switch self {
+        case .dev: return 4.0
+        case .klein4B, .klein9B: return 1.0
+        }
+    }
+
+    /// Estimated generation time in seconds (1024x1024 on M2 Max)
+    public var estimatedTimeSeconds: Int {
+        switch self {
+        case .dev: return 2100      // ~35 minutes
+        case .klein4B: return 26    // ~26 seconds
+        case .klein9B: return 62    // ~62 seconds
+        }
+    }
 }
 
 // MARK: - Transformer Configuration

@@ -455,6 +455,73 @@ final class ModelRegistryTests: XCTestCase {
         XCTAssertTrue(ModelRegistry.TextEncoderVariant.mlx6bit.huggingFaceRepo.contains("lmstudio-community"))
         XCTAssertTrue(ModelRegistry.TextEncoderVariant.mlx4bit.huggingFaceRepo.contains("lmstudio-community"))
     }
+
+    // MARK: - License Tests
+
+    func testTransformerVariantLicense() {
+        // Dev is non-commercial
+        XCTAssertTrue(ModelRegistry.TransformerVariant.bf16.license.contains("Non-Commercial"))
+        XCTAssertFalse(ModelRegistry.TransformerVariant.bf16.isCommercialUseAllowed)
+
+        // Klein 4B is Apache 2.0 (commercial OK)
+        XCTAssertTrue(ModelRegistry.TransformerVariant.klein4B_bf16.license.contains("Apache"))
+        XCTAssertTrue(ModelRegistry.TransformerVariant.klein4B_bf16.isCommercialUseAllowed)
+
+        // Klein 9B is non-commercial
+        XCTAssertFalse(ModelRegistry.TransformerVariant.klein9B_bf16.isCommercialUseAllowed)
+    }
+
+    func testTextEncoderVariantLicense() {
+        // Mistral is Apache 2.0
+        XCTAssertTrue(ModelRegistry.TextEncoderVariant.mlx8bit.license.contains("Apache"))
+        XCTAssertTrue(ModelRegistry.TextEncoderVariant.mlx8bit.isCommercialUseAllowed)
+    }
+
+    func testVAEVariantLicense() {
+        // VAE inherits FLUX.2 Dev non-commercial license
+        XCTAssertTrue(ModelRegistry.VAEVariant.standard.license.contains("Non-Commercial"))
+        XCTAssertFalse(ModelRegistry.VAEVariant.standard.isCommercialUseAllowed)
+    }
+
+    // MARK: - Default Parameters Tests
+
+    func testTransformerVariantDefaultParameters() {
+        // Dev: 28 steps, guidance 4.0
+        XCTAssertEqual(ModelRegistry.TransformerVariant.bf16.defaultSteps, 28)
+        XCTAssertEqual(ModelRegistry.TransformerVariant.bf16.defaultGuidance, 4.0)
+
+        // Klein: 4 steps, guidance 1.0
+        XCTAssertEqual(ModelRegistry.TransformerVariant.klein4B_bf16.defaultSteps, 4)
+        XCTAssertEqual(ModelRegistry.TransformerVariant.klein4B_bf16.defaultGuidance, 1.0)
+    }
+}
+
+// MARK: - Flux2Model Tests
+
+final class Flux2ModelTests: XCTestCase {
+
+    func testDefaultSteps() {
+        XCTAssertEqual(Flux2Model.dev.defaultSteps, 28)
+        XCTAssertEqual(Flux2Model.klein4B.defaultSteps, 4)
+        XCTAssertEqual(Flux2Model.klein9B.defaultSteps, 4)
+    }
+
+    func testDefaultGuidance() {
+        XCTAssertEqual(Flux2Model.dev.defaultGuidance, 4.0)
+        XCTAssertEqual(Flux2Model.klein4B.defaultGuidance, 1.0)
+        XCTAssertEqual(Flux2Model.klein9B.defaultGuidance, 1.0)
+    }
+
+    func testEstimatedTimeSeconds() {
+        XCTAssertGreaterThan(Flux2Model.dev.estimatedTimeSeconds, 1000)
+        XCTAssertLessThan(Flux2Model.klein4B.estimatedTimeSeconds, 60)
+    }
+
+    func testLicense() {
+        XCTAssertTrue(Flux2Model.klein4B.license.contains("Apache"))
+        XCTAssertTrue(Flux2Model.klein4B.isCommercialUseAllowed)
+        XCTAssertFalse(Flux2Model.dev.isCommercialUseAllowed)
+    }
 }
 
 // MARK: - VAE Config Extended Tests
