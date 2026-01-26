@@ -94,9 +94,9 @@ struct ImageToImageView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            // Drop zone with image slots
+            // Drop zone with image slots (dynamic based on model)
             HStack(spacing: 12) {
-                ForEach(0..<3, id: \.self) { index in
+                ForEach(0..<viewModel.selectedModel.maxReferenceImages, id: \.self) { index in
                     if index < viewModel.referenceImages.count {
                         // Show existing image
                         ReferenceImageSlot(
@@ -457,7 +457,7 @@ struct ImageToImageView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(viewModel.referenceImages.count >= 3)
+                    .disabled(viewModel.referenceImages.count >= viewModel.selectedModel.maxReferenceImages)
                 }
 
                 Button(action: {
@@ -582,7 +582,7 @@ struct ImageToImageView: View {
         panel.canChooseDirectories = false
 
         if panel.runModal() == .OK {
-            for url in panel.urls.prefix(3 - viewModel.referenceImages.count) {
+            for url in panel.urls.prefix(viewModel.selectedModel.maxReferenceImages - viewModel.referenceImages.count) {
                 viewModel.addReferenceImage(from: url)
             }
         }

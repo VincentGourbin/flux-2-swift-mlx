@@ -494,6 +494,17 @@ final class ModelRegistryTests: XCTestCase {
         XCTAssertEqual(ModelRegistry.TransformerVariant.klein4B_bf16.defaultSteps, 4)
         XCTAssertEqual(ModelRegistry.TransformerVariant.klein4B_bf16.defaultGuidance, 1.0)
     }
+
+    func testTransformerVariantMaxReferenceImages() {
+        // Dev variants: 6 images (delegates to modelType)
+        XCTAssertEqual(ModelRegistry.TransformerVariant.bf16.maxReferenceImages, 6)
+        XCTAssertEqual(ModelRegistry.TransformerVariant.qint8.maxReferenceImages, 6)
+
+        // Klein variants: 4 images
+        XCTAssertEqual(ModelRegistry.TransformerVariant.klein4B_bf16.maxReferenceImages, 4)
+        XCTAssertEqual(ModelRegistry.TransformerVariant.klein4B_8bit.maxReferenceImages, 4)
+        XCTAssertEqual(ModelRegistry.TransformerVariant.klein9B_bf16.maxReferenceImages, 4)
+    }
 }
 
 // MARK: - Flux2Model Tests
@@ -521,6 +532,15 @@ final class Flux2ModelTests: XCTestCase {
         XCTAssertTrue(Flux2Model.klein4B.license.contains("Apache"))
         XCTAssertTrue(Flux2Model.klein4B.isCommercialUseAllowed)
         XCTAssertFalse(Flux2Model.dev.isCommercialUseAllowed)
+    }
+
+    func testMaxReferenceImages() {
+        // Dev supports up to 6 reference images (memory limited)
+        XCTAssertEqual(Flux2Model.dev.maxReferenceImages, 6)
+
+        // Klein models support up to 4 reference images
+        XCTAssertEqual(Flux2Model.klein4B.maxReferenceImages, 4)
+        XCTAssertEqual(Flux2Model.klein9B.maxReferenceImages, 4)
     }
 }
 
