@@ -7,7 +7,7 @@ The `flux2` command-line tool provides access to Flux.2 image generation on Mac 
 | Command | Description |
 |---------|-------------|
 | `t2i` | Text-to-Image generation (default) |
-| `i2i` | Image-to-Image generation with 1-3 reference images |
+| `i2i` | Image-to-Image generation (up to 4 images for Klein, 6 for Dev) |
 | `download` | Download required models |
 | `info` | Show system and model information |
 

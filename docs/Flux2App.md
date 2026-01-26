@@ -5,7 +5,7 @@ A complete SwiftUI demo application showcasing all Flux.2 Swift MLX capabilities
 ## Features
 
 - **Text-to-Image (T2I)**: Generate images from text prompts
-- **Image-to-Image (I2I)**: Transform images with up to 3 reference images
+- **Image-to-Image (I2I)**: Transform images with multiple reference images (up to 4 for Klein, 6 for Dev)
 - **Chat**: Interactive conversations with Mistral 24B and Qwen3
 - **Vision (VLM)**: Analyze images with Mistral Pixtral
 - **FLUX.2 Tools**: Extract embeddings and upsample prompts
@@ -95,7 +95,7 @@ Download and manage text encoders and diffusion models:
 ### Image-to-Image
 
 1. Select **Image Generation > Image to Image**
-2. Drop 1-3 reference images
+2. Drop reference images (up to 4 for Klein, 6 for Dev)
 3. Adjust **Strength** (0.0 = preserve original, 1.0 = full transformation)
 4. Enter a prompt describing the desired changes
 5. Optionally add **Interpret Images** for VLM-based semantic understanding

@@ -104,6 +104,11 @@ public enum ModelRegistry {
             modelType.defaultGuidance
         }
 
+        /// Maximum number of reference images for I2I (delegates to modelType)
+        public var maxReferenceImages: Int {
+            modelType.maxReferenceImages
+        }
+
         public var quantization: TransformerQuantization {
             switch self {
             case .bf16, .klein4B_bf16, .klein9B_bf16: return .bf16

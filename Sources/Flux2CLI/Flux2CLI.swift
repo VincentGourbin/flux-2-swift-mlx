@@ -421,12 +421,13 @@ struct ImageToImage: AsyncParsableCommand {
             actualGuidance = guidance ?? loraOverrides?.guidance ?? 1.0
         }
 
-        // Validate image count (1-3 reference images)
-        guard !images.isEmpty && images.count <= 3 else {
+        // Validate image count (model-specific limit)
+        let maxImages = modelVariant.maxReferenceImages
+        guard !images.isEmpty && images.count <= maxImages else {
             if images.isEmpty {
-                throw ValidationError("Please provide 1-3 reference images with --images")
+                throw ValidationError("Please provide 1-\(maxImages) reference images with --images")
             } else {
-                throw ValidationError("Maximum 3 reference images allowed")
+                throw ValidationError("Maximum \(maxImages) reference images allowed for \(modelVariant.displayName)")
             }
         }
 

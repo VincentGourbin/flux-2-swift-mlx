@@ -100,6 +100,15 @@ public enum Flux2Model: String, CaseIterable, Sendable {
         case .klein9B: return 62    // ~62 seconds
         }
     }
+
+    /// Maximum number of reference images for I2I generation
+    /// Source: https://docs.bfl.ai/flux_2/flux2_image_editing
+    public var maxReferenceImages: Int {
+        switch self {
+        case .dev: return 6         // Limited by memory
+        case .klein4B, .klein9B: return 4
+        }
+    }
 }
 
 // MARK: - Transformer Configuration

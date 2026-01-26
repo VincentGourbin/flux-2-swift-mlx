@@ -113,7 +113,7 @@ class ImageGenerationViewModel: ObservableObject {
 
     /// Add a reference image from URL
     func addReferenceImage(from url: URL) {
-        guard referenceImages.count < 3 else { return }
+        guard referenceImages.count < selectedModel.maxReferenceImages else { return }
 
         guard let nsImage = NSImage(contentsOf: url),
               let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
@@ -132,7 +132,7 @@ class ImageGenerationViewModel: ObservableObject {
 
     /// Add a reference image from NSImage (drag & drop)
     func addReferenceImage(from nsImage: NSImage) {
-        guard referenceImages.count < 3 else { return }
+        guard referenceImages.count < selectedModel.maxReferenceImages else { return }
 
         guard let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             errorMessage = "Failed to process dropped image"
