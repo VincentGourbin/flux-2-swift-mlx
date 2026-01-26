@@ -81,9 +81,7 @@ public final class Flux2MemoryManager: @unchecked Sendable {
     /// Clear GPU cache
     /// Call this between phases or periodically during generation
     public func clearCache() {
-        // Evaluate empty array to sync GPU
-        eval([])
-
+        MLX.Memory.clearCache()
         Flux2Debug.log("GPU cache cleared")
     }
 
