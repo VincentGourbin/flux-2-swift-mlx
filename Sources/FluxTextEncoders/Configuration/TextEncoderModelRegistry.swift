@@ -95,6 +95,16 @@ public enum ModelVariant: String, CaseIterable, Codable, Sendable {
             return false
         }
     }
+
+    /// License information
+    public var license: String {
+        "Apache 2.0"
+    }
+
+    /// Whether this model can be used commercially
+    public var isCommercialUseAllowed: Bool {
+        true  // Mistral Small 3.2 is Apache 2.0
+    }
 }
 
 // MARK: - Qwen3 Variant
@@ -168,6 +178,16 @@ public enum Qwen3Variant: String, CaseIterable, Codable, Sendable {
         case .qwen3_8B_8bit: return 8
         case .qwen3_8B_4bit: return 4
         }
+    }
+
+    /// License information
+    public var license: String {
+        "Apache 2.0"
+    }
+
+    /// Whether this model can be used commercially
+    public var isCommercialUseAllowed: Bool {
+        true  // Qwen3 is Apache 2.0
     }
 }
 

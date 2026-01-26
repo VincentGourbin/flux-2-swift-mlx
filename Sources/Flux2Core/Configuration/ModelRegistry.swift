@@ -84,6 +84,26 @@ public enum ModelRegistry {
             "https://huggingface.co/\(huggingFaceRepo)"
         }
 
+        /// License information (delegates to modelType)
+        public var license: String {
+            modelType.license
+        }
+
+        /// Whether this model can be used commercially (delegates to modelType)
+        public var isCommercialUseAllowed: Bool {
+            modelType.isCommercialUseAllowed
+        }
+
+        /// Recommended number of inference steps (delegates to modelType)
+        public var defaultSteps: Int {
+            modelType.defaultSteps
+        }
+
+        /// Recommended guidance scale (delegates to modelType)
+        public var defaultGuidance: Float {
+            modelType.defaultGuidance
+        }
+
         public var quantization: TransformerQuantization {
             switch self {
             case .bf16, .klein4B_bf16, .klein9B_bf16: return .bf16
@@ -171,6 +191,16 @@ public enum ModelRegistry {
             case .mlx4bit: return .mlx4bit
             }
         }
+
+        /// License information for Mistral text encoder
+        public var license: String {
+            "Apache 2.0"
+        }
+
+        /// Whether this model can be used commercially
+        public var isCommercialUseAllowed: Bool {
+            true  // Mistral Small 3.2 is Apache 2.0
+        }
     }
 
     /// VAE variant (only one available)
@@ -197,6 +227,16 @@ public enum ModelRegistry {
         public var isGated: Bool {
             // VAE is from black-forest-labs/FLUX.2-dev which is gated
             true
+        }
+
+        /// License information (inherits from FLUX.2 Dev)
+        public var license: String {
+            "FLUX.2 Non-Commercial"
+        }
+
+        /// Whether this model can be used commercially
+        public var isCommercialUseAllowed: Bool {
+            false  // VAE inherits FLUX.2 Dev non-commercial license
         }
     }
 

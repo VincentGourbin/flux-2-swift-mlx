@@ -282,4 +282,20 @@ final class TextEncoderModelRegistryTests: XCTestCase {
         XCTAssertEqual(Qwen3Variant.qwen3_8B_8bit.estimatedSizeGB, 8)
         XCTAssertEqual(Qwen3Variant.qwen3_8B_4bit.estimatedSizeGB, 4)
     }
+
+    // MARK: - License Tests
+
+    func testModelVariantLicense() {
+        for variant in ModelVariant.allCases {
+            XCTAssertTrue(variant.license.contains("Apache"))
+            XCTAssertTrue(variant.isCommercialUseAllowed)
+        }
+    }
+
+    func testQwen3VariantLicense() {
+        for variant in Qwen3Variant.allCases {
+            XCTAssertTrue(variant.license.contains("Apache"))
+            XCTAssertTrue(variant.isCommercialUseAllowed)
+        }
+    }
 }
