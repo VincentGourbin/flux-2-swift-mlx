@@ -7,12 +7,42 @@ import MLX
 import MLXNN
 import MLXRandom
 
+/// Configuration for spatial tiling during VAE decoding
+/// Used to decode large images in tiles to reduce peak memory usage
+public struct VAETilingConfig: Sendable {
+    /// Tile size in latent space (e.g., 64 = 512px after 8x upscale)
+    public var tileSize: Int
+
+    /// Overlap between tiles in latent space for blending (e.g., 8 = 64px)
+    public var tileOverlap: Int
+
+    /// Minimum image dimension (in latent space) to trigger tiling
+    /// Images smaller than this are decoded without tiling
+    public var minTileThreshold: Int
+
+    public init(tileSize: Int = 64, tileOverlap: Int = 8, minTileThreshold: Int = 128) {
+        self.tileSize = tileSize
+        self.tileOverlap = tileOverlap
+        self.minTileThreshold = minTileThreshold
+    }
+
+    /// Default tiling config (tiles of 512px with 64px overlap)
+    public static let `default` = VAETilingConfig()
+
+    /// Aggressive tiling for very large images (tiles of 256px)
+    public static let aggressive = VAETilingConfig(tileSize: 32, tileOverlap: 4, minTileThreshold: 64)
+
+    /// Disabled - no tiling
+    public static let disabled = VAETilingConfig(tileSize: 9999, tileOverlap: 0, minTileThreshold: 9999)
+}
+
 /// Variational Autoencoder for Flux.2
 ///
 /// Key differences from Flux.1 VAE:
 /// - 32 latent channels (vs 4)
 /// - Uses BatchNorm2d for latent normalization
 /// - Patch size (2, 2) for latent packing
+/// - Supports spatial tiling for large image decoding
 public class AutoencoderKLFlux2: Module, @unchecked Sendable {
     let config: VAEConfig
 
@@ -116,6 +146,143 @@ public class AutoencoderKLFlux2: Module, @unchecked Sendable {
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
         let z = encode(x)
         return decode(z)
+    }
+
+    // MARK: - Tiled Decoding
+
+    /// Decode latent to image with optional spatial tiling
+    /// Use this for large images to reduce peak memory usage
+    /// - Parameters:
+    ///   - z: Latent representation [B, 32, H/8, W/8] (NCHW format)
+    ///   - tiling: Tiling configuration (nil = auto-detect based on size)
+    /// - Returns: Decoded image [B, 3, H, W] in [-1, 1] (NCHW format)
+    public func decodeWithTiling(_ z: MLXArray, tiling: VAETilingConfig? = nil) -> MLXArray {
+        let config = tiling ?? .default
+        let H = z.shape[2]
+        let W = z.shape[3]
+
+        // Check if tiling is needed
+        if H <= config.minTileThreshold && W <= config.minTileThreshold {
+            Flux2Debug.verbose("VAE: Image small enough, decoding without tiling")
+            return decode(z)
+        }
+
+        Flux2Debug.log("VAE: Using tiled decoding for \(H*8)x\(W*8) image")
+        return decodeTiled(z, tileSize: config.tileSize, overlap: config.tileOverlap)
+    }
+
+    /// Tiled decoding implementation with overlap cropping
+    /// Decodes large latents in tiles and concatenates results
+    private func decodeTiled(_ z: MLXArray, tileSize: Int, overlap: Int) -> MLXArray {
+        let H = z.shape[2]
+        let W = z.shape[3]
+
+        let outOverlap = overlap * 8
+        let stride = tileSize - overlap
+
+        // Calculate tiles
+        let numTilesH = max(1, Int(ceil(Float(H - overlap) / Float(stride))))
+        let numTilesW = max(1, Int(ceil(Float(W - overlap) / Float(stride))))
+
+        Flux2Debug.verbose("VAE tiling: \(numTilesH)x\(numTilesW) tiles, size=\(tileSize), overlap=\(overlap)")
+
+        // Decode all tiles
+        var tiles: [[MLXArray]] = []
+        var tileHeights: [[Int]] = []
+        var tileWidths: [[Int]] = []
+
+        for tileY in 0..<numTilesH {
+            var row: [MLXArray] = []
+            var heights: [Int] = []
+            var widths: [Int] = []
+
+            for tileX in 0..<numTilesW {
+                let y0 = min(tileY * stride, max(0, H - tileSize))
+                let x0 = min(tileX * stride, max(0, W - tileSize))
+                let y1 = min(y0 + tileSize, H)
+                let x1 = min(x0 + tileSize, W)
+
+                let tile = z[0..., 0..., y0..<y1, x0..<x1]
+                let decoded = decode(tile)
+                eval(decoded)
+
+                row.append(decoded)
+                heights.append((y1 - y0) * 8)
+                widths.append((x1 - x0) * 8)
+
+                // Clear cache after each tile to manage memory
+                MLX.Memory.clearCache()
+
+                Flux2Debug.verbose("VAE tile [\(tileY),\(tileX)] decoded")
+            }
+            tiles.append(row)
+            tileHeights.append(heights)
+            tileWidths.append(widths)
+        }
+
+        Flux2Debug.log("VAE: Blending \(numTilesH * numTilesW) tiles")
+
+        // Reconstruct by cropping overlaps and concatenating
+        var rows: [MLXArray] = []
+        for tileY in 0..<numTilesH {
+            var rowTiles: [MLXArray] = []
+            for tileX in 0..<numTilesW {
+                let tile = tiles[tileY][tileX]
+                let h = tileHeights[tileY][tileX]
+                let w = tileWidths[tileY][tileX]
+
+                // Crop overlap regions (take center half of overlap from each side)
+                let cropTop = (tileY > 0) ? outOverlap / 2 : 0
+                let cropLeft = (tileX > 0) ? outOverlap / 2 : 0
+                let cropBottom = (tileY < numTilesH - 1) ? outOverlap / 2 : 0
+                let cropRight = (tileX < numTilesW - 1) ? outOverlap / 2 : 0
+
+                let cropped = tile[0..., 0..., cropTop..<(h - cropBottom), cropLeft..<(w - cropRight)]
+                rowTiles.append(cropped)
+            }
+            // Concatenate horizontally
+            let row = concatenated(rowTiles, axis: 3)
+            rows.append(row)
+        }
+        // Concatenate vertically
+        let result = concatenated(rows, axis: 2)
+
+        Flux2Debug.log("VAE: Tiled decoding completed, output shape: \(result.shape)")
+        return result
+    }
+
+    /// Create a blending weight mask for tile overlap
+    private func createBlendMask(size: Int, overlap: Int) -> MLXArray {
+        // Create linear ramp weights for blending
+        var weights = [Float](repeating: 1.0, count: size * size)
+
+        // Apply linear falloff in overlap regions
+        for y in 0..<size {
+            for x in 0..<size {
+                var weight: Float = 1.0
+
+                // Top edge
+                if y < overlap {
+                    weight *= Float(y) / Float(overlap)
+                }
+                // Bottom edge
+                if y >= size - overlap {
+                    weight *= Float(size - 1 - y) / Float(overlap)
+                }
+                // Left edge
+                if x < overlap {
+                    weight *= Float(x) / Float(overlap)
+                }
+                // Right edge
+                if x >= size - overlap {
+                    weight *= Float(size - 1 - x) / Float(overlap)
+                }
+
+                weights[y * size + x] = weight
+            }
+        }
+
+        return MLXArray(weights).reshaped([1, 1, size, size])
     }
 }
 
