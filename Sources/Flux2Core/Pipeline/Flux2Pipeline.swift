@@ -72,6 +72,9 @@ public class Flux2Pipeline: @unchecked Sendable {
     /// Quantization configuration
     public let quantization: Flux2QuantizationConfig
 
+    /// Memory optimization settings for transformer inference
+    public var memoryOptimization: MemoryOptimizationConfig
+
     /// Text encoder (Mistral - for Dev)
     private var textEncoder: Flux2TextEncoder?
 
@@ -107,13 +110,23 @@ public class Flux2Pipeline: @unchecked Sendable {
     ///   - model: Model variant to use (default: .dev)
     ///   - quantization: Quantization settings for each component
     ///   - hfToken: HuggingFace token for gated models
+    /// Initialize the Flux.2 pipeline
+    /// - Parameters:
+    ///   - model: Model variant (dev, klein-4b, klein-9b)
+    ///   - quantization: Quantization configuration
+    ///   - memoryOptimization: Memory optimization settings (nil = auto-detect based on system RAM)
+    ///   - hfToken: HuggingFace token for model downloads
     public init(
         model: Flux2Model = .dev,
         quantization: Flux2QuantizationConfig = .balanced,
+        memoryOptimization: MemoryOptimizationConfig? = nil,
         hfToken: String? = nil
     ) {
         self.model = model
         self.quantization = quantization
+        self.memoryOptimization = memoryOptimization ?? MemoryOptimizationConfig.recommended(
+            forRAMGB: Flux2MemoryManager.shared.physicalMemoryGB
+        )
         self.scheduler = FlowMatchEulerScheduler()
         self.downloader = hfToken != nil ? Flux2ModelDownloader(hfToken: hfToken) : Flux2ModelDownloader()
     }
@@ -237,8 +250,12 @@ public class Flux2Pipeline: @unchecked Sendable {
             throw Flux2Error.modelNotLoaded("\(model.displayName) transformer weights not found. Run: \(downloadCmd)")
         }
 
-        // Create model with appropriate config
-        transformer = Flux2Transformer2DModel(config: model.transformerConfig)
+        // Create model with appropriate config and memory optimization
+        transformer = Flux2Transformer2DModel(
+            config: model.transformerConfig,
+            memoryOptimization: memoryOptimization
+        )
+        Flux2Debug.log("Memory optimization: \(memoryOptimization)")
 
         // Load weights
         let weights = try Flux2WeightLoader.loadWeights(from: modelPath)

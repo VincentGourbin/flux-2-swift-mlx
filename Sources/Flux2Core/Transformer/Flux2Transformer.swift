@@ -22,6 +22,9 @@ import MLXNN
 public class Flux2Transformer2DModel: Module, @unchecked Sendable {
     let config: Flux2TransformerConfig
 
+    /// Memory optimization settings for periodic graph evaluation
+    public var memoryOptimization: MemoryOptimizationConfig
+
     // Input embeddings
     let xEmbedder: Linear           // Latent projection: 128 -> 6144
     let contextEmbedder: Linear     // Text projection: 15360 -> 6144
@@ -46,9 +49,15 @@ public class Flux2Transformer2DModel: Module, @unchecked Sendable {
     let projOut: Linear             // Output projection: 6144 -> 128
 
     /// Initialize Flux.2 Transformer
-    /// - Parameter config: Model configuration
-    public init(config: Flux2TransformerConfig = .flux2Dev) {
+    /// - Parameters:
+    ///   - config: Model configuration
+    ///   - memoryOptimization: Memory optimization settings (default: moderate)
+    public init(
+        config: Flux2TransformerConfig = .flux2Dev,
+        memoryOptimization: MemoryOptimizationConfig = .moderate
+    ) {
         self.config = config
+        self.memoryOptimization = memoryOptimization
 
         let dim = config.innerDim  // 6144
 
@@ -162,6 +171,25 @@ public class Flux2Transformer2DModel: Module, @unchecked Sendable {
             imgHS = newImg
             txtHS = newTxt
             Flux2Debug.verbose("After block \(blockIdx) - imgHS: \(imgHS.shape), txtHS: \(txtHS.shape)")
+
+            // Memory optimization: periodic evaluation to prevent graph accumulation
+            if memoryOptimization.evalFrequency > 0 &&
+                (blockIdx + 1) % memoryOptimization.evalFrequency == 0 {
+                eval(imgHS, txtHS)
+                if memoryOptimization.clearCacheOnEval {
+                    MLX.Memory.clearCache()
+                }
+                Flux2Debug.verbose("Eval at double-stream block \(blockIdx)")
+            }
+        }
+
+        // Memory optimization: evaluate between phases
+        if memoryOptimization.evalBetweenPhases {
+            eval(imgHS, txtHS)
+            if memoryOptimization.clearCacheOnEval {
+                MLX.Memory.clearCache()
+            }
+            Flux2Debug.verbose("Eval between double/single stream phases")
         }
 
         // --- Single-Stream Blocks ---
@@ -174,7 +202,7 @@ public class Flux2Transformer2DModel: Module, @unchecked Sendable {
         // OPTIMIZATION: Compute single-stream modulation ONCE before the loop
         let singleMod = singleStreamModulation(temb)
 
-        for block in singleTransformerBlocks {
+        for (blockIdx, block) in singleTransformerBlocks.enumerated() {
             // Pass encoder_hidden_states=nil since everything is in combinedHS
             combinedHS = block(
                 hiddenStates: combinedHS,
@@ -183,6 +211,16 @@ public class Flux2Transformer2DModel: Module, @unchecked Sendable {
                 rotaryEmb: ropeEmb,
                 modParams: singleMod
             )
+
+            // Memory optimization: periodic evaluation to prevent graph accumulation
+            if memoryOptimization.evalFrequency > 0 &&
+                (blockIdx + 1) % memoryOptimization.evalFrequency == 0 {
+                eval(combinedHS)
+                if memoryOptimization.clearCacheOnEval {
+                    MLX.Memory.clearCache()
+                }
+                Flux2Debug.verbose("Eval at single-stream block \(blockIdx)")
+            }
         }
 
         // Remove text tokens from the concatenated stream
