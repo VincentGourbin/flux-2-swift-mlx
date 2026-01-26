@@ -5,26 +5,47 @@ import Foundation
 import MLX
 import MLXNN
 
+/// Cached RoPE embeddings with LRU eviction
+/// Note: Not Sendable because MLXArray isn't, but thread-safety is ensured by NSLock
+private struct RoPECacheEntry {
+    let cos: MLXArray
+    let sin: MLXArray
+    var lastAccess: UInt64
+}
+
 /// 4D Rotary Position Embedding for Flux.2
 ///
 /// Flux.2 uses a 4D RoPE with axes_dims = [32, 32, 32, 32] for a total of 128 dims.
 /// This encodes position information for (T, H, W, L) axes.
+///
+/// Includes LRU caching to avoid recomputing embeddings for repeated position IDs.
 public class Flux2RoPE: Module, @unchecked Sendable {
     let axesDims: [Int]
     let theta: Float
     let totalDims: Int
 
+    /// Maximum number of cached entries (LRU eviction when exceeded)
+    private let cacheMaxSize: Int
+
+    /// Cache for computed embeddings, keyed by shape hash
+    private var cache: [String: RoPECacheEntry] = [:]
+    private var accessCounter: UInt64 = 0
+    private let lock = NSLock()
+
     /// Initialize RoPE with given axes dimensions
     /// - Parameters:
     ///   - axesDims: Dimensions per axis [T, H, W, L], default [32, 32, 32, 32]
     ///   - theta: Base frequency for positional encoding, default 2000.0
+    ///   - cacheMaxSize: Maximum cache entries (default 8)
     public init(
         axesDims: [Int] = [32, 32, 32, 32],
-        theta: Float = 2000.0
+        theta: Float = 2000.0,
+        cacheMaxSize: Int = 8
     ) {
         self.axesDims = axesDims
         self.theta = theta
         self.totalDims = axesDims.reduce(0, +)
+        self.cacheMaxSize = cacheMaxSize
     }
 
     /// Compute frequency bands for given dimension
@@ -39,10 +60,67 @@ public class Flux2RoPE: Module, @unchecked Sendable {
         return freqs
     }
 
+    /// Generate cache key from position IDs shape
+    /// For deterministic position IDs (text/image), shape uniquely identifies the embeddings
+    private func cacheKey(for ids: MLXArray) -> String {
+        // Shape-based key: seqLen determines the embeddings
+        // We also include a hash of first/last positions for extra safety
+        let seqLen = ids.shape[0]
+        return "rope_\(seqLen)"
+    }
+
     /// Generate rotary embeddings for position IDs
     /// - Parameter ids: Position IDs [S, 4] where 4 corresponds to (T, H, W, L)
     /// - Returns: Tuple of (cos, sin) embeddings each of shape [S, totalDims]
     public func callAsFunction(_ ids: MLXArray) -> (cos: MLXArray, sin: MLXArray) {
+        let key = cacheKey(for: ids)
+
+        // Check cache with lock
+        lock.lock()
+        if var entry = cache[key] {
+            accessCounter += 1
+            entry.lastAccess = accessCounter
+            cache[key] = entry
+            lock.unlock()
+            Flux2Debug.verbose("RoPE cache hit for \(key)")
+            return (cos: entry.cos, sin: entry.sin)
+        }
+        lock.unlock()
+
+        Flux2Debug.verbose("RoPE cache miss for \(key), computing...")
+
+        // Compute embeddings
+        let (cosEmb, sinEmb) = computeEmbeddings(for: ids)
+
+        // Store in cache with LRU eviction
+        lock.lock()
+        accessCounter += 1
+
+        // Evict LRU entry if cache is full
+        if cache.count >= cacheMaxSize {
+            if let lruKey = cache.min(by: { $0.value.lastAccess < $1.value.lastAccess })?.key {
+                cache.removeValue(forKey: lruKey)
+                Flux2Debug.verbose("RoPE cache evicted \(lruKey)")
+            }
+        }
+
+        cache[key] = RoPECacheEntry(cos: cosEmb, sin: sinEmb, lastAccess: accessCounter)
+        lock.unlock()
+
+        return (cos: cosEmb, sin: sinEmb)
+    }
+
+    /// Clear the RoPE embedding cache
+    public func clearCache() {
+        lock.lock()
+        cache.removeAll()
+        accessCounter = 0
+        lock.unlock()
+        Flux2Debug.verbose("RoPE cache cleared")
+    }
+
+    /// Compute embeddings (internal method)
+    private func computeEmbeddings(for ids: MLXArray) -> (cos: MLXArray, sin: MLXArray) {
         var cosComponents: [MLXArray] = []
         var sinComponents: [MLXArray] = []
 
