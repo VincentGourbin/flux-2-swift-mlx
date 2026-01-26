@@ -395,6 +395,66 @@ final class ModelRegistryTests: XCTestCase {
         let highRamConfig = ModelRegistry.recommendedConfig(forRAMGB: 128)
         XCTAssertEqual(highRamConfig.transformer, .bf16)
     }
+
+    // MARK: - Gated Status Tests
+
+    func testTransformerVariantIsGated() {
+        // Dev variants from black-forest-labs are gated
+        XCTAssertTrue(ModelRegistry.TransformerVariant.bf16.isGated)
+        XCTAssertTrue(ModelRegistry.TransformerVariant.qint8.isGated)
+
+        // Klein bf16 from black-forest-labs are gated
+        XCTAssertTrue(ModelRegistry.TransformerVariant.klein4B_bf16.isGated)
+        XCTAssertTrue(ModelRegistry.TransformerVariant.klein9B_bf16.isGated)
+
+        // Community klein4B 8bit is NOT gated
+        XCTAssertFalse(ModelRegistry.TransformerVariant.klein4B_8bit.isGated)
+    }
+
+    func testTextEncoderVariantIsGated() {
+        // bf16 from mistralai is gated
+        XCTAssertTrue(ModelRegistry.TextEncoderVariant.bf16.isGated)
+
+        // Quantized versions from lmstudio-community are NOT gated
+        XCTAssertFalse(ModelRegistry.TextEncoderVariant.mlx8bit.isGated)
+        XCTAssertFalse(ModelRegistry.TextEncoderVariant.mlx6bit.isGated)
+        XCTAssertFalse(ModelRegistry.TextEncoderVariant.mlx4bit.isGated)
+    }
+
+    func testVAEVariantIsGated() {
+        // VAE from black-forest-labs is gated
+        XCTAssertTrue(ModelRegistry.VAEVariant.standard.isGated)
+    }
+
+    // MARK: - HuggingFace URL Tests
+
+    func testTransformerVariantHuggingFaceURL() {
+        let bf16 = ModelRegistry.TransformerVariant.bf16
+        XCTAssertTrue(bf16.huggingFaceURL.starts(with: "https://huggingface.co/"))
+        XCTAssertTrue(bf16.huggingFaceURL.contains(bf16.huggingFaceRepo))
+    }
+
+    func testTextEncoderVariantHuggingFaceURL() {
+        let mlx8bit = ModelRegistry.TextEncoderVariant.mlx8bit
+        XCTAssertTrue(mlx8bit.huggingFaceURL.starts(with: "https://huggingface.co/"))
+        XCTAssertTrue(mlx8bit.huggingFaceURL.contains(mlx8bit.huggingFaceRepo))
+    }
+
+    func testVAEVariantHuggingFaceURL() {
+        let vae = ModelRegistry.VAEVariant.standard
+        XCTAssertTrue(vae.huggingFaceURL.starts(with: "https://huggingface.co/"))
+        XCTAssertTrue(vae.huggingFaceURL.contains(vae.huggingFaceRepo))
+    }
+
+    func testTextEncoderVariantHuggingFaceRepoValues() {
+        // bf16 should be from mistralai
+        XCTAssertTrue(ModelRegistry.TextEncoderVariant.bf16.huggingFaceRepo.contains("mistralai"))
+
+        // Quantized should be from lmstudio-community
+        XCTAssertTrue(ModelRegistry.TextEncoderVariant.mlx8bit.huggingFaceRepo.contains("lmstudio-community"))
+        XCTAssertTrue(ModelRegistry.TextEncoderVariant.mlx6bit.huggingFaceRepo.contains("lmstudio-community"))
+        XCTAssertTrue(ModelRegistry.TextEncoderVariant.mlx4bit.huggingFaceRepo.contains("lmstudio-community"))
+    }
 }
 
 // MARK: - VAE Config Extended Tests

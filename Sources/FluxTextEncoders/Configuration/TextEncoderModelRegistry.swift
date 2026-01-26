@@ -46,12 +46,53 @@ public enum ModelVariant: String, CaseIterable, Codable, Sendable {
         }
     }
 
+    /// Estimated size in GB (as Int for consistency)
+    public var estimatedSizeGB: Int {
+        switch self {
+        case .bf16: return 48
+        case .mlx8bit: return 25
+        case .mlx6bit: return 19
+        case .mlx4bit: return 14
+        }
+    }
+
     public var shortName: String {
         switch self {
         case .bf16: return "BF16"
         case .mlx8bit: return "8-bit"
         case .mlx6bit: return "6-bit"
         case .mlx4bit: return "4-bit"
+        }
+    }
+
+    /// HuggingFace repository ID
+    public var repoId: String {
+        switch self {
+        case .bf16:
+            return "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+        case .mlx8bit:
+            return "lmstudio-community/Mistral-Small-3.2-24B-Instruct-2506-MLX-8bit"
+        case .mlx6bit:
+            return "lmstudio-community/Mistral-Small-3.2-24B-Instruct-2506-MLX-6bit"
+        case .mlx4bit:
+            return "lmstudio-community/Mistral-Small-3.2-24B-Instruct-2506-MLX-4bit"
+        }
+    }
+
+    /// Full HuggingFace URL for the model
+    public var huggingFaceURL: String {
+        "https://huggingface.co/\(repoId)"
+    }
+
+    /// Whether this model requires accepting a license on HuggingFace before downloading
+    public var isGated: Bool {
+        switch self {
+        case .bf16:
+            // Original Mistral AI model is gated
+            return true
+        case .mlx8bit, .mlx6bit, .mlx4bit:
+            // lmstudio-community quantized versions are NOT gated
+            return false
         }
     }
 }
@@ -109,6 +150,25 @@ public enum Qwen3Variant: String, CaseIterable, Codable, Sendable {
         case .qwen3_8B_4bit: return "lmstudio-community/Qwen3-8B-MLX-4bit"
         }
     }
+
+    /// Full HuggingFace URL for the model
+    public var huggingFaceURL: String {
+        "https://huggingface.co/\(repoId)"
+    }
+
+    /// Whether this model requires accepting a license on HuggingFace before downloading
+    /// All Qwen3 models from lmstudio-community are NOT gated
+    public var isGated: Bool { false }
+
+    /// Estimated size in GB (as Int for consistency with Flux2Core)
+    public var estimatedSizeGB: Int {
+        switch self {
+        case .qwen3_4B_8bit: return 4
+        case .qwen3_4B_4bit: return 2
+        case .qwen3_8B_8bit: return 8
+        case .qwen3_8B_4bit: return 4
+        }
+    }
 }
 
 // MARK: - Model Info
@@ -121,7 +181,13 @@ public struct ModelInfo: Codable, Sendable {
     public let variant: ModelVariant
     public let parameters: String
     public let modelType: ModelType
-    
+    public let isGated: Bool
+
+    /// Full HuggingFace URL for the model
+    public var huggingFaceURL: String {
+        "https://huggingface.co/\(repoId)"
+    }
+
     public init(
         id: String,
         repoId: String,
@@ -129,7 +195,8 @@ public struct ModelInfo: Codable, Sendable {
         description: String,
         variant: ModelVariant,
         parameters: String,
-        modelType: ModelType = .mistral
+        modelType: ModelType = .mistral,
+        isGated: Bool = false
     ) {
         self.id = id
         self.repoId = repoId
@@ -138,6 +205,7 @@ public struct ModelInfo: Codable, Sendable {
         self.variant = variant
         self.parameters = parameters
         self.modelType = modelType
+        self.isGated = isGated
     }
 }
 
@@ -153,6 +221,15 @@ public struct Qwen3ModelInfo: Codable, Sendable {
 
     /// Display name (alias for name)
     public var displayName: String { name }
+
+    /// Full HuggingFace URL for the model
+    public var huggingFaceURL: String {
+        "https://huggingface.co/\(repoId)"
+    }
+
+    /// Whether this model requires accepting a license on HuggingFace before downloading
+    /// All Qwen3 models from lmstudio-community are NOT gated
+    public var isGated: Bool { false }
 
     public init(
         id: String,
@@ -196,7 +273,8 @@ public final class TextEncoderModelRegistry {
                 description: "Original full precision model from Mistral AI - reference quality",
                 variant: .bf16,
                 parameters: "24B",
-                modelType: .mistral
+                modelType: .mistral,
+                isGated: true  // Original Mistral AI model is gated
             ),
             ModelInfo(
                 id: "mistral-small-3.2-8bit",
@@ -205,7 +283,8 @@ public final class TextEncoderModelRegistry {
                 description: "8-bit quantized with VLM layers, good balance of quality and memory",
                 variant: .mlx8bit,
                 parameters: "24B",
-                modelType: .mistral
+                modelType: .mistral,
+                isGated: false  // lmstudio-community is NOT gated
             ),
             ModelInfo(
                 id: "mistral-small-3.2-6bit",
@@ -214,7 +293,8 @@ public final class TextEncoderModelRegistry {
                 description: "6-bit quantized with VLM layers, balanced compression",
                 variant: .mlx6bit,
                 parameters: "24B",
-                modelType: .mistral
+                modelType: .mistral,
+                isGated: false  // lmstudio-community is NOT gated
             ),
             ModelInfo(
                 id: "mistral-small-3.2-4bit",
@@ -223,7 +303,8 @@ public final class TextEncoderModelRegistry {
                 description: "4-bit quantized with VLM layers, memory efficient",
                 variant: .mlx4bit,
                 parameters: "24B",
-                modelType: .mistral
+                modelType: .mistral,
+                isGated: false  // lmstudio-community is NOT gated
             ),
         ]
     }
