@@ -192,6 +192,23 @@ public class Flux2RoPE: Module, @unchecked Sendable {
         // x shape: [B, H, S, D]
         // cos/sin shape: [S, D]
 
+        // Try fused Metal kernel first (requires float32 cos/sin)
+        let cosFloat32 = cosEmb.dtype == .float32 ? cosEmb : cosEmb.asType(.float32)
+        let sinFloat32 = sinEmb.dtype == .float32 ? sinEmb : sinEmb.asType(.float32)
+
+        if let fused = Flux2FusedKernels.applyRotaryEmb(x, cos: cosFloat32, sin: sinFloat32) {
+            return fused
+        }
+
+        // Fall back to reference implementation
+        return applyRotaryReference(x, cos: cosEmb, sin: sinEmb)
+    }
+
+    /// Reference implementation of rotary embeddings (fallback when kernel unavailable)
+    private func applyRotaryReference(_ x: MLXArray, cos cosEmb: MLXArray, sin sinEmb: MLXArray) -> MLXArray {
+        // x shape: [B, H, S, D]
+        // cos/sin shape: [S, D]
+
         // Reshape for broadcasting
         let cosExpanded = cosEmb.expandedDimensions(axes: [0, 1])  // [1, 1, S, D]
         let sinExpanded = sinEmb.expandedDimensions(axes: [0, 1])  // [1, 1, S, D]
