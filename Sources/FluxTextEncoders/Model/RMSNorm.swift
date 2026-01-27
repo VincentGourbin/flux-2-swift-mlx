@@ -22,7 +22,8 @@ public class RMSNorm: Module, UnaryLayer {
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
         // Manual RMSNorm implementation
-        // Note: MLXFast.rmsNorm() causes bfloat16 type promotion issues
+        // Note: MLXFast.rmsNorm() causes bfloat16 type promotion issues with scaled_dot_product_attention
+        // Note: Mixed precision (converting to Float32 and back) also causes type promotion issues
         let variance = mean(x * x, axis: -1, keepDims: true)
         let normalized = x * rsqrt(variance + MLXArray([eps]))
         return weight * normalized

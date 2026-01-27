@@ -29,18 +29,22 @@ public class GroupNorm: Module, @unchecked Sendable {
         let W = shape[2]
         let C = shape[3]
 
+        // Mixed precision: compute statistics in Float32 for numerical stability
+        let inputDtype = x.dtype
+        let xFloat = x.asType(.float32)
+
         // Reshape to [B, H, W, G, C/G]
-        let reshaped = x.reshaped([B, H, W, numGroups, C / numGroups])
+        let reshaped = xFloat.reshaped([B, H, W, numGroups, C / numGroups])
 
         // Compute mean and variance per group (over H, W, and C/G within each group)
         let mean = MLX.mean(reshaped, axes: [1, 2, 4], keepDims: true)
         let variance = MLX.mean(pow(reshaped - mean, 2), axes: [1, 2, 4], keepDims: true)
 
-        // Normalize
+        // Normalize in Float32
         let normalized = (reshaped - mean) / sqrt(variance + eps)
 
-        // Reshape back to [B, H, W, C]
-        let out = normalized.reshaped([B, H, W, C])
+        // Reshape back to [B, H, W, C] and convert to original dtype
+        let out = normalized.reshaped([B, H, W, C]).asType(inputDtype)
 
         // Apply weight and bias [1, 1, 1, C] for NHWC
         let weightReshaped = weight.reshaped([1, 1, 1, C])
@@ -84,24 +88,32 @@ public class BatchNorm2d: Module, @unchecked Sendable {
         let shape = x.shape
         let C = shape[3]
 
-        if training {
-            // Compute batch statistics (over B, H, W)
-            let mean = MLX.mean(x, axes: [0, 1, 2])
-            let variance = MLX.mean(pow(x - mean.reshaped([1, 1, 1, C]), 2), axes: [0, 1, 2])
+        // Mixed precision: compute statistics in Float32 for numerical stability
+        let inputDtype = x.dtype
+        let xFloat = x.asType(.float32)
 
-            // Update running stats
+        if training {
+            // Compute batch statistics (over B, H, W) in Float32
+            let mean = MLX.mean(xFloat, axes: [0, 1, 2])
+            let variance = MLX.mean(pow(xFloat - mean.reshaped([1, 1, 1, C]), 2), axes: [0, 1, 2])
+
+            // Update running stats (keep in Float32)
             if trackRunningStats {
                 runningMean = (1 - momentum) * runningMean + momentum * mean
                 runningVar = (1 - momentum) * runningVar + momentum * variance
             }
 
-            // Normalize with batch stats
-            let normalized = (x - mean.reshaped([1, 1, 1, C])) / sqrt(variance.reshaped([1, 1, 1, C]) + eps)
-            return normalized * weight.reshaped([1, 1, 1, C]) + bias.reshaped([1, 1, 1, C])
+            // Normalize with batch stats in Float32, then convert back
+            let normalized = (xFloat - mean.reshaped([1, 1, 1, C])) / sqrt(variance.reshaped([1, 1, 1, C]) + eps)
+            let out = normalized.asType(inputDtype)
+            return out * weight.reshaped([1, 1, 1, C]) + bias.reshaped([1, 1, 1, C])
         } else {
-            // Use running stats
-            let normalized = (x - runningMean.reshaped([1, 1, 1, C])) / sqrt(runningVar.reshaped([1, 1, 1, C]) + eps)
-            return normalized * weight.reshaped([1, 1, 1, C]) + bias.reshaped([1, 1, 1, C])
+            // Use running stats - normalize in Float32
+            let runningMeanFloat = runningMean.asType(.float32)
+            let runningVarFloat = runningVar.asType(.float32)
+            let normalized = (xFloat - runningMeanFloat.reshaped([1, 1, 1, C])) / sqrt(runningVarFloat.reshaped([1, 1, 1, C]) + eps)
+            let out = normalized.asType(inputDtype)
+            return out * weight.reshaped([1, 1, 1, C]) + bias.reshaped([1, 1, 1, C])
         }
     }
 }
