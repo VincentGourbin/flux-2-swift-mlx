@@ -388,4 +388,22 @@ public class LoRALoader {
     public var layerPaths: [String] {
         Array(weights.keys).sorted()
     }
+
+    /// Clear LoRA weights from memory after fusion
+    ///
+    /// After LoRA weights have been merged into the base model weights via `mergeLoRAWeights`,
+    /// the original LoRA matrices (loraA/loraB) are no longer needed for inference.
+    /// Calling this method frees the memory used by these matrices.
+    ///
+    /// - Note: After calling this, the LoRA cannot be "unfused" without reloading the base model.
+    public func clearWeightsAfterFusion() {
+        let memoryFreed = info?.memorySizeMB ?? 0
+        weights.removeAll()
+        Flux2Debug.log("[LoRA] Cleared weights after fusion, freed ~\(String(format: "%.1f", memoryFreed)) MB")
+    }
+
+    /// Whether weights are still in memory (not yet cleared after fusion)
+    public var hasWeightsInMemory: Bool {
+        !weights.isEmpty
+    }
 }

@@ -194,4 +194,27 @@ public class LoRAManager: @unchecked Sendable {
         if keywords.isEmpty { return prompt }
         return keywords.joined(separator: ", ") + ", " + prompt
     }
+
+    /// Clear LoRA weights from memory after fusion into base model
+    ///
+    /// After LoRA weights have been merged into the transformer via `mergeLoRAWeights`,
+    /// the original LoRA matrices are no longer needed. This method frees that memory.
+    ///
+    /// - Note: After calling this, LoRAs cannot be "unfused" without reloading the base model.
+    public func clearWeightsAfterFusion() {
+        var totalFreed: Float = 0
+        for loader in loaders {
+            if loader.hasWeightsInMemory {
+                totalFreed += loader.info?.memorySizeMB ?? 0
+                loader.clearWeightsAfterFusion()
+            }
+        }
+        layerMappings.removeAll()
+        Flux2Debug.log("[LoRA] Total memory freed after fusion: ~\(String(format: "%.1f", totalFreed)) MB")
+    }
+
+    /// Whether any loaders still have weights in memory
+    public var hasWeightsInMemory: Bool {
+        loaders.contains { $0.hasWeightsInMemory }
+    }
 }

@@ -264,6 +264,8 @@ public class Flux2Pipeline: @unchecked Sendable {
         // Merge LoRA weights if any are loaded
         if let loraManager = loraManager, loraManager.count > 0 {
             Flux2WeightLoader.mergeLoRAWeights(from: loraManager, into: transformer!)
+            // Free LoRA matrices from memory after fusion (they're now baked into base weights)
+            loraManager.clearWeightsAfterFusion()
         }
 
         // Ensure weights are evaluated
@@ -318,6 +320,8 @@ public class Flux2Pipeline: @unchecked Sendable {
         // If transformer is already loaded, merge LoRA weights immediately
         if let transformer = transformer {
             Flux2WeightLoader.mergeLoRAWeights(from: loraManager!, into: transformer)
+            // Free LoRA matrices from memory after fusion (they're now baked into base weights)
+            loraManager!.clearWeightsAfterFusion()
         }
 
         return info
