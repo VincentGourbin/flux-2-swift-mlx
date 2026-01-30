@@ -18,6 +18,7 @@ public enum Flux2Error: Error, LocalizedError {
     case weightLoadingFailed(String)
     case imageProcessingFailed(String)
     case generationFailed(String)
+    case generationCancelled
 
     public var errorDescription: String? {
         switch self {
@@ -33,6 +34,8 @@ public enum Flux2Error: Error, LocalizedError {
             return "Image processing failed: \(message)"
         case .generationFailed(let message):
             return "Generation failed: \(message)"
+        case .generationCancelled:
+            return "Generation was cancelled"
         }
     }
 }

@@ -905,8 +905,13 @@ public class Flux2Pipeline: @unchecked Sendable {
                 // Concatenate current output latents with reference latents for this step
                 let inputLatents = concatenated([packedOutputLatents, referenceLatents], axis: 1)
 
+                // Check transformer is still loaded (may be unloaded during cancellation)
+                guard let transformer = transformer else {
+                    throw Flux2Error.generationCancelled
+                }
+
                 // Run transformer with combined latents
-                let noisePred = transformer!.callAsFunction(
+                let noisePred = transformer.callAsFunction(
                     hiddenStates: inputLatents,
                     encoderHiddenStates: textEmbeddings,
                     timestep: t,
@@ -1044,8 +1049,13 @@ public class Flux2Pipeline: @unchecked Sendable {
             let sigma = scheduler.sigmas[stepIdx]
             let t = MLXArray([sigma])
 
+            // Check transformer is still loaded (may be unloaded during cancellation)
+            guard let transformer = transformer else {
+                throw Flux2Error.generationCancelled
+            }
+
             // Run transformer
-            let noisePred = transformer!.callAsFunction(
+            let noisePred = transformer.callAsFunction(
                 hiddenStates: packedLatents,
                 encoderHiddenStates: textEmbeddings,
                 timestep: t,
