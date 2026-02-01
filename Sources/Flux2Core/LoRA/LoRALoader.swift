@@ -106,6 +106,10 @@ public class LoRALoader {
             if layerPath.hasPrefix("transformer.") {
                 layerPath = String(layerPath.dropFirst("transformer.".count))
             }
+            // BFL format uses "diffusion_model." prefix (e.g., Ostris ai-toolkit, Koni anime LoRA)
+            if layerPath.hasPrefix("diffusion_model.") {
+                layerPath = String(layerPath.dropFirst("diffusion_model.".count))
+            }
 
             if layerGroups[layerPath] == nil {
                 layerGroups[layerPath] = (nil, nil)
@@ -231,7 +235,9 @@ public class LoRALoader {
         path = path.replacingOccurrences(of: "transformer_blocks.", with: "transformerBlocks.")
 
         // Map attention projections (single blocks)
+        // Note: Some LoRAs use "to_qkv_mlp_proj", others use "to_qkv_mlp"
         path = path.replacingOccurrences(of: ".attn.to_qkv_mlp_proj", with: ".attn.toQkvMlp")
+        path = path.replacingOccurrences(of: ".attn.to_qkv_mlp", with: ".attn.toQkvMlp")
         // Note: Single blocks use ".attn.to_out" without .0
         // Double blocks use ".attn.to_out.0" with .0
         path = path.replacingOccurrences(of: ".attn.to_out.0", with: ".attn.toOut")  // Double blocks first (more specific)
@@ -262,11 +268,38 @@ public class LoRALoader {
         path = path.replacingOccurrences(of: "double_stream_modulation_txt.", with: "doubleStreamModulationTxt.")
         path = path.replacingOccurrences(of: "single_stream_modulation.", with: "singleStreamModulation.")
 
-        // Map embedders
+        // Map embedders (Diffusers format)
         path = path.replacingOccurrences(of: "x_embedder", with: "xEmbedder")
         path = path.replacingOccurrences(of: "context_embedder", with: "contextEmbedder")
 
-        // Map output
+        // Map embedders (BFL format - used by Ostris ai-toolkit and fal.ai)
+        if path == "img_in" {
+            return "xEmbedder"
+        }
+        if path == "txt_in" {
+            return "contextEmbedder"
+        }
+
+        // Map final layer (BFL format)
+        if path == "final_layer.linear" {
+            return "projOut"
+        }
+
+        // Map time embeddings (BFL format)
+        if path == "time_in.in_layer" {
+            return "timeGuidanceEmbed.timestepEmbedder.linear1"
+        }
+        if path == "time_in.out_layer" {
+            return "timeGuidanceEmbed.timestepEmbedder.linear2"
+        }
+
+        // Map modulation .lin to .linear (only at the end of path)
+        // BFL uses .lin, Swift uses .linear for modulation layers
+        if path.hasSuffix(".lin") {
+            path = String(path.dropLast(4)) + ".linear"
+        }
+
+        // Map output (Diffusers format)
         path = path.replacingOccurrences(of: "norm_out.", with: "normOut.")
         path = path.replacingOccurrences(of: "proj_out", with: "projOut")
 
@@ -277,16 +310,32 @@ public class LoRALoader {
     /// Note: Combined QKV layers (.img_attn.qkv, .txt_attn.qkv) are handled
     /// separately by splitQKVLoRA() and should not reach this function.
     private func mapBFLPathToSwiftPath(_ bflPath: String) -> String {
-        // Double block attention output projections
+        // Double block layers (attention + MLP)
         if bflPath.contains("double_blocks.") {
             let blockIdx = extractBlockIndex(from: bflPath, prefix: "double_blocks.")
 
+            // Attention output projections
             if bflPath.contains(".img_attn.proj") {
                 return "transformerBlocks.\(blockIdx).attn.toOut"
             } else if bflPath.contains(".txt_attn.proj") {
                 return "transformerBlocks.\(blockIdx).attn.toAddOut"
             }
             // Note: .img_attn.qkv and .txt_attn.qkv are split into Q/K/V in splitQKVLoRA()
+
+            // MLP/FFN layers (image stream)
+            // BFL: img_mlp.0 is the gated linear (SwiGLU proj), img_mlp.2 is the output linear
+            if bflPath.contains(".img_mlp.0") {
+                return "transformerBlocks.\(blockIdx).ff.activation.proj"
+            } else if bflPath.contains(".img_mlp.2") {
+                return "transformerBlocks.\(blockIdx).ff.linearOut"
+            }
+
+            // MLP/FFN layers (text/context stream)
+            if bflPath.contains(".txt_mlp.0") {
+                return "transformerBlocks.\(blockIdx).ffContext.activation.proj"
+            } else if bflPath.contains(".txt_mlp.2") {
+                return "transformerBlocks.\(blockIdx).ffContext.linearOut"
+            }
         }
 
         // Single block linear layers
