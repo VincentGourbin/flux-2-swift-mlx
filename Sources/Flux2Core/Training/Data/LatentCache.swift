@@ -148,7 +148,10 @@ public final class LatentCache: @unchecked Sendable {
     
     // MARK: - Pre-encoding
     
-    /// Pre-encode all images in dataset and cache latents
+    /// Batch size for VAE encoding (balances GPU efficiency vs memory)
+    private static let encodingBatchSize = 4
+    
+    /// Pre-encode all images in dataset and cache latents (optimized version)
     /// - Parameters:
     ///   - dataset: Training dataset
     ///   - vae: VAE encoder
@@ -160,49 +163,98 @@ public final class LatentCache: @unchecked Sendable {
         vae: AutoencoderKLFlux2,
         progressCallback: ((Int, Int) -> Void)? = nil
     ) async throws -> Int {
-        var encodedCount = 0
         let total = dataset.count
         
         Flux2Debug.log("[LatentCache] Pre-encoding \(total) images...")
         
+        // OPTIMIZATION 1: Pre-load list of cached files for O(1) lookup
+        let cachedFilenames = loadCachedFilenameSet()
+        
+        // OPTIMIZATION 2: Collect uncached samples for batch encoding
+        var uncachedSamples: [(index: Int, sample: TrainingSample)] = []
+        var cachedCount = 0
+        
         for (index, sample) in dataset.enumerated() {
-            // Check if already cached
-            if isCached(filename: sample.filename) {
-                encodedCount += 1
+            let baseName = (sample.filename as NSString).deletingPathExtension
+            if cachedFilenames.contains(baseName) {
+                cachedCount += 1
                 progressCallback?(index + 1, total)
-                continue
-            }
-            
-            // Encode with VAE
-            // Image should be in range [0, 1], need to convert to [-1, 1]
-            let normalizedImage = sample.image * 2.0 - 1.0
-
-            // Add batch dimension [1, H, W, C] then transpose to [1, C, H, W] (NCHW)
-            let batchedImage = normalizedImage.expandedDimensions(axis: 0)
-            let nchwImage = batchedImage.transposed(0, 3, 1, 2)  // NHWC -> NCHW
-
-            // Encode to latent space
-            let latent = vae.encode(nchwImage)
-            
-            // Remove batch dimension for storage
-            let squeezedLatent = latent.squeezed(axis: 0)
-            
-            // Save to cache
-            try saveLatent(squeezedLatent, for: sample.filename)
-            
-            encodedCount += 1
-            progressCallback?(index + 1, total)
-            
-            // Periodically clear GPU cache
-            if index % 10 == 0 {
-                eval(squeezedLatent)
-                MLX.Memory.clearCache()
+            } else {
+                uncachedSamples.append((index, sample))
             }
         }
         
-        Flux2Debug.log("[LatentCache] Pre-encoded \(encodedCount) latents")
+        Flux2Debug.log("[LatentCache] Found \(cachedCount) already cached, \(uncachedSamples.count) to encode")
         
-        return encodedCount
+        // OPTIMIZATION 3: Batch encode uncached images
+        let batchSize = Self.encodingBatchSize
+        for batchStart in stride(from: 0, to: uncachedSamples.count, by: batchSize) {
+            let batchEnd = min(batchStart + batchSize, uncachedSamples.count)
+            let batch = Array(uncachedSamples[batchStart..<batchEnd])
+            
+            // Stack images into batch [B, H, W, C]
+            var batchImages: [MLXArray] = []
+            var batchFilenames: [String] = []
+            
+            for (_, sample) in batch {
+                // Normalize to [-1, 1]
+                let normalizedImage = sample.image * 2.0 - 1.0
+                batchImages.append(normalizedImage)
+                batchFilenames.append(sample.filename)
+            }
+            
+            // Stack and transpose to NCHW [B, C, H, W]
+            let stackedImages = MLX.stacked(batchImages, axis: 0)
+            let nchwBatch = stackedImages.transposed(0, 3, 1, 2)
+            
+            // Encode entire batch at once
+            let latentsBatch = vae.encode(nchwBatch)
+            
+            // Ensure computation is done
+            eval(latentsBatch)
+            
+            // Save each latent to cache
+            for (i, filename) in batchFilenames.enumerated() {
+                let latent = latentsBatch[i]
+                try saveLatent(latent, for: filename)
+            }
+            
+            // Update progress for each item in batch
+            for (origIndex, _) in batch {
+                progressCallback?(origIndex + 1, total)
+            }
+            
+            // Clear GPU memory after each batch
+            MLX.Memory.clearCache()
+        }
+        
+        let totalEncoded = cachedCount + uncachedSamples.count
+        Flux2Debug.log("[LatentCache] Pre-encoded \(totalEncoded) latents (batched \(uncachedSamples.count) new)")
+        
+        return totalEncoded
+    }
+    
+    /// Load set of cached filenames for O(1) lookup
+    private func loadCachedFilenameSet() -> Set<String> {
+        var cached = Set<String>()
+        
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: cacheDirectory,
+            includingPropertiesForKeys: nil
+        ) else {
+            return cached
+        }
+        
+        for file in files where file.pathExtension == "safetensors" {
+            // Extract original filename from cache filename (e.g., "image_latent.safetensors" -> "image")
+            let cacheName = file.deletingPathExtension().lastPathComponent
+            if cacheName.hasSuffix("_latent") {
+                let originalName = String(cacheName.dropLast(7)) // Remove "_latent"
+                cached.insert(originalName)
+            }
+        }
+        
+        return cached
     }
     
     /// Get latent for a batch (loading from cache or encoding)
