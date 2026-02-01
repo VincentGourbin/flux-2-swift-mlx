@@ -28,3 +28,4 @@ result_checkpoints/
 
 # Package resolution
 Package.resolved
+datasets/
