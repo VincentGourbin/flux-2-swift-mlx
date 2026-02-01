@@ -89,6 +89,20 @@ struct TrainLoRA: AsyncParsableCommand {
     @Option(name: .long, help: "Max gradient norm for clipping")
     var maxGradNorm: Float = 1.0
 
+    // MARK: - Timestep Sampling Arguments
+
+    @Option(name: .long, help: "Timestep sampling strategy: uniform, logit_normal, flux_shift")
+    var timestepSampling: String = "uniform"
+
+    @Option(name: .long, help: "Logit-normal mean (for logit_normal sampling, default: 0.0)")
+    var logitNormalMean: Float = 0.0
+
+    @Option(name: .long, help: "Logit-normal std (for logit_normal sampling, default: 1.0)")
+    var logitNormalStd: Float = 1.0
+
+    @Option(name: .long, help: "Flux shift value (for flux_shift sampling, default: 1.0)")
+    var fluxShift: Float = 1.0
+
     // MARK: - Memory Optimization Arguments
 
     @Flag(name: .long, help: "Enable gradient checkpointing (saves ~30-40% memory)")
@@ -262,6 +276,11 @@ struct TrainLoRA: AsyncParsableCommand {
             adamEpsilon: 1e-8,
             maxGradNorm: maxGradNorm,
             gradientAccumulationSteps: gradientAccumulation,
+            // Timestep sampling
+            timestepSampling: parseTimestepSampling(timestepSampling),
+            logitNormalMean: logitNormalMean,
+            logitNormalStd: logitNormalStd,
+            fluxShiftValue: fluxShift,
             // Memory
             quantization: quant,
             gradientCheckpointing: gradientCheckpointing,
@@ -565,6 +584,14 @@ struct TrainLoRA: AsyncParsableCommand {
             print("  Overfitting detection: enabled (maxGap=\(config.earlyStoppingMaxValGap), patience=\(config.earlyStoppingGapPatience))")
         }
         print()
+        print("Timestep Sampling:")
+        print("  Strategy: \(config.timestepSampling.displayName)")
+        if config.timestepSampling == .logitNormal {
+            print("  Mean: \(config.logitNormalMean), Std: \(config.logitNormalStd)")
+        } else if config.timestepSampling == .fluxShift {
+            print("  Shift: \(config.fluxShiftValue)")
+        }
+        print()
         print("Weight Averaging:")
         print("  EMA: \(config.useEMA ? "enabled (decay=\(config.emaDecay))" : "disabled")")
         print()
@@ -599,4 +626,16 @@ private func parseBucketResolutions(_ input: String) -> [Int] {
     input.split(separator: ",")
         .compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
         .filter { $0 >= 256 && $0 <= 2048 }
+}
+
+/// Parse timestep sampling strategy string
+private func parseTimestepSampling(_ input: String) -> TimestepSampling {
+    switch input.lowercased() {
+    case "logit_normal", "logit-normal", "logitnormal":
+        return .logitNormal
+    case "flux_shift", "flux-shift", "fluxshift":
+        return .fluxShift
+    default:
+        return .uniform
+    }
 }

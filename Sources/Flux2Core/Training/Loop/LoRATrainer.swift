@@ -681,8 +681,8 @@ public final class LoRATrainer: @unchecked Sendable {
         let txtIds = generateTextPositionIDs(length: txtLen)
         let imgIds = generateImagePositionIDs(height: imgH, width: imgW)
 
-        // Sample timesteps
-        let timesteps = MLXRandom.randInt(low: 0, high: 1000, [batchSize])
+        // Sample timesteps according to configured strategy
+        let timesteps = sampleTimesteps(batchSize: batchSize)
 
         // Get sigmas - for flow matching, sigma = t directly (no transformation)
         // The model is trained to predict velocity v = noise - latents
@@ -1497,6 +1497,34 @@ public final class LoRATrainer: @unchecked Sendable {
         let packed = transposed.reshaped([batchSize, patchH * patchW, patchFeatures])
 
         return packed
+    }
+
+    /// Sample timesteps according to the configured strategy
+    /// - Parameter batchSize: Number of timesteps to sample
+    /// - Returns: Timesteps in range [0, 1000) as integer array
+    private func sampleTimesteps(batchSize: Int) -> MLXArray {
+        switch config.timestepSampling {
+        case .uniform:
+            // Standard uniform sampling [0, 1000)
+            return MLXRandom.randInt(low: 0, high: 1000, [batchSize])
+
+        case .logitNormal:
+            // Sample from normal distribution, apply sigmoid, scale to [0, 1000)
+            // This focuses training on medium noise levels (t ≈ 0.5)
+            let u = MLXRandom.normal([batchSize]) * config.logitNormalStd + config.logitNormalMean
+            let sigmoided = MLX.sigmoid(u)  // Maps to [0, 1]
+            let scaled = sigmoided * 1000.0  // Scale to [0, 1000]
+            // Clamp and convert to int
+            return MLX.clip(scaled, min: 0, max: 999).asType(.int32)
+
+        case .fluxShift:
+            // Sample uniform, then add shift to bias toward higher timesteps
+            // This helps with learning overall composition
+            let base = MLXRandom.uniform(low: Float(0), high: Float(1000), [batchSize])
+            let shifted = base + config.fluxShiftValue * 100  // Shift is in units of 100 timesteps
+            // Clamp to valid range and convert to int
+            return MLX.clip(shifted, min: 0, max: 999).asType(.int32)
+        }
     }
 }
 

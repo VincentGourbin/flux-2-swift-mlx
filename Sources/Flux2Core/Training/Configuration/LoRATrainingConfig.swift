@@ -86,22 +86,45 @@ public enum LoRATargetLayers: String, Codable, Sendable, CaseIterable {
 public enum LRSchedulerType: String, Codable, Sendable, CaseIterable {
     /// Constant learning rate after warmup
     case constant = "constant"
-    
+
     /// Linear decay to 0
     case linear = "linear"
-    
+
     /// Cosine annealing
     case cosine = "cosine"
-    
+
     /// Cosine with restarts
     case cosineWithRestarts = "cosine_with_restarts"
-    
+
     public var displayName: String {
         switch self {
         case .constant: return "Constant"
         case .linear: return "Linear decay"
         case .cosine: return "Cosine annealing"
         case .cosineWithRestarts: return "Cosine with restarts"
+        }
+    }
+}
+
+/// Timestep sampling strategy for flow matching training
+/// Different strategies can improve training quality for specific use cases
+public enum TimestepSampling: String, Codable, Sendable, CaseIterable {
+    /// Uniform random sampling [0, 1000) - default, works well for most cases
+    case uniform = "uniform"
+
+    /// Logit-normal sampling - focuses training on medium noise levels (t ≈ 0.5)
+    /// Good for learning fine details and textures
+    case logitNormal = "logit_normal"
+
+    /// Flux shift - biases toward higher timesteps for better composition learning
+    /// Good for concepts that change the overall image structure
+    case fluxShift = "flux_shift"
+
+    public var displayName: String {
+        switch self {
+        case .uniform: return "Uniform (default)"
+        case .logitNormal: return "Logit-Normal (detail focus)"
+        case .fluxShift: return "Flux Shift (composition focus)"
         }
     }
 }
@@ -191,7 +214,24 @@ public struct LoRATrainingConfig: Codable, Sendable {
     
     /// Gradient accumulation steps (simulates larger batch)
     public var gradientAccumulationSteps: Int
-    
+
+    // MARK: - Timestep Sampling
+
+    /// Timestep sampling strategy for flow matching
+    public var timestepSampling: TimestepSampling
+
+    /// Logit-normal mean (only used with logitNormal sampling)
+    /// Default 0.0 centers the distribution at t=0.5
+    public var logitNormalMean: Float
+
+    /// Logit-normal std (only used with logitNormal sampling)
+    /// Higher values spread the distribution more
+    public var logitNormalStd: Float
+
+    /// Flux shift value (only used with fluxShift sampling)
+    /// Added to timesteps to bias toward higher noise levels
+    public var fluxShiftValue: Float
+
     // MARK: - Memory Optimization
     
     /// Quantization level for base model
@@ -324,6 +364,11 @@ public struct LoRATrainingConfig: Codable, Sendable {
         adamEpsilon: Float = 1e-8,
         maxGradNorm: Float = 1.0,
         gradientAccumulationSteps: Int = 1,
+        // Timestep sampling
+        timestepSampling: TimestepSampling = .uniform,
+        logitNormalMean: Float = 0.0,
+        logitNormalStd: Float = 1.0,
+        fluxShiftValue: Float = 1.0,
         // Memory
         quantization: TrainingQuantization = .bf16,
         gradientCheckpointing: Bool = true,
@@ -386,6 +431,10 @@ public struct LoRATrainingConfig: Codable, Sendable {
         self.adamEpsilon = adamEpsilon
         self.maxGradNorm = maxGradNorm
         self.gradientAccumulationSteps = gradientAccumulationSteps
+        self.timestepSampling = timestepSampling
+        self.logitNormalMean = logitNormalMean
+        self.logitNormalStd = logitNormalStd
+        self.fluxShiftValue = fluxShiftValue
         self.quantization = quantization
         self.gradientCheckpointing = gradientCheckpointing
         self.cacheLatents = cacheLatents
