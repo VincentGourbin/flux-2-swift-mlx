@@ -125,8 +125,11 @@ struct TrainLoRA: AsyncParsableCommand {
     @Option(name: .long, help: "Target image size for training")
     var imageSize: Int = 512
 
-    @Flag(name: .long, help: "Enable aspect ratio bucketing")
+    @Flag(name: .long, help: "Enable aspect ratio bucketing for multi-resolution training")
     var bucketing: Bool = false
+
+    @Option(name: .long, help: "Resolutions for bucketing (comma-separated, e.g., '512,768,1024')")
+    var bucketResolutions: String = "512,768,1024"
 
     // MARK: - Early Stopping Arguments
 
@@ -238,6 +241,7 @@ struct TrainLoRA: AsyncParsableCommand {
             triggerWord: triggerWord,
             imageSize: imageSize,
             enableBucketing: bucketing,
+            bucketResolutions: parseBucketResolutions(bucketResolutions),
             shuffleDataset: true,
             captionDropoutRate: captionDropout,
             // LoRA
@@ -533,6 +537,13 @@ struct TrainLoRA: AsyncParsableCommand {
             print("  Dropout: \(config.dropout)")
         }
         print()
+        print("Image Processing:")
+        if config.enableBucketing {
+            print("  Bucketing: enabled (resolutions: \(config.bucketResolutions.map { String($0) }.joined(separator: ", ")))")
+        } else {
+            print("  Image size: \(config.imageSize)x\(config.imageSize)")
+        }
+        print()
         print("Training:")
         print("  Learning rate: \(String(format: "%.2e", config.learningRate))")
         if config.captionDropoutRate > 0 {
@@ -579,4 +590,13 @@ private extension String {
     func repeating(_ count: Int) -> String {
         String(repeating: self, count: count)
     }
+}
+
+// MARK: - Helper Functions
+
+/// Parse comma-separated resolution string into array of integers
+private func parseBucketResolutions(_ input: String) -> [Int] {
+    input.split(separator: ",")
+        .compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+        .filter { $0 >= 256 && $0 <= 2048 }
 }

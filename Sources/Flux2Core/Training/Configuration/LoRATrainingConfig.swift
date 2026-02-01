@@ -123,11 +123,15 @@ public struct LoRATrainingConfig: Codable, Sendable {
     /// Trigger word to replace [trigger] in captions
     public var triggerWord: String?
 
-    /// Target image size (will resize/crop images)
+    /// Target image size (will resize/crop images) - used when bucketing is disabled
     public var imageSize: Int
 
     /// Enable aspect ratio bucketing (multiple resolutions)
     public var enableBucketing: Bool
+
+    /// Available resolutions for bucketing (e.g., [512, 768, 1024])
+    /// Only used when enableBucketing is true
+    public var bucketResolutions: [Int]
 
     /// Shuffle training data
     public var shuffleDataset: Bool
@@ -299,6 +303,7 @@ public struct LoRATrainingConfig: Codable, Sendable {
         triggerWord: String? = nil,
         imageSize: Int = 512,
         enableBucketing: Bool = false,
+        bucketResolutions: [Int] = [512, 768, 1024],
         shuffleDataset: Bool = true,
         captionDropoutRate: Float = 0.0,
         // LoRA
@@ -362,6 +367,7 @@ public struct LoRATrainingConfig: Codable, Sendable {
         self.triggerWord = triggerWord
         self.imageSize = imageSize
         self.enableBucketing = enableBucketing
+        self.bucketResolutions = bucketResolutions
         self.shuffleDataset = shuffleDataset
         self.captionDropoutRate = captionDropoutRate
         self.rank = rank

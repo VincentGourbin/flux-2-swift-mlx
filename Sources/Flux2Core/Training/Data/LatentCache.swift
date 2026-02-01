@@ -80,47 +80,79 @@ public final class LatentCache: @unchecked Sendable {
         return FileManager.default.fileExists(atPath: cacheFile.path)
     }
     
-    /// Get cache file path for a filename
+    /// Get cache file path for a filename (without resolution suffix)
     private func cacheFilePath(for filename: String) -> URL {
         let baseName = (filename as NSString).deletingPathExtension
         return cacheDirectory.appendingPathComponent("\(baseName)_latent.safetensors")
     }
-    
-    /// Get cached latent
+
+    /// Get cache file path including resolution for bucketed caching
+    private func cacheFilePath(for filename: String, width: Int, height: Int) -> URL {
+        let baseName = (filename as NSString).deletingPathExtension
+        return cacheDirectory.appendingPathComponent("\(baseName)_\(width)x\(height)_latent.safetensors")
+    }
+
+    /// Memory cache key including resolution
+    private func memoryCacheKey(filename: String, width: Int? = nil, height: Int? = nil) -> String {
+        if let w = width, let h = height {
+            return "\(filename)_\(w)x\(h)"
+        }
+        return filename
+    }
+
+    /// Get cached latent (simple version for non-bucketed caching)
     public func getLatent(for filename: String) throws -> MLXArray? {
+        return try getLatent(for: filename, width: config.imageSize, height: config.imageSize)
+    }
+
+    /// Get cached latent with specific resolution
+    public func getLatent(for filename: String, width: Int, height: Int) throws -> MLXArray? {
+        let cacheKey = memoryCacheKey(filename: filename, width: width, height: height)
+
         // Check memory cache first
-        if useMemoryCache, let latent = memoryCache[filename] {
+        if useMemoryCache, let latent = memoryCache[cacheKey] {
             return latent
         }
-        
-        // Load from disk
-        let cacheFile = cacheFilePath(for: filename)
-        guard FileManager.default.fileExists(atPath: cacheFile.path) else {
-            return nil
+
+        // Load from disk (try resolution-specific first, then fallback to generic)
+        var cacheFile = cacheFilePath(for: filename, width: width, height: height)
+        if !FileManager.default.fileExists(atPath: cacheFile.path) {
+            // Fallback to non-resolution-specific cache (for backwards compatibility)
+            cacheFile = cacheFilePath(for: filename)
+            guard FileManager.default.fileExists(atPath: cacheFile.path) else {
+                return nil
+            }
         }
-        
+
         let weights = try loadArrays(url: cacheFile)
         guard let latent = weights["latent"] else {
             return nil
         }
-        
+
         // Optionally store in memory
         if useMemoryCache {
-            memoryCache[filename] = latent
+            memoryCache[cacheKey] = latent
         }
-        
+
         return latent
     }
-    
-    /// Save latent to cache
+
+    /// Save latent to cache (simple version)
     public func saveLatent(_ latent: MLXArray, for filename: String) throws {
+        try saveLatent(latent, for: filename, width: config.imageSize, height: config.imageSize)
+    }
+
+    /// Save latent to cache with specific resolution
+    public func saveLatent(_ latent: MLXArray, for filename: String, width: Int, height: Int) throws {
+        let cacheKey = memoryCacheKey(filename: filename, width: width, height: height)
+
         // Save to memory
         if useMemoryCache {
-            memoryCache[filename] = latent
+            memoryCache[cacheKey] = latent
         }
-        
-        // Save to disk
-        let cacheFile = cacheFilePath(for: filename)
+
+        // Save to disk with resolution in filename
+        let cacheFile = cacheFilePath(for: filename, width: width, height: height)
         try save(arrays: ["latent": latent], url: cacheFile)
     }
     
@@ -261,15 +293,19 @@ public final class LatentCache: @unchecked Sendable {
     /// - Parameters:
     ///   - batch: Training batch
     ///   - vae: VAE encoder (used if not cached)
-    /// - Returns: Batched latents [B, H/8, W/8, C]
+    /// - Returns: Batched latents [B, C, H/8, W/8]
     public func getLatents(
         for batch: TrainingBatch,
         vae: AutoencoderKLFlux2?
     ) throws -> MLXArray {
         var latents: [MLXArray] = []
-        
+
+        // Get resolution from batch (bucketed) or default (non-bucketed)
+        let width = batch.resolution?.width ?? config.imageSize
+        let height = batch.resolution?.height ?? config.imageSize
+
         for (i, filename) in batch.filenames.enumerated() {
-            if let cached = try getLatent(for: filename) {
+            if let cached = try getLatent(for: filename, width: width, height: height) {
                 latents.append(cached)
             } else if let vae = vae {
                 // Encode on the fly
@@ -278,15 +314,15 @@ public final class LatentCache: @unchecked Sendable {
                 let batchedImage = normalizedImage.expandedDimensions(axis: 0)
                 let nchwImage = batchedImage.transposed(0, 3, 1, 2)  // NHWC -> NCHW
                 let latent = vae.encode(nchwImage).squeezed(axis: 0)
-                
-                // Cache for next time
-                try saveLatent(latent, for: filename)
+
+                // Cache for next time with resolution
+                try saveLatent(latent, for: filename, width: width, height: height)
                 latents.append(latent)
             } else {
                 throw LatentCacheError.latentNotCached(filename)
             }
         }
-        
+
         return MLX.stacked(latents, axis: 0)
     }
     
