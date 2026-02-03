@@ -340,7 +340,9 @@ public final class LatentCache: @unchecked Sendable {
             }
         }
 
-        return MLX.stacked(latents, axis: 0)
+        let result = MLX.stacked(latents, axis: 0)
+        eval(result)  // Force evaluation to prevent lazy graph accumulation
+        return result
     }
     
     // MARK: - Statistics
@@ -417,6 +419,9 @@ public final class TextEmbeddingCache: @unchecked Sendable {
     
     /// In-memory cache
     private var memoryCache: [String: (pooled: MLXArray, hidden: MLXArray)] = [:]
+    
+    /// Number of cached embeddings (in memory)
+    public var count: Int { memoryCache.count }
     
     /// Initialize text embedding cache
     public init(cacheDirectory: URL) {

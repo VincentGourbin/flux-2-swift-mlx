@@ -167,6 +167,17 @@ public final class TrainingDataset: @unchecked Sendable {
     /// Number of samples in dataset
     public var count: Int { samples.count }
     
+    /// All captions in the dataset (for pre-caching text embeddings)
+    public var allCaptions: [String] {
+        samples.map { $0.caption }
+    }
+    
+    /// All active resolution buckets (non-empty buckets with assigned samples)
+    /// Returns empty array if bucketing is not enabled
+    public var buckets: [ResolutionBucket] {
+        activeBuckets
+    }
+    
     /// Number of batches per epoch
     public var batchesPerEpoch: Int {
         (samples.count + config.batchSize - 1) / config.batchSize

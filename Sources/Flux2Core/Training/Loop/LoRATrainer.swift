@@ -93,6 +93,9 @@ public final class LoRATrainer: @unchecked Sendable {
     /// EMA manager for weight averaging (optional, based on config)
     private var emaManager: EMAManager?
 
+    /// Pre-computed position IDs per resolution bucket (key: "WxH")
+    private var positionIdCache: [String: (txtIds: MLXArray, imgIds: MLXArray)] = [:]
+
     // MARK: - Initialization
     
     /// Initialize LoRA trainer
@@ -163,14 +166,14 @@ public final class LoRATrainer: @unchecked Sendable {
             }
         }
 
-        if config.cacheTextEmbeddings {
-            let textCacheDir = config.datasetPath.appendingPathComponent(".text_cache")
-            textEmbeddingCache = TextEmbeddingCache(cacheDirectory: textCacheDir)
-            // Also create cache for validation dataset
-            if validationDataset != nil, let valPath = config.validationDatasetPath {
-                let valTextCacheDir = valPath.appendingPathComponent(".text_cache")
-                validationTextEmbeddingCache = TextEmbeddingCache(cacheDirectory: valTextCacheDir)
-            }
+        // Always initialize text embedding cache (required for pre-caching optimization)
+        // This dramatically reduces memory usage by caching embeddings before training
+        let textCacheDir = config.datasetPath.appendingPathComponent(".text_cache")
+        textEmbeddingCache = TextEmbeddingCache(cacheDirectory: textCacheDir)
+        // Also create cache for validation dataset
+        if validationDataset != nil, let valPath = config.validationDatasetPath {
+            let valTextCacheDir = valPath.appendingPathComponent(".text_cache")
+            validationTextEmbeddingCache = TextEmbeddingCache(cacheDirectory: valTextCacheDir)
         }
 
         // Initialize checkpoint manager
@@ -241,6 +244,113 @@ public final class LoRATrainer: @unchecked Sendable {
         }
     }
     
+    /// Pre-cache all text embeddings before training
+    /// This caches: all training captions, validation captions, empty caption (for dropout), and validation prompt
+    public func preCacheTextEmbeddings(
+        textEncoder: @escaping (String) async throws -> MLXArray
+    ) async throws {
+        guard let dataset = dataset, let cache = textEmbeddingCache else {
+            throw LoRATrainerError.notPrepared
+        }
+        
+        Flux2Debug.log("[LoRATrainer] Pre-caching text embeddings...")
+        
+        // Collect all unique captions to cache
+        var captionsToCache: Set<String> = []
+        
+        // 1. Training dataset captions
+        for caption in dataset.allCaptions {
+            captionsToCache.insert(caption)
+        }
+        
+        // 2. Validation dataset captions
+        if let valDataset = validationDataset {
+            for caption in valDataset.allCaptions {
+                captionsToCache.insert(caption)
+            }
+        }
+        
+        // 3. Empty caption for caption dropout
+        captionsToCache.insert("")
+        
+        // 4. Validation prompt
+        if let valPrompt = config.validationPrompt {
+            captionsToCache.insert(valPrompt)
+        }
+        
+        let total = captionsToCache.count
+        var cached = 0
+        
+        Flux2Debug.log("[LoRATrainer] Caching \(total) unique text embeddings...")
+        
+        for caption in captionsToCache {
+            // Skip if already cached
+            if cache.isCached(caption: caption) {
+                cached += 1
+                continue
+            }
+            
+            // Encode and cache
+            let embedding = try await textEncoder(caption)
+            // Squeeze batch dimension if present: [1, seq, dim] -> [seq, dim]
+            let squeezedEmbedding = embedding.shape.count > 2
+                ? embedding.squeezed(axis: 0)
+                : embedding
+            eval(squeezedEmbedding)
+            
+            try cache.saveEmbeddings(
+                pooled: MLXArray.zeros([1]),  // Placeholder for Flux2
+                hidden: squeezedEmbedding,
+                for: caption
+            )
+            
+            cached += 1
+            
+            if cached % 10 == 0 || cached == total {
+                let progress = Float(cached) / Float(total) * 100
+                Flux2Debug.log("  Text embeddings: \(cached)/\(total) (\(Int(progress))%)")
+            }
+        }
+        
+        // Also cache to validation text embedding cache if separate
+        if let valCache = validationTextEmbeddingCache, valCache !== cache {
+            Flux2Debug.log("[LoRATrainer] Copying embeddings to validation cache...")
+            if let valDataset = validationDataset {
+                for caption in valDataset.allCaptions {
+                    if !valCache.isCached(caption: caption),
+                       let embeddings = try cache.getEmbeddings(for: caption) {
+                        try valCache.saveEmbeddings(
+                            pooled: embeddings.pooled,
+                            hidden: embeddings.hidden,
+                            for: caption
+                        )
+                    }
+                }
+            }
+            // Also cache validation prompt and empty caption
+            if let valPrompt = config.validationPrompt,
+               !valCache.isCached(caption: valPrompt),
+               let embeddings = try cache.getEmbeddings(for: valPrompt) {
+                try valCache.saveEmbeddings(
+                    pooled: embeddings.pooled,
+                    hidden: embeddings.hidden,
+                    for: valPrompt
+                )
+            }
+            if !valCache.isCached(caption: ""),
+               let embeddings = try cache.getEmbeddings(for: "") {
+                try valCache.saveEmbeddings(
+                    pooled: embeddings.pooled,
+                    hidden: embeddings.hidden,
+                    for: ""
+                )
+            }
+        }
+        
+        MLX.Memory.clearCache()
+        Flux2Debug.log("[LoRATrainer] Text embedding caching complete: \(cache.count) entries in memory")
+    }
+    
     // MARK: - Main Training Loop
     
     /// Run the training loop
@@ -266,6 +376,16 @@ public final class LoRATrainer: @unchecked Sendable {
         // Store references for validation image generation
         self.validationVAE = vae
         self.validationTextEncoder = textEncoder
+
+        // Pre-cache all text embeddings BEFORE training starts
+        // This avoids running the text encoder during training, saving ~4-6 GB VRAM
+        try await preCacheTextEmbeddings(textEncoder: textEncoder)
+        
+        // CRITICAL: Release text encoder reference to free ~4-6 GB VRAM
+        // generateValidationImage now uses cached embeddings, so text encoder is no longer needed
+        self.validationTextEncoder = nil
+        Flux2Debug.log("[LoRATrainer] Text encoder released, using cached embeddings only")
+        MLX.Memory.clearCache()
 
         // Inject LoRA directly into transformer (replaces Linear with LoRAInjectedLinear)
         // This is the correct approach - LoRA becomes part of the forward pass
@@ -391,6 +511,60 @@ public final class LoRATrainer: @unchecked Sendable {
         self.cachedLossAndGrad = valueAndGrad(model: transformer, lossFunction)
         Flux2Debug.log("[LoRATrainer] Created cached valueAndGrad function for efficient gradient computation")
 
+        // Pre-compute position IDs per bucket (these only depend on resolution)
+        Flux2Debug.log("[LoRATrainer] Pre-computing position IDs per bucket...")
+        positionIdCache.removeAll()
+        let patchSize = 2  // Standard patch size for Flux
+        let txtLen = 512   // Fixed sequence length for Klein
+        
+        if config.enableBucketing {
+            // Pre-compute for each unique resolution in the dataset's active buckets
+            for bucket in dataset.buckets {
+                let key = "\(bucket.width)x\(bucket.height)"
+                if positionIdCache[key] == nil {
+                    let latentH = bucket.height / 8
+                    let latentW = bucket.width / 8
+                    let imgH = latentH / patchSize
+                    let imgW = latentW / patchSize
+                    
+                    let txtIds = generateTextPositionIDs(length: txtLen)
+                    let imgIds = generateImagePositionIDs(height: imgH, width: imgW)
+                    eval(txtIds, imgIds)
+                    positionIdCache[key] = (txtIds: txtIds, imgIds: imgIds)
+                }
+            }
+            // Also cache validation dataset buckets if present
+            if let valDataset = validationDataset {
+                for bucket in valDataset.buckets {
+                    let key = "\(bucket.width)x\(bucket.height)"
+                    if positionIdCache[key] == nil {
+                        let latentH = bucket.height / 8
+                        let latentW = bucket.width / 8
+                        let imgH = latentH / patchSize
+                        let imgW = latentW / patchSize
+                        
+                        let txtIds = generateTextPositionIDs(length: txtLen)
+                        let imgIds = generateImagePositionIDs(height: imgH, width: imgW)
+                        eval(txtIds, imgIds)
+                        positionIdCache[key] = (txtIds: txtIds, imgIds: imgIds)
+                    }
+                }
+            }
+        } else {
+            // Single resolution mode
+            let key = "\(config.imageSize)x\(config.imageSize)"
+            let latentH = config.imageSize / 8
+            let latentW = config.imageSize / 8
+            let imgH = latentH / patchSize
+            let imgW = latentW / patchSize
+            
+            let txtIds = generateTextPositionIDs(length: txtLen)
+            let imgIds = generateImagePositionIDs(height: imgH, width: imgW)
+            eval(txtIds, imgIds)
+            positionIdCache[key] = (txtIds: txtIds, imgIds: imgIds)
+        }
+        Flux2Debug.log("[LoRATrainer] Position IDs cached for \(positionIdCache.count) resolution(s)")
+
         // Set training mode
         TrainingMode.shared.isTraining = true
         
@@ -406,6 +580,29 @@ public final class LoRATrainer: @unchecked Sendable {
         self.state = state
         
         do {
+            // Generate reference image at step 0 (before any LoRA training)
+            // This shows the baseline model output for comparison
+            if config.validationPrompt != nil && config.validationEveryNSteps > 0 {
+                Flux2Debug.log("[LoRATrainer] Generating reference image (step 0, no LoRA applied)...")
+                if let prompt = config.validationPrompt {
+                    do {
+                        if let imageURL = try await generateValidationImage(
+                            transformer: transformer,
+                            prompt: prompt,
+                            step: 0
+                        ) {
+                            Flux2Debug.log("[LoRATrainer] Reference image saved: \(imageURL.lastPathComponent)")
+                            eventHandler?.handleEvent(.validationImageGenerated(
+                                path: imageURL.path,
+                                step: 0
+                            ))
+                        }
+                    } catch {
+                        Flux2Debug.log("[LoRATrainer] Warning: Failed to generate reference image: \(error.localizedDescription)")
+                    }
+                }
+            }
+            
             // Training loop
             while !state.isComplete && !shouldStop {
                 // Start new epoch if needed
@@ -673,103 +870,89 @@ public final class LoRATrainer: @unchecked Sendable {
         textEncoder: (String) async throws -> MLXArray,
         learningRate: Float
     ) async throws -> Float {
+        let stepNum = (state?.globalStep ?? 0) + 1
+        Flux2Debug.log("[Step \(stepNum)] Starting trainStep...")
+        
         // Get latents (from cache or encode)
+        Flux2Debug.log("[Step \(stepNum)] Loading latents...")
         let latents: MLXArray
         if let cache = latentCache {
             latents = try cache.getLatents(for: batch, vae: vae)
         } else if let vae = vae {
-            // Encode images on the fly
-            // batch.images is [B, H, W, C], VAE expects [B, C, H, W]
             let normalizedImages = batch.images * 2.0 - 1.0
-            let nchwImages = normalizedImages.transposed(0, 3, 1, 2)  // NHWC -> NCHW
+            let nchwImages = normalizedImages.transposed(0, 3, 1, 2)
             latents = vae.encode(nchwImages)
         } else {
             throw LoRATrainerError.noVAEProvided
         }
+        // NO eval here - let lazy evaluation build the full graph
+        Flux2Debug.log("[Step \(stepNum)] Latents loaded: \(latents.shape)")
 
-        // Get text embeddings (from cache or encode)
-        // Apply caption dropout for generalization
+        // Get text embeddings from cache
+        Flux2Debug.log("[Step \(stepNum)] Loading text embeddings...")
+        guard let cache = textEmbeddingCache else {
+            throw LoRATrainerError.trainingFailed("Text embedding cache not initialized")
+        }
+        
         var hiddenStates: [MLXArray] = []
-
         for originalCaption in batch.captions {
-            // Apply caption dropout: randomly replace caption with empty string
             let caption: String
             if config.captionDropoutRate > 0 && Float.random(in: 0..<1) < config.captionDropoutRate {
-                caption = ""  // Drop caption for this sample
+                caption = ""
             } else {
                 caption = originalCaption
             }
 
-            if let cache = textEmbeddingCache,
-               let cached = try cache.getEmbeddings(for: caption) {
-                // Squeeze batch dimension if present: [1, seq, dim] -> [seq, dim]
-                let embedding = cached.hidden.shape.count > 2
-                    ? cached.hidden.squeezed(axis: 0)
-                    : cached.hidden
-                hiddenStates.append(embedding)
-            } else {
-                let embeddings = try await textEncoder(caption)
-                // Squeeze batch dimension if present: [1, seq, dim] -> [seq, dim]
-                let embedding = embeddings.shape.count > 2
-                    ? embeddings.squeezed(axis: 0)
-                    : embeddings
-                hiddenStates.append(embedding)
-
-                // Cache for next time (Flux2 uses hidden states only, pooled is a placeholder)
-                if let cache = textEmbeddingCache {
-                    try cache.saveEmbeddings(
-                        pooled: MLXArray.zeros([1]),  // Placeholder
-                        hidden: embedding,
-                        for: caption
-                    )
-                }
+            guard let cached = try cache.getEmbeddings(for: caption) else {
+                throw LoRATrainerError.trainingFailed("Text embedding not cached for: '\(caption.prefix(50))...'")
             }
+            
+            let embedding = cached.hidden.shape.count > 2
+                ? cached.hidden.squeezed(axis: 0)
+                : cached.hidden
+            hiddenStates.append(embedding)
         }
 
-        // Stack embeddings: [[seq, dim], ...] -> [B, seq, dim]
         let batchedHidden = MLX.stacked(hiddenStates, axis: 0)
+        // NO eval here - let lazy evaluation build the full graph
+        hiddenStates.removeAll()  // Release references
+        Flux2Debug.log("[Step \(stepNum)] Text embeddings loaded: \(batchedHidden.shape)")
 
-        // Create 4D position IDs for Flux2 RoPE
+        // Get position IDs
         let batchSize = latents.shape[0]
-        let patchSize = 2  // Standard patch size for Flux
-        let imgH = latents.shape[2] / patchSize
-        let imgW = latents.shape[3] / patchSize
-        let txtLen = batchedHidden.shape[1]
+        let imageWidth = latents.shape[3] * 8
+        let imageHeight = latents.shape[2] * 8
+        let resKey = "\(imageWidth)x\(imageHeight)"
+        
+        guard let posIds = positionIdCache[resKey] else {
+            throw LoRATrainerError.trainingFailed("Position IDs not cached for resolution: \(resKey)")
+        }
+        let txtIds = posIds.txtIds
+        let imgIds = posIds.imgIds
 
-        // Generate proper 4D position IDs for RoPE [seq_len, 4]
-        let txtIds = generateTextPositionIDs(length: txtLen)
-        let imgIds = generateImagePositionIDs(height: imgH, width: imgW)
-
-        // Sample timesteps according to configured strategy
+        // Sample timesteps and noise
+        Flux2Debug.log("[Step \(stepNum)] Preparing noise...")
         let timesteps = sampleTimesteps(batchSize: batchSize)
-
-        // Get sigmas - for flow matching, sigma = t directly (no transformation)
-        // The model is trained to predict velocity v = noise - latents
-        // at noise level sigma, where x_t = (1 - sigma) * x_0 + sigma * noise
         let sigmas = timesteps.asType(.float32) / 1000.0
-
-        // Sample noise
         let noise = MLXRandom.normal(latents.shape)
+        // NO eval here - let lazy evaluation build the full graph
 
-        // Add noise to latents
         let sigmasExpanded = sigmas.reshaped([batchSize, 1, 1, 1])
         let noisyLatents = (1 - sigmasExpanded) * latents + sigmasExpanded * noise
+        // NO eval here - let lazy evaluation build the full graph
 
-        // Pack latents for transformer: [B, C, H, W] -> [B, H*W/4, C*4]
         let packedLatents = packLatentsForTransformer(noisyLatents, patchSize: 2)
+        // NO eval here - let lazy evaluation build the full graph
 
-        // Prepare guidance
         let guidance: MLXArray? = modelType.usesGuidanceEmbeds ?
-            MLXArray(Array(repeating: Float(4.0), count: batchSize)) : nil
+            MLXArray.full([batchSize], values: MLXArray(Float(4.0))) : nil
 
-        // Compute velocity target for flow matching: v = noise - original_latents
-        // Flux.2 uses rectified flow matching where the model predicts the velocity
-        // from original latents (x_0) to noise (x_1)
         let velocityTarget = noise - latents
         let packedVelocityTarget = packLatentsForTransformer(velocityTarget, patchSize: 2)
+        // NO eval here - let lazy evaluation build the full graph
+        Flux2Debug.log("[Step \(stepNum)] Inputs prepared")
 
-        // Prepare inputs as array of MLXArray for efficient valueAndGrad caching
-        // Order: [packedLatents, batchedHidden, timesteps, imgIds, txtIds, packedVelocityTarget, guidance(optional)]
+        // Prepare inputs array
         var inputArrays: [MLXArray] = [
             packedLatents,
             batchedHidden,
@@ -778,24 +961,23 @@ public final class LoRATrainer: @unchecked Sendable {
             txtIds.asType(DType.int32),
             packedVelocityTarget
         ]
-        // Add guidance as 7th element if present, otherwise add a dummy zero array
         if let g = guidance {
             inputArrays.append(g)
         } else {
-            inputArrays.append(MLXArray(0.0))  // Dummy placeholder
+            inputArrays.append(MLXArray(0.0))
         }
 
-        // Use the cached valueAndGrad function created in train()
-        // This is critical for performance - creating it inside trainStep forces gradient graph reconstruction
+        // Forward + backward pass
+        Flux2Debug.log("[Step \(stepNum)] Computing forward+backward...")
         guard let lossAndGrad = self.cachedLossAndGrad else {
             throw LoRATrainerError.trainingFailed("cachedLossAndGrad not initialized")
         }
 
-        // Compute loss and gradients using cached function
         let (losses, grads) = lossAndGrad(transformer, inputArrays)
         let loss = losses[0]
-
-        // Filter gradients to keep only LoRA parameters (loraA and loraB)
+        
+        // Filter gradients to keep only LoRA parameters
+        Flux2Debug.log("[Step \(stepNum)] Processing gradients...")
         let filteredGrads = filterLoRAGradients(grads)
 
         // Apply gradient clipping if configured
@@ -804,26 +986,26 @@ public final class LoRATrainer: @unchecked Sendable {
             clippedGrads = clipGradNorm(filteredGrads, maxNorm: config.maxGradNorm)
         }
 
-        // Update LoRA parameters using AdamW optimizer
+        // Optimizer update
+        Flux2Debug.log("[Step \(stepNum)] Optimizer update...")
         guard let optimizer = self.optimizer else {
             throw LoRATrainerError.trainingFailed("Optimizer not initialized")
         }
         optimizer.update(model: transformer, gradients: clippedGrads)
 
-        // Update EMA weights after optimizer step
+        // EMA update
         emaManager?.update(from: transformer)
 
-        // IMPORTANT: Must call eval() at EVERY step to prevent MLX lazy evaluation graph accumulation
-        // Without eval(), the computation graph grows exponentially, causing later steps to be extremely slow
-        // Note: The idea of calling eval() every N steps doesn't work with MLX's lazy evaluation model
-        eval(transformer, optimizer, loss)
+        // SINGLE eval at the end following MLX documentation pattern:
+        // mx.eval(model.parameters(), optimizer.state)
+        // This evaluates the full computation graph (forward, backward, optimizer update) at once
+        Flux2Debug.log("[Step \(stepNum)] Final eval...")
+        eval(transformer.trainableParameters())
+        eval(loss)
         let lossValue = loss.item(Float.self)
 
-        // Clear GPU cache periodically
-        let currentStep = (state?.globalStep ?? 0) + 1
-        if currentStep % 10 == 0 {
-            MLX.Memory.clearCache()
-        }
+        // Clear GPU cache at EVERY step to prevent memory accumulation
+        MLX.Memory.clearCache()
 
         return lossValue
     }
@@ -891,47 +1073,40 @@ public final class LoRATrainer: @unchecked Sendable {
             throw LoRATrainerError.noVAEProvided
         }
 
-        // Get text embeddings (from validation cache or encode)
-        var hiddenStates: [MLXArray] = []
+        // Get text embeddings from cache (MUST be pre-cached)
         let textCacheToUse = useValidationCache ? validationTextEmbeddingCache : textEmbeddingCache
+        guard let cache = textCacheToUse else {
+            throw LoRATrainerError.trainingFailed("Text embedding cache not initialized for validation")
+        }
+        
+        var hiddenStates: [MLXArray] = []
 
         for caption in batch.captions {
-            if let cache = textCacheToUse,
-               let cached = try cache.getEmbeddings(for: caption) {
-                let embedding = cached.hidden.shape.count > 2
-                    ? cached.hidden.squeezed(axis: 0)
-                    : cached.hidden
-                hiddenStates.append(embedding)
-            } else {
-                let embeddings = try await textEncoder(caption)
-                let embedding = embeddings.shape.count > 2
-                    ? embeddings.squeezed(axis: 0)
-                    : embeddings
-                hiddenStates.append(embedding)
-
-                // Cache for next time
-                if let cache = textCacheToUse {
-                    try cache.saveEmbeddings(
-                        pooled: MLXArray.zeros([1]),
-                        hidden: embedding,
-                        for: caption
-                    )
-                }
+            // Text embeddings MUST be pre-cached
+            guard let cached = try cache.getEmbeddings(for: caption) else {
+                throw LoRATrainerError.trainingFailed("Text embedding not cached for validation: '\(caption.prefix(50))...'")
             }
+            let embedding = cached.hidden.shape.count > 2
+                ? cached.hidden.squeezed(axis: 0)
+                : cached.hidden
+            hiddenStates.append(embedding)
         }
 
         // Stack embeddings
         let batchedHidden = MLX.stacked(hiddenStates, axis: 0)
+        eval(batchedHidden)
 
-        // Create position IDs
+        // Get pre-computed position IDs from cache
         let batchSize = latents.shape[0]
-        let patchSize = 2
-        let imgH = latents.shape[2] / patchSize
-        let imgW = latents.shape[3] / patchSize
-        let txtLen = batchedHidden.shape[1]
-
-        let txtIds = generateTextPositionIDs(length: txtLen)
-        let imgIds = generateImagePositionIDs(height: imgH, width: imgW)
+        let imageWidth = latents.shape[3] * 8
+        let imageHeight = latents.shape[2] * 8
+        let resKey = "\(imageWidth)x\(imageHeight)"
+        
+        guard let posIds = positionIdCache[resKey] else {
+            throw LoRATrainerError.trainingFailed("Position IDs not cached for validation resolution: \(resKey)")
+        }
+        let txtIds = posIds.txtIds
+        let imgIds = posIds.imgIds
 
         // Sample timesteps (use fixed seed for reproducible validation)
         let timesteps = MLXRandom.randInt(low: 0, high: 1000, [batchSize])
@@ -949,7 +1124,7 @@ public final class LoRATrainer: @unchecked Sendable {
 
         // Prepare guidance
         let guidance: MLXArray? = modelType.usesGuidanceEmbeds ?
-            MLXArray(Array(repeating: Float(4.0), count: batchSize)) : nil
+            MLXArray.full([batchSize], values: MLXArray(Float(4.0))) : nil
 
         // Compute velocity target
         let velocityTarget = noise - latents
@@ -1028,7 +1203,10 @@ public final class LoRATrainer: @unchecked Sendable {
 
     /// Clip gradient norm to prevent exploding gradients (legacy, kept for reference)
     private func clipGradNorm(_ grads: ModuleParameters, maxNorm: Float) -> ModuleParameters {
-        // Flatten all gradients and compute total norm
+        // OPTIMIZED: Use batched operations instead of sequential loops
+        // The previous version created a huge sequential computation graph
+
+        // Collect all gradients
         var allGrads: [MLXArray] = []
 
         func collectGrads(_ item: NestedItem<String, MLXArray>) {
@@ -1052,20 +1230,25 @@ public final class LoRATrainer: @unchecked Sendable {
             collectGrads(item)
         }
 
-        // Compute total norm
+        // Compute total norm - BATCHED operation
         guard !allGrads.isEmpty else { return grads }
 
-        var totalNormSq = MLXArray(0.0)
-        for grad in allGrads {
-            totalNormSq = totalNormSq + (grad * grad).sum()
-        }
+        // Compute squared norms in parallel (each is independent)
+        let squaredNorms = allGrads.map { ($0 * $0).sum() }
+
+        // Stack and sum in ONE operation instead of sequential loop
+        let totalNormSq = MLX.stacked(squaredNorms).sum()
         let totalNorm = sqrt(totalNormSq)
 
-        // Compute clip coefficient
+        // Compute clip coefficient (single scalar operation)
         let maxNormArr = MLXArray(maxNorm)
         let clipCoef = minimum(maxNormArr / (totalNorm + MLXArray(1e-6)), MLXArray(1.0))
 
-        // Apply clipping
+        // Force eval of clipCoef ONCE before applying to all grads
+        // This prevents recomputation for each gradient
+        eval(clipCoef)
+
+        // Apply clipping - each multiplication is now independent
         func clipItem(_ item: NestedItem<String, MLXArray>) -> NestedItem<String, MLXArray> {
             switch item {
             case .none:
@@ -1346,9 +1529,8 @@ public final class LoRATrainer: @unchecked Sendable {
         prompt: String,
         step: Int
     ) async throws -> URL? {
-        guard let vae = validationVAE,
-              let textEncoder = validationTextEncoder else {
-            Flux2Debug.log("[Validation] Skipping - VAE or text encoder not available")
+        guard let vae = validationVAE else {
+            Flux2Debug.log("[Validation] Skipping - VAE not available")
             return nil
         }
 
@@ -1361,8 +1543,18 @@ public final class LoRATrainer: @unchecked Sendable {
         // Set seed for reproducibility
         MLXRandom.seed(seed)
 
-        // 1. Encode validation prompt
-        let textEmbeddings = try await textEncoder(prompt)
+        // 1. Get text embeddings from cache (MUST be pre-cached)
+        let textEmbeddings: MLXArray
+        if let cache = textEmbeddingCache,
+           let cached = try cache.getEmbeddings(for: prompt) {
+            // Add batch dimension if needed: [seq, dim] -> [1, seq, dim]
+            textEmbeddings = cached.hidden.shape.count == 2
+                ? cached.hidden.expandedDimensions(axis: 0)
+                : cached.hidden
+        } else {
+            Flux2Debug.log("[Validation] Skipping - prompt not in embedding cache")
+            return nil
+        }
         eval(textEmbeddings)
 
         // 2. Generate random patchified latents
