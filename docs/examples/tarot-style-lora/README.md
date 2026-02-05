@@ -6,10 +6,12 @@ This example demonstrates training a **style LoRA** using the classic Rider-Wait
 
 **Source**: [multimodalart/tarot-dataset](https://huggingface.co/datasets/multimodalart/tarot-dataset)
 
-| Split | Images | Purpose |
-|-------|--------|---------|
-| Train | 32 | Learning the style |
-| Validation | 8 | Monitoring overfitting |
+**Ready-to-use dataset**: [examples/tarot-style/](../../../examples/tarot-style/) (included in this repo)
+
+| Split | Images | Location |
+|-------|--------|----------|
+| Train | 32 | [examples/tarot-style/train/](../../../examples/tarot-style/train/) |
+| Validation | 8 | [examples/tarot-style/validation/](../../../examples/tarot-style/validation/) |
 
 ### Style Characteristics
 - Vintage woodcut/linocut illustration style
@@ -34,6 +36,8 @@ rwaite, three women in flowing robes raising golden goblets in celebration
 The trigger word `rwaite` (for Rider-Waite) activates the style.
 
 ## Training Configuration
+
+**Config file**: [examples/tarot-style/tarot_training.yaml](../../../examples/tarot-style/tarot_training.yaml)
 
 ```yaml
 model:
