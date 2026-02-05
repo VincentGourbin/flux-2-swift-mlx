@@ -506,14 +506,19 @@ public final class SimpleLoRATrainer {
                 // Check for pause - save checkpoint BEFORE entering pause
                 if ctrl.shouldPause() {
                     print("\n⏸️  Pause requested, saving checkpoint first...")
+                    let pauseCheckpointDir = config.outputDir.appendingPathComponent("checkpoint_\(String(format: "%06d", step))")
                     try await saveCheckpoint(step: step, transformer: transformer, optimizer: optimizer, isPauseCheckpoint: true)
                     print("   Checkpoint saved. You can safely quit or wait for resume.")
 
                     // Now wait while paused
                     if !ctrl.waitWhilePaused() {
-                        // Stop was requested while paused
+                        // Stop was requested while paused - keep the checkpoint
                         break
                     }
+
+                    // Resumed from pause - delete the pause checkpoint (only kept if stopped)
+                    print("▶️  Resuming training, cleaning up pause checkpoint...")
+                    try? FileManager.default.removeItem(at: pauseCheckpointDir)
                 }
             }
             
