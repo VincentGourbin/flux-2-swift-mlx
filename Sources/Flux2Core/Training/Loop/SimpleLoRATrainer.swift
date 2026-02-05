@@ -299,7 +299,16 @@ public final class SimpleLoRATrainer {
         )
 
         // Load checkpoint weights if resuming
-        if startStep > 0 {
+        if startStep > 0, let optimizerStatePath = optimizerState {
+            // Use the optimizer state path to find the checkpoint directory
+            // This is more robust than reconstructing from startStep
+            let checkpointDir = optimizerStatePath.deletingLastPathComponent()
+            let loraPath = checkpointDir.appendingPathComponent("lora.safetensors")
+            print("Loading LoRA weights from checkpoint...")
+            try loadLoRACheckpoint(transformer: transformer, from: loraPath)
+            print("  Loaded from: \(checkpointDir.lastPathComponent)/\(loraPath.lastPathComponent)")
+        } else if startStep > 0 {
+            // Fallback: construct path from step number (for backwards compatibility)
             let checkpointDir = config.outputDir.appendingPathComponent("checkpoint_\(String(format: "%06d", startStep))")
             let loraPath = checkpointDir.appendingPathComponent("lora.safetensors")
             print("Loading LoRA weights from checkpoint...")
@@ -477,6 +486,10 @@ public final class SimpleLoRATrainer {
         // Training loop (start from startStep + 1 if resuming)
         let firstStep = startStep + 1
         for step in firstStep...config.maxSteps {
+            // Update current step FIRST (before stop/pause checks so checkpoint has correct step)
+            currentStep = step
+            trainingState?.currentStep = step
+
             // Check for stop request (from controller or internal flag)
             if shouldStop { break }
             if let ctrl = controller {
@@ -503,9 +516,6 @@ public final class SimpleLoRATrainer {
                     }
                 }
             }
-
-            currentStep = step
-            trainingState?.currentStep = step
             
             // Sample random batch
             let idx = Int.random(in: 0..<cachedLatents.count)
