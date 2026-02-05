@@ -105,8 +105,8 @@ public class Flux2Pipeline: @unchecked Sendable {
     /// Whether models are loaded
     public private(set) var isLoaded: Bool = false
 
-    /// Memory profile for GPU cache management (auto-detected by default)
-    public var memoryProfile: MemoryConfig.CacheProfile = MemoryConfig.recommendedProfile()
+    /// Memory profile for GPU cache management (auto = dynamic based on RAM)
+    public var memoryProfile: MemoryConfig.CacheProfile = .auto
 
     /// Clear cache every N denoising steps (0 = disabled)
     public var clearCacheEveryNSteps: Int = 5
