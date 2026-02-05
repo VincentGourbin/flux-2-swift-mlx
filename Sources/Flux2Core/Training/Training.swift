@@ -2,57 +2,64 @@
 // Copyright 2025 Vincent Gourbin
 
 // This file serves as the module entry point for training functionality.
-// All public types from the Training subdirectories are re-exported here.
 
 // MARK: - Configuration
 // LoRATrainingConfig - Main configuration for training
 // TrainingQuantization - Quantization options (bf16, int8, int4, nf4)
 // LoRATargetLayers - Which layers to apply LoRA to
-// LRSchedulerType - Learning rate scheduler types
+// SimpleLoRAConfig - Simplified config for Ostris-compatible training
 
 // MARK: - Data Pipeline
 // TrainingDataset - Load and iterate over training data
-// TrainingSample - Single training sample
-// TrainingBatch - Batch of training samples
 // CaptionParser - Parse captions from txt/jsonl files
 // LatentCache - Pre-encode and cache VAE latents
-// TextEmbeddingCache - Cache text encoder outputs
+// AspectRatioBucket - Handle multiple resolutions
+// CachedLatentEntry - Pre-encoded latent with metadata
+// CachedEmbeddingEntry - Pre-encoded text embedding
 
 // MARK: - Model
-// TrainableLoRALinear - LoRA layer with gradient support
-// LoRAInjector - Inject LoRA into transformer
-
-// MARK: - Optimizer & Loss
-// DiffusionLoss - MSE loss for diffusion training
-// TrainingStepLoss - Complete loss computation
-// LearningRateScheduler - Protocol for LR schedulers
-// ConstantScheduler, LinearScheduler, CosineScheduler - LR scheduler implementations
+// LoRALinear - LoRA layer implementation (inference)
+// LoRAInjectedLinear - LoRA layer for training with separate A/B matrices
 
 // MARK: - Training Loop
-// LoRATrainer - Main training loop
-// TrainingState - Track training progress
-// CheckpointManager - Save/load checkpoints
-// TrainingEvent - Events during training
-// TrainingEventHandler - Handle training events
+// SimpleLoRATrainer - Ostris-compatible training loop (no EMA, clean implementation)
+
+// MARK: - Training Control (High-Level APIs)
+// TrainingController - Control pause/resume/stop with file-based signaling
+// TrainingSession - High-level session management for app integration
+// TrainingState - Persistable training state for checkpoint/resume
+// TrainingObserver - Protocol for observing training events
+// TrainingStatus - Enum for training status (idle, running, paused, etc.)
+
+// MARK: - Optimizer
+// ResumableAdamW - AdamW with checkpoint state support
 
 import Foundation
 
 /// LoRA Training Module Version
 public enum Training {
-    public static let version = "0.1.0"
-    
+    public static let version = "0.3.0"
+
     /// Supported features
     public static let features: [String] = [
+        // Core Training
         "LoRA training for Flux.2 models",
-        "Support for Klein 4B, Klein 9B, and Dev models",
-        "Multiple quantization options (bf16, int8, int4, nf4)",
-        "Gradient checkpointing for memory efficiency",
+        "Support for Klein 4B and Klein 9B models",
+        "Ostris-compatible training (no EMA)",
+        "Differential Output Preservation (DOP)",
+        "Gradient accumulation",
+        "Bell-shaped loss weighting",
+        "Content/Style/Balanced timestep sampling",
+        "Multi-resolution bucketing",
         "Latent and text embedding caching",
-        "Multiple learning rate schedulers",
-        "Checkpoint saving and resumption",
-        "Compatible with Kohya-SS/SimpleTuner dataset formats"
+        // Training Control
+        "Checkpoint resume with optimizer state",
+        "Pause/Resume with automatic checkpoint",
+        "File-based cross-process control (.pause, .stop files)",
+        "High-level TrainingSession API for app integration",
+        "TrainingObserver protocol for UI updates"
     ]
-    
+
     /// Minimum recommended memory by model and quantization
     public static func recommendedMemoryGB(
         for model: Flux2Model,
@@ -74,3 +81,4 @@ public enum Training {
         }
     }
 }
+
