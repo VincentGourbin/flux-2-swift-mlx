@@ -19,7 +19,7 @@ dataset:
 training:
   batch_size: 1
   gradient_accumulation: 1
-  max_steps: 1000
+  max_steps: 500
   warmup_steps: 50
   learning_rate: 1e-4
   weight_decay: 0.0001
@@ -36,13 +36,13 @@ loss:
 
 checkpoints:
   output: ./output/tarot-lora
-  save_every: 250
-  keep_last: 5
+  save_every: 50
+  keep_last: 10
   learning_curve: true
   learning_curve_smoothing: 20
 
 validation:
-  every_n_steps: 250
+  every_n_steps: 50
   seed: 42
   steps: 4
   prompts:

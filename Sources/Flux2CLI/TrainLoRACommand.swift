@@ -832,7 +832,11 @@ struct TrainLoRA: AsyncParsableCommand {
             cachedEmbeddings: embeddingsByFilename,
             vae: vae,
             textEncoder: { prompt in
-                try textEncoder.encodeForTraining(prompt)
+                // Reload text encoder if it was unloaded (e.g., by baseline image generation)
+                if !textEncoder.isLoaded {
+                    try await textEncoder.load()
+                }
+                return try textEncoder.encodeForTraining(prompt)
             },
             startStep: startStep,
             optimizerState: optimizerStateURL
