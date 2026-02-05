@@ -17,9 +17,10 @@ test_checkpoints/
 result_checkpoints/
 *.png
 
-# But keep documentation images
+# But keep documentation images and example datasets
 !docs/examples/**/*.png
 !docs/screenshots/**/*.png
+!examples/tarot-style/**/*.png
 
 # Temporary files
 *.tmp
