@@ -171,6 +171,19 @@ public final class TrainingDataset: @unchecked Sendable {
     public var allCaptions: [String] {
         samples.map { $0.caption }
     }
+
+    /// All sample metadata (filename + caption) without loading images
+    public var sampleMetadata: [(filename: String, caption: String)] {
+        samples
+    }
+
+    /// Get target dimensions for a sample (considers bucketing)
+    public func getTargetDimensions(for filename: String) -> (width: Int, height: Int) {
+        if config.enableBucketing, let bucket = bucketManager?.getBucket(for: filename) {
+            return (bucket.width, bucket.height)
+        }
+        return (config.imageSize, config.imageSize)
+    }
     
     /// All active resolution buckets (non-empty buckets with assigned samples)
     /// Returns empty array if bucketing is not enabled

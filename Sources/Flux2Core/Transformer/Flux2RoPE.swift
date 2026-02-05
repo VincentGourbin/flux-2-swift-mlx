@@ -241,36 +241,47 @@ public class Flux2RoPE: Module, @unchecked Sendable {
     }
 }
 
-/// Generate position IDs for image latents
+/// Generate position IDs for image latents using GPU-native operations
 /// - Parameters:
 ///   - height: Image height in latent space
 ///   - width: Image width in latent space
 /// - Returns: Position IDs [H*W, 4]
 public func generateImagePositionIDs(height: Int, width: Int) -> MLXArray {
-    var positions: [Int32] = []
+    // GPU-native implementation using meshgrid-like operations
+    // Create H and W coordinate grids
+    let hIndices = MLXArray.arange(height, dtype: .int32)  // [H]
+    let wIndices = MLXArray.arange(width, dtype: .int32)   // [W]
 
-    for h in 0..<height {
-        for w in 0..<width {
-            // [T, H, W, L] - T=0 for image, L=0 for latent
-            positions.append(contentsOf: [0, Int32(h), Int32(w), 0])
-        }
-    }
+    // Create meshgrid: expand H to [H, W] and W to [H, W] using broadcastTo
+    let hExpanded = hIndices.expandedDimensions(axis: 1)  // [H, 1]
+    let wExpanded = wIndices.expandedDimensions(axis: 0)  // [1, W]
+    let hGrid = MLX.broadcast(hExpanded, to: [height, width])  // [H, W]
+    let wGrid = MLX.broadcast(wExpanded, to: [height, width])  // [H, W]
 
-    return MLXArray(positions).reshaped([height * width, 4])
+    // Flatten to [H*W]
+    let hFlat = hGrid.reshaped([height * width])
+    let wFlat = wGrid.reshaped([height * width])
+
+    // Create T=0 and L=0 columns
+    let zeros = MLXArray.zeros([height * width], dtype: .int32)
+
+    // Stack to create [H*W, 4] with format [T, H, W, L]
+    return MLX.stacked([zeros, hFlat, wFlat, zeros], axis: 1)
 }
 
-/// Generate position IDs for text sequence
+/// Generate position IDs for text sequence using GPU-native operations
 /// - Parameter length: Text sequence length
 /// - Returns: Position IDs [length, 4]
 public func generateTextPositionIDs(length: Int) -> MLXArray {
-    var positions: [Int32] = []
+    // GPU-native implementation
+    // Create L column as [0, 1, 2, ..., length-1]
+    let lIndices = MLXArray.arange(length, dtype: .int32)  // [length]
 
-    for l in 0..<length {
-        // [T, H, W, L] - T=0, H=0, W=0 for text, L=position
-        positions.append(contentsOf: [0, 0, 0, Int32(l)])
-    }
+    // Create T=0, H=0, W=0 columns
+    let zeros = MLXArray.zeros([length], dtype: .int32)
 
-    return MLXArray(positions).reshaped([length, 4])
+    // Stack to create [length, 4] with format [T, H, W, L]
+    return MLX.stacked([zeros, zeros, zeros, lIndices], axis: 1)
 }
 
 /// Combine text and image position IDs for joint attention

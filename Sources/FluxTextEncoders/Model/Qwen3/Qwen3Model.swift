@@ -76,6 +76,8 @@ public class Qwen3Model: Module {
         // Pass through layers
         for (i, layer) in layers.enumerated() {
             if outputHiddenStates {
+                // CRITICAL: Evaluate before storing to prevent computation graph retention
+                eval(hiddenStates)
                 allHiddenStates?.append(hiddenStates)
             }
 
@@ -95,6 +97,7 @@ public class Qwen3Model: Module {
         hiddenStates = norm(hiddenStates)
 
         if outputHiddenStates {
+            eval(hiddenStates)  // Evaluate before storing
             allHiddenStates?.append(hiddenStates)
         }
 
@@ -109,6 +112,8 @@ public class Qwen3Model: Module {
         attentionMask: MLXArray? = nil
     ) -> [Int: MLXArray] {
         var hiddenStates = embed_tokens(inputIds)
+        // CRITICAL: Evaluate embedding immediately to prevent graph accumulation
+        eval(hiddenStates)
 
         // Create causal mask with optional padding mask
         let mask = createCausalMask(
@@ -116,6 +121,10 @@ public class Qwen3Model: Module {
             offset: 0,
             attentionMask: attentionMask
         )
+        // CRITICAL: Evaluate mask to prevent it from being part of every layer's graph
+        if let m = mask {
+            eval(m)
+        }
 
         // Set of layers to extract
         let layerSet = Set(layerIndices)
@@ -128,30 +137,43 @@ public class Qwen3Model: Module {
             extractedStates[0] = hiddenStates
         }
 
-        // Pass through layers
+        // Pass through layers with aggressive memory management
         for (i, layer) in layers.enumerated() {
+            // Process layer
             hiddenStates = layer(hiddenStates, mask: mask, cache: nil)
 
             // Layer indices are 1-based (layer 1 = after first layer)
             let layerIdx = i + 1
-            if layerSet.contains(layerIdx) {
-                extractedStates[layerIdx] = hiddenStates
-            }
 
-            // Memory optimization: periodic evaluation to prevent graph accumulation
-            if memoryConfig.evalFrequency > 0 && (i + 1) % memoryConfig.evalFrequency == 0 {
+            // ALWAYS evaluate at extraction points and periodically
+            let shouldEval = layerSet.contains(layerIdx) ||
+                            (memoryConfig.evalFrequency > 0 && (i + 1) % memoryConfig.evalFrequency == 0)
+
+            if shouldEval {
+                // Force evaluation to materialize computation and release graph
                 eval(hiddenStates)
+
                 if memoryConfig.clearCacheOnEval {
                     MLX.Memory.clearCache()
                 }
+            }
+
+            // Store if this is an extraction layer (already evaluated)
+            if layerSet.contains(layerIdx) {
+                extractedStates[layerIdx] = hiddenStates
             }
         }
 
         // Final normalization (only if needed for the last layer)
         let numLayers = layers.count
         if layerSet.contains(numLayers) {
-            extractedStates[numLayers] = norm(hiddenStates)
+            let normalizedStates = norm(hiddenStates)
+            eval(normalizedStates)
+            extractedStates[numLayers] = normalizedStates
         }
+
+        // Final memory cleanup
+        MLX.Memory.clearCache()
 
         return extractedStates
     }
@@ -163,9 +185,9 @@ public class Qwen3Model: Module {
 
         let totalLen = seqLen + offset
 
-        // GPU-based causal mask creation
-        let rowIndices = MLXArray(Array(0..<seqLen).map { Float($0) }).expandedDimensions(axis: 1)
-        let colIndices = MLXArray(Array(0..<totalLen).map { Float($0) }).expandedDimensions(axis: 0)
+        // GPU-native causal mask creation using MLXArray.arange (avoids CPU-bound Swift Array creation)
+        let rowIndices = MLXArray.arange(seqLen, dtype: .float32).expandedDimensions(axis: 1)
+        let colIndices = MLXArray.arange(totalLen, dtype: .float32).expandedDimensions(axis: 0)
 
         // Causal mask: allow position j if j <= i + offset
         var mask = MLX.where(

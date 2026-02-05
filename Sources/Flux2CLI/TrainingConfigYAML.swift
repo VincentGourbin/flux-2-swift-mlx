@@ -30,8 +30,9 @@ struct TrainingConfigYAML: Codable {
 
 struct YAMLModelConfig: Codable {
     var name: String?           // klein-4b, klein-9b, dev
-    var quantization: String?   // bf16, int8, int4, nf4
-    var useBase: Bool?          // Use base (non-distilled) model
+    var quantization: String?   // TEXT ENCODER quantization only: bf16, int8, int4, nf4
+                                // Transformer always uses bf16 base model for training
+    var useBase: Bool?          // DEPRECATED: Ignored - base model is ALWAYS used
 
     enum CodingKeys: String, CodingKey {
         case name, quantization
@@ -107,10 +108,15 @@ struct TrainingParams: Codable {
 
 struct LossConfig: Codable {
     var weighting: String?          // uniform, snr_weighted, bell_shaped
-    var timestepSampling: String?   // uniform, logit_normal, sigmoid
+    var timestepSampling: String?   // uniform, logit_normal, content, style, balanced
     var logitNormalMean: Float?
     var logitNormalStd: Float?
     var fluxShift: Float?
+    // DOP (Differential Output Preservation)
+    var diffOutputPreservation: Bool?
+    var diffOutputPreservationClass: String?
+    var diffOutputPreservationMultiplier: Float?
+    var diffOutputPreservationEveryNSteps: Int?  // OPTIMIZATION: Do DOP every N steps
 
     enum CodingKeys: String, CodingKey {
         case weighting
@@ -118,6 +124,10 @@ struct LossConfig: Codable {
         case logitNormalMean = "logit_normal_mean"
         case logitNormalStd = "logit_normal_std"
         case fluxShift = "flux_shift"
+        case diffOutputPreservation = "diff_output_preservation"
+        case diffOutputPreservationClass = "diff_output_preservation_class"
+        case diffOutputPreservationMultiplier = "diff_output_preservation_multiplier"
+        case diffOutputPreservationEveryNSteps = "diff_output_preservation_every_n_steps"
     }
 }
 
@@ -150,27 +160,64 @@ struct CheckpointsConfig: Codable {
     var output: String?
     var saveEvery: Int?
     var keepLast: Int?
+    var learningCurve: Bool?              // Generate learning curve SVG (default: true)
+    var learningCurveSmoothingWindow: Int? // Smoothing window size (default: 20)
 
     enum CodingKeys: String, CodingKey {
         case output
         case saveEvery = "save_every"
         case keepLast = "keep_last"
+        case learningCurve = "learning_curve"
+        case learningCurveSmoothingWindow = "learning_curve_smoothing"
     }
 }
 
 // MARK: - Validation Configuration
 
 struct YAMLValidationConfig: Codable {
+    // Legacy single prompt (for backward compatibility)
     var prompt: String?
+
+    // New: Array of validation prompts with individual settings
+    var prompts: [YAMLValidationPrompt]?
+
     var everyNSteps: Int?
     var seed: UInt64?
     var guidance: Float?
     var steps: Int?
+    var width: Int?   // Legacy, ignored if using prompts array
+    var height: Int?  // Legacy, ignored if using prompts array
+
+    enum CodingKeys: String, CodingKey {
+        case prompt, prompts
+        case everyNSteps = "every_n_steps"
+        case seed, guidance, steps, width, height
+    }
+}
+
+/// Individual validation prompt configuration
+struct YAMLValidationPrompt: Codable {
+    /// The prompt text (WITHOUT trigger word)
+    var prompt: String
+
+    /// Generate at 512x512 resolution
+    var is512: Bool?
+
+    /// Generate at 1024x1024 resolution
+    var is1024: Bool?
+
+    /// If true, prepend trigger_word + ", " to the prompt
+    var applyTrigger: Bool?
+
+    /// Optional seed for this specific prompt (overrides global seed)
+    var seed: UInt64?
 
     enum CodingKeys: String, CodingKey {
         case prompt
-        case everyNSteps = "every_n_steps"
-        case seed, guidance, steps
+        case is512 = "is_512"
+        case is1024 = "is_1024"
+        case applyTrigger = "apply_trigger"
+        case seed
     }
 }
 
@@ -248,10 +295,11 @@ struct YAMLConfigParser {
     }
 
     /// Convert YAML config to LoRATrainingConfig with CLI overrides
+    /// Note: Base model is ALWAYS used for LoRA training (mandatory, no option)
     static func toLoRATrainingConfig(
         yaml: TrainingConfigYAML,
         cliOverrides: CLIOverrides
-    ) throws -> (config: LoRATrainingConfig, modelVariant: Flux2Model, useBaseModel: Bool) {
+    ) throws -> (config: LoRATrainingConfig, modelVariant: Flux2Model) {
 
         // Model
         let modelName = cliOverrides.model ?? yaml.model?.name ?? "klein-4b"
@@ -264,7 +312,7 @@ struct YAMLConfigParser {
             throw YAMLConfigError.validationError("Invalid quantization: \(quantizationStr)")
         }
 
-        let useBaseModel = cliOverrides.useBaseModel ?? yaml.model?.useBase ?? false
+        // Note: useBase is ignored - base model is ALWAYS used for training
 
         // Dataset
         guard let datasetPath = cliOverrides.dataset ?? yaml.dataset?.path else {
@@ -308,6 +356,12 @@ struct YAMLConfigParser {
         let logitNormalStd = yaml.loss?.logitNormalStd ?? 1.0
         let fluxShift = yaml.loss?.fluxShift ?? 1.0
 
+        // DOP (Differential Output Preservation)
+        let diffOutputPreservation = yaml.loss?.diffOutputPreservation ?? false
+        let diffOutputPreservationClass = yaml.loss?.diffOutputPreservationClass
+        let diffOutputPreservationMultiplier = yaml.loss?.diffOutputPreservationMultiplier ?? 1.0
+        let diffOutputPreservationEveryNSteps = yaml.loss?.diffOutputPreservationEveryNSteps ?? 1  // Default: every step
+
         // Memory
         let gradientCheckpointing = yaml.memory?.gradientCheckpointing ?? false
         let cacheLatents = yaml.memory?.cacheLatents ?? false
@@ -327,11 +381,39 @@ struct YAMLConfigParser {
 
         let saveEveryNSteps = yaml.checkpoints?.saveEvery ?? 500
         let keepCheckpoints = yaml.checkpoints?.keepLast ?? 0
+        let generateLearningCurve = yaml.checkpoints?.learningCurve ?? true
+        let learningCurveSmoothingWindow = yaml.checkpoints?.learningCurveSmoothingWindow ?? 20
 
         // Validation
         let validationPrompt = cliOverrides.validationPrompt ?? yaml.validation?.prompt
         let validateEveryNSteps = yaml.validation?.everyNSteps ?? 500
         let validationSeed = yaml.validation?.seed ?? 42
+        let validationWidth = yaml.validation?.width ?? 768
+        let validationHeight = yaml.validation?.height ?? 768
+        let validationSteps = yaml.validation?.steps ?? 4
+
+        // Parse validation prompts array (new format)
+        var validationPrompts: [LoRATrainingConfig.ValidationPromptConfig] = []
+        if let yamlPrompts = yaml.validation?.prompts {
+            for yamlPrompt in yamlPrompts {
+                let promptConfig = LoRATrainingConfig.ValidationPromptConfig(
+                    prompt: yamlPrompt.prompt,
+                    is512: yamlPrompt.is512 ?? true,
+                    is1024: yamlPrompt.is1024 ?? false,
+                    applyTrigger: yamlPrompt.applyTrigger ?? true,
+                    seed: yamlPrompt.seed
+                )
+                validationPrompts.append(promptConfig)
+            }
+        } else if let singlePrompt = validationPrompt {
+            // Legacy: convert single prompt to array with defaults
+            validationPrompts.append(LoRATrainingConfig.ValidationPromptConfig(
+                prompt: singlePrompt,
+                is512: true,
+                is1024: true,
+                applyTrigger: true
+            ))
+        }
 
         // EMA
         let useEMA = yaml.ema?.enabled ?? true
@@ -392,6 +474,11 @@ struct YAMLConfigParser {
             fluxShiftValue: fluxShift,
             // Loss weighting
             lossWeighting: lossWeighting,
+            // Differential Output Preservation
+            diffOutputPreservation: diffOutputPreservation,
+            diffOutputPreservationClass: diffOutputPreservationClass,
+            diffOutputPreservationMultiplier: diffOutputPreservationMultiplier,
+            diffOutputPreservationEveryNSteps: diffOutputPreservationEveryNSteps,
             // Memory
             quantization: quantization,
             gradientCheckpointing: gradientCheckpointing,
@@ -403,10 +490,16 @@ struct YAMLConfigParser {
             outputPath: outputURL,
             saveEveryNSteps: saveEveryNSteps,
             keepOnlyLastNCheckpoints: keepCheckpoints,
+            generateLearningCurve: generateLearningCurve,
+            learningCurveSmoothingWindow: learningCurveSmoothingWindow,
             validationPrompt: validationPrompt,
+            validationPrompts: validationPrompts,
             validationEveryNSteps: validateEveryNSteps,
             numValidationImages: 1,
             validationSeed: validationSeed,
+            validationWidth: validationWidth,
+            validationHeight: validationHeight,
+            validationSteps: validationSteps,
             // Logging
             logEveryNSteps: logEveryNSteps,
             evalEveryNSteps: evalEveryNSteps,
@@ -430,7 +523,7 @@ struct YAMLConfigParser {
             resumeFromCheckpoint: nil
         )
 
-        return (config, modelVariant, useBaseModel)
+        return (config, modelVariant)
     }
 
     // MARK: - Helper Functions
@@ -445,6 +538,8 @@ struct YAMLConfigParser {
             return .content
         case "style":
             return .style
+        case "balanced":
+            return .balanced
         default:
             return .uniform
         }
@@ -454,8 +549,6 @@ struct YAMLConfigParser {
         switch input.lowercased() {
         case "bell_shaped", "bell-shaped", "bellshaped", "weighted":
             return .bellShaped
-        case "snr", "snr_weighted":
-            return .snr
         default:
             return .none
         }
@@ -465,14 +558,14 @@ struct YAMLConfigParser {
 // MARK: - CLI Overrides
 
 /// Struct to hold CLI argument overrides that take precedence over YAML config
+/// Note: useBaseModel removed - base model is ALWAYS used for LoRA training
 struct CLIOverrides {
     var dataset: String?
     var validationDataset: String?
     var output: String?
     var triggerWord: String?
     var model: String?
-    var quantization: String?
-    var useBaseModel: Bool?
+    var quantization: String?  // Only affects text encoder, transformer always uses bf16 base
     var rank: Int?
     var alpha: Float?
     var targetLayers: String?

@@ -66,18 +66,35 @@ public final class AspectRatioBucketManager: @unchecked Sendable {
     private func generateBuckets() {
         var generatedBuckets: Set<ResolutionBucket> = []
 
+        // Maximum dimension allowed is the largest base resolution
+        let maxDimension = baseResolutions.max() ?? 768
+
         for baseRes in baseResolutions {
             for (aspectRatio, _) in Self.standardAspectRatios {
                 // Calculate dimensions maintaining approximate pixel count
                 let targetPixels = baseRes * baseRes
-                let height = Int(sqrt(Float(targetPixels) / aspectRatio))
-                let width = Int(Float(height) * aspectRatio)
+                var height = Int(sqrt(Float(targetPixels) / aspectRatio))
+                var width = Int(Float(height) * aspectRatio)
+
+                // Cap dimensions to not exceed maxDimension
+                if width > maxDimension {
+                    width = maxDimension
+                    height = Int(Float(width) / aspectRatio)
+                }
+                if height > maxDimension {
+                    height = maxDimension
+                    width = Int(Float(height) * aspectRatio)
+                }
 
                 // Round to nearest multiple of 64 (required for VAE)
                 let roundedWidth = ((width + 32) / 64) * 64
                 let roundedHeight = ((height + 32) / 64) * 64
 
-                let bucket = ResolutionBucket(width: roundedWidth, height: roundedHeight)
+                // Final cap after rounding
+                let finalWidth = min(roundedWidth, maxDimension)
+                let finalHeight = min(roundedHeight, maxDimension)
+
+                let bucket = ResolutionBucket(width: finalWidth, height: finalHeight)
                 generatedBuckets.insert(bucket)
             }
         }

@@ -27,8 +27,11 @@ public class LoRAInjectedLinear: Linear {
     /// LoRA rank
     public let rank: Int
 
-    /// LoRA scale factor
-    public let loraScale: Float
+    /// LoRA scale factor (mutable for DOP - Differential Output Preservation)
+    public var loraScale: Float
+
+    /// Original scale factor for restoration after DOP pass
+    public let originalLoraScale: Float
 
     /// Create a LoRAInjectedLinear from an existing Linear layer
     /// - Parameters:
@@ -61,6 +64,7 @@ public class LoRAInjectedLinear: Linear {
     ) {
         self.rank = rank
         self.loraScale = scale
+        self.originalLoraScale = scale
 
         // Initialize LoRA matrices using mlx-examples convention:
         // A: [input_dim, rank] - small random values
@@ -141,6 +145,32 @@ extension Flux2Transformer2DModel {
 
             let modules = ModuleChildren(values: modulesDict)
             attn.update(modules: modules)
+            
+            // FFN layers (image stream)
+            if targetBlocks.includesFFN {
+                // Inject into ff.activation.proj (SwiGLU input projection)
+                let ffActivationModules = ModuleChildren(values: [
+                    "proj": NestedItem<String, Module>.value(LoRAInjectedLinear.fromLinear(block.ff.activation.proj, rank: rank, alpha: alpha))
+                ])
+                block.ff.activation.update(modules: ffActivationModules)
+                
+                // Inject into ff.linearOut (output projection)
+                let ffModules = ModuleChildren(values: [
+                    "linearOut": NestedItem<String, Module>.value(LoRAInjectedLinear.fromLinear(block.ff.linearOut, rank: rank, alpha: alpha))
+                ])
+                block.ff.update(modules: ffModules)
+                
+                // FFN layers (text stream)
+                let ffContextActivationModules = ModuleChildren(values: [
+                    "proj": NestedItem<String, Module>.value(LoRAInjectedLinear.fromLinear(block.ffContext.activation.proj, rank: rank, alpha: alpha))
+                ])
+                block.ffContext.activation.update(modules: ffContextActivationModules)
+                
+                let ffContextModules = ModuleChildren(values: [
+                    "linearOut": NestedItem<String, Module>.value(LoRAInjectedLinear.fromLinear(block.ffContext.linearOut, rank: rank, alpha: alpha))
+                ])
+                block.ffContext.update(modules: ffContextModules)
+            }
         }
 
         // Single-stream blocks
@@ -160,49 +190,11 @@ extension Flux2Transformer2DModel {
             attn.update(modules: modules)
         }
 
-        // === NEW: Embedding and modulation layers (like fal.ai) ===
-
-        // img_in: xEmbedder
-        let xEmbedderLora = LoRAInjectedLinear.fromLinear(xEmbedder, rank: rank, alpha: alpha)
-        update(modules: ModuleChildren(values: [
-            "xEmbedder": NestedItem<String, Module>.value(xEmbedderLora)
-        ]))
-
-        // txt_in: contextEmbedder
-        let contextEmbedderLora = LoRAInjectedLinear.fromLinear(contextEmbedder, rank: rank, alpha: alpha)
-        update(modules: ModuleChildren(values: [
-            "contextEmbedder": NestedItem<String, Module>.value(contextEmbedderLora)
-        ]))
-
-        // final_layer: projOut
-        let projOutLora = LoRAInjectedLinear.fromLinear(projOut, rank: rank, alpha: alpha)
-        update(modules: ModuleChildren(values: [
-            "projOut": NestedItem<String, Module>.value(projOutLora)
-        ]))
-
-        // time_in: timeGuidanceEmbed.timestepEmbedder.linear1 and linear2
-        let timestepLinear1Lora = LoRAInjectedLinear.fromLinear(timeGuidanceEmbed.timestepEmbedder.linear1, rank: rank, alpha: alpha)
-        let timestepLinear2Lora = LoRAInjectedLinear.fromLinear(timeGuidanceEmbed.timestepEmbedder.linear2, rank: rank, alpha: alpha)
-        timeGuidanceEmbed.timestepEmbedder.update(modules: ModuleChildren(values: [
-            "linear1": NestedItem<String, Module>.value(timestepLinear1Lora),
-            "linear2": NestedItem<String, Module>.value(timestepLinear2Lora)
-        ]))
-
-        // Modulation layers
-        let doubleModImgLora = LoRAInjectedLinear.fromLinear(doubleStreamModulationImg.linear, rank: rank, alpha: alpha)
-        doubleStreamModulationImg.update(modules: ModuleChildren(values: [
-            "linear": NestedItem<String, Module>.value(doubleModImgLora)
-        ]))
-
-        let doubleModTxtLora = LoRAInjectedLinear.fromLinear(doubleStreamModulationTxt.linear, rank: rank, alpha: alpha)
-        doubleStreamModulationTxt.update(modules: ModuleChildren(values: [
-            "linear": NestedItem<String, Module>.value(doubleModTxtLora)
-        ]))
-
-        let singleModLora = LoRAInjectedLinear.fromLinear(singleStreamModulation.linear, rank: rank, alpha: alpha)
-        singleStreamModulation.update(modules: ModuleChildren(values: [
-            "linear": NestedItem<String, Module>.value(singleModLora)
-        ]))
+        // NOTE: We intentionally do NOT train embedding layers (xEmbedder, contextEmbedder),
+        // modulation layers, time embeddings, or final projection.
+        // Analysis of Ostris/AI-Toolkit shows these layers are NOT included in their LoRA training.
+        // Training these layers caused training collapse in our tests.
+        // Ostris trains: attention QKV, attention output, and MLP layers only.
 
         // Log trainable parameter count
         let trainableParams = trainableParameters()
@@ -254,6 +246,27 @@ extension Flux2Transformer2DModel {
                 params["\(prefix).to_add_out.lora_A.weight"] = lora.loraA.T
                 params["\(prefix).to_add_out.lora_B.weight"] = lora.loraB.T
             }
+            
+            // FFN layers (image stream)
+            let ffPrefix = "transformer_blocks.\(idx)"
+            if let lora = block.ff.activation.proj as? LoRAInjectedLinear {
+                params["\(ffPrefix).ff.activation.proj.lora_A.weight"] = lora.loraA.T
+                params["\(ffPrefix).ff.activation.proj.lora_B.weight"] = lora.loraB.T
+            }
+            if let lora = block.ff.linearOut as? LoRAInjectedLinear {
+                params["\(ffPrefix).ff.linear_out.lora_A.weight"] = lora.loraA.T
+                params["\(ffPrefix).ff.linear_out.lora_B.weight"] = lora.loraB.T
+            }
+            
+            // FFN layers (text stream)
+            if let lora = block.ffContext.activation.proj as? LoRAInjectedLinear {
+                params["\(ffPrefix).ff_context.activation.proj.lora_A.weight"] = lora.loraA.T
+                params["\(ffPrefix).ff_context.activation.proj.lora_B.weight"] = lora.loraB.T
+            }
+            if let lora = block.ffContext.linearOut as? LoRAInjectedLinear {
+                params["\(ffPrefix).ff_context.linear_out.lora_A.weight"] = lora.loraA.T
+                params["\(ffPrefix).ff_context.linear_out.lora_B.weight"] = lora.loraB.T
+            }
         }
 
         // Single-stream blocks
@@ -270,49 +283,9 @@ extension Flux2Transformer2DModel {
             }
         }
 
-        // === NEW: Embedding and modulation layers ===
-
-        // img_in: xEmbedder
-        if let lora = xEmbedder as? LoRAInjectedLinear {
-            params["img_in.lora_A.weight"] = lora.loraA.T
-            params["img_in.lora_B.weight"] = lora.loraB.T
-        }
-
-        // txt_in: contextEmbedder
-        if let lora = contextEmbedder as? LoRAInjectedLinear {
-            params["txt_in.lora_A.weight"] = lora.loraA.T
-            params["txt_in.lora_B.weight"] = lora.loraB.T
-        }
-
-        // final_layer: projOut
-        if let lora = projOut as? LoRAInjectedLinear {
-            params["final_layer.linear.lora_A.weight"] = lora.loraA.T
-            params["final_layer.linear.lora_B.weight"] = lora.loraB.T
-        }
-
-        // time_in: timestepEmbedder linear1 and linear2
-        if let lora = timeGuidanceEmbed.timestepEmbedder.linear1 as? LoRAInjectedLinear {
-            params["time_in.in_layer.lora_A.weight"] = lora.loraA.T
-            params["time_in.in_layer.lora_B.weight"] = lora.loraB.T
-        }
-        if let lora = timeGuidanceEmbed.timestepEmbedder.linear2 as? LoRAInjectedLinear {
-            params["time_in.out_layer.lora_A.weight"] = lora.loraA.T
-            params["time_in.out_layer.lora_B.weight"] = lora.loraB.T
-        }
-
-        // Modulation layers
-        if let lora = doubleStreamModulationImg.linear as? LoRAInjectedLinear {
-            params["double_stream_modulation_img.lin.lora_A.weight"] = lora.loraA.T
-            params["double_stream_modulation_img.lin.lora_B.weight"] = lora.loraB.T
-        }
-        if let lora = doubleStreamModulationTxt.linear as? LoRAInjectedLinear {
-            params["double_stream_modulation_txt.lin.lora_A.weight"] = lora.loraA.T
-            params["double_stream_modulation_txt.lin.lora_B.weight"] = lora.loraB.T
-        }
-        if let lora = singleStreamModulation.linear as? LoRAInjectedLinear {
-            params["single_stream_modulation.lin.lora_A.weight"] = lora.loraA.T
-            params["single_stream_modulation.lin.lora_B.weight"] = lora.loraB.T
-        }
+        // NOTE: Embedding layers (xEmbedder, contextEmbedder), modulation layers,
+        // time embeddings, and final projection are NOT included in LoRA training.
+        // This matches Ostris/AI-Toolkit behavior.
 
         return params
     }
@@ -355,6 +328,22 @@ extension Flux2Transformer2DModel {
             if let lora = block.attn.toAddOut as? LoRAInjectedLinear {
                 lora.unfreeze(recursive: false, keys: ["loraA", "loraB"])
             }
+
+            // FFN layers (image stream)
+            if let lora = block.ff.activation.proj as? LoRAInjectedLinear {
+                lora.unfreeze(recursive: false, keys: ["loraA", "loraB"])
+            }
+            if let lora = block.ff.linearOut as? LoRAInjectedLinear {
+                lora.unfreeze(recursive: false, keys: ["loraA", "loraB"])
+            }
+
+            // FFN layers (text stream)
+            if let lora = block.ffContext.activation.proj as? LoRAInjectedLinear {
+                lora.unfreeze(recursive: false, keys: ["loraA", "loraB"])
+            }
+            if let lora = block.ffContext.linearOut as? LoRAInjectedLinear {
+                lora.unfreeze(recursive: false, keys: ["loraA", "loraB"])
+            }
         }
 
         // Unfreeze LoRA in single-stream blocks
@@ -367,33 +356,57 @@ extension Flux2Transformer2DModel {
             }
         }
 
-        // Unfreeze LoRA in embedding and modulation layers
-        if let lora = xEmbedder as? LoRAInjectedLinear {
-            lora.unfreeze(recursive: false, keys: ["loraA", "loraB"])
-        }
-        if let lora = contextEmbedder as? LoRAInjectedLinear {
-            lora.unfreeze(recursive: false, keys: ["loraA", "loraB"])
-        }
-        if let lora = projOut as? LoRAInjectedLinear {
-            lora.unfreeze(recursive: false, keys: ["loraA", "loraB"])
-        }
-        if let lora = timeGuidanceEmbed.timestepEmbedder.linear1 as? LoRAInjectedLinear {
-            lora.unfreeze(recursive: false, keys: ["loraA", "loraB"])
-        }
-        if let lora = timeGuidanceEmbed.timestepEmbedder.linear2 as? LoRAInjectedLinear {
-            lora.unfreeze(recursive: false, keys: ["loraA", "loraB"])
-        }
-        if let lora = doubleStreamModulationImg.linear as? LoRAInjectedLinear {
-            lora.unfreeze(recursive: false, keys: ["loraA", "loraB"])
-        }
-        if let lora = doubleStreamModulationTxt.linear as? LoRAInjectedLinear {
-            lora.unfreeze(recursive: false, keys: ["loraA", "loraB"])
-        }
-        if let lora = singleStreamModulation.linear as? LoRAInjectedLinear {
-            lora.unfreeze(recursive: false, keys: ["loraA", "loraB"])
-        }
+        // NOTE: Embedding layers (xEmbedder, contextEmbedder), modulation layers,
+        // time embeddings, and final projection are NOT included in LoRA training.
+        // This matches Ostris/AI-Toolkit behavior.
 
         Flux2Debug.log("[Transformer] Unfroze LoRA parameters (loraA, loraB)")
+    }
+
+    /// Set all LoRA scales to a specific value (used for DOP - Differential Output Preservation)
+    /// - Parameter scale: The scale to set (0.0 to disable LoRA, or restore to original)
+    public func setAllLoRAScales(_ scale: Float) {
+        // Double-stream blocks
+        for block in transformerBlocks {
+            if let lora = block.attn.toQ as? LoRAInjectedLinear { lora.loraScale = scale }
+            if let lora = block.attn.toK as? LoRAInjectedLinear { lora.loraScale = scale }
+            if let lora = block.attn.toV as? LoRAInjectedLinear { lora.loraScale = scale }
+            if let lora = block.attn.toOut as? LoRAInjectedLinear { lora.loraScale = scale }
+            if let lora = block.attn.addQProj as? LoRAInjectedLinear { lora.loraScale = scale }
+            if let lora = block.attn.addKProj as? LoRAInjectedLinear { lora.loraScale = scale }
+            if let lora = block.attn.addVProj as? LoRAInjectedLinear { lora.loraScale = scale }
+            if let lora = block.attn.toAddOut as? LoRAInjectedLinear { lora.loraScale = scale }
+        }
+        // Single-stream blocks
+        for block in singleTransformerBlocks {
+            if let lora = block.attn.toQkvMlp as? LoRAInjectedLinear { lora.loraScale = scale }
+            if let lora = block.attn.toOut as? LoRAInjectedLinear { lora.loraScale = scale }
+        }
+    }
+
+    /// Disable LoRA for DOP preservation pass (sets all scales to 0)
+    public func disableLoRA() {
+        setAllLoRAScales(0.0)
+    }
+
+    /// Restore LoRA to original scales after DOP preservation pass
+    public func restoreLoRAScales() {
+        // Double-stream blocks
+        for block in transformerBlocks {
+            if let lora = block.attn.toQ as? LoRAInjectedLinear { lora.loraScale = lora.originalLoraScale }
+            if let lora = block.attn.toK as? LoRAInjectedLinear { lora.loraScale = lora.originalLoraScale }
+            if let lora = block.attn.toV as? LoRAInjectedLinear { lora.loraScale = lora.originalLoraScale }
+            if let lora = block.attn.toOut as? LoRAInjectedLinear { lora.loraScale = lora.originalLoraScale }
+            if let lora = block.attn.addQProj as? LoRAInjectedLinear { lora.loraScale = lora.originalLoraScale }
+            if let lora = block.attn.addKProj as? LoRAInjectedLinear { lora.loraScale = lora.originalLoraScale }
+            if let lora = block.attn.addVProj as? LoRAInjectedLinear { lora.loraScale = lora.originalLoraScale }
+            if let lora = block.attn.toAddOut as? LoRAInjectedLinear { lora.loraScale = lora.originalLoraScale }
+        }
+        // Single-stream blocks
+        for block in singleTransformerBlocks {
+            if let lora = block.attn.toQkvMlp as? LoRAInjectedLinear { lora.loraScale = lora.originalLoraScale }
+            if let lora = block.attn.toOut as? LoRAInjectedLinear { lora.loraScale = lora.originalLoraScale }
+        }
     }
 }
 
@@ -425,10 +438,12 @@ public struct LoRATargetBlocks: Sendable {
         includesFFN: true
     )
 
+    // NOTE: Ostris/AI-Toolkit trains QKV + output projections by default.
+    // Including output projections is essential for proper training.
     public static let attentionOnly = LoRATargetBlocks(
         doubleBlockIndices: nil,
         singleBlockIndices: nil,
-        includesOutputProjections: false,
+        includesOutputProjections: true,  // Ostris includes this
         includesFFN: false
     )
 

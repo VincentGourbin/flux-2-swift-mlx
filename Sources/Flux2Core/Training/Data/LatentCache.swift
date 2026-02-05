@@ -256,7 +256,11 @@ public final class LatentCache: @unchecked Sendable {
                 let nchwBatch = stackedImages.transposed(0, 3, 1, 2)
 
                 // Encode entire batch at once
-                let latentsBatch = vae.encode(nchwBatch)
+                var latentsBatch = vae.encode(nchwBatch)
+                
+                // Apply Flux2 latent normalization (Ostris formula)
+                // This is critical for correct loss scale in training
+                latentsBatch = LatentUtils.normalizeFlux2Latents(latentsBatch)
 
                 // Ensure computation is done
                 eval(latentsBatch)
@@ -330,7 +334,10 @@ public final class LatentCache: @unchecked Sendable {
                 let normalizedImage = image * 2.0 - 1.0
                 let batchedImage = normalizedImage.expandedDimensions(axis: 0)
                 let nchwImage = batchedImage.transposed(0, 3, 1, 2)  // NHWC -> NCHW
-                let latent = vae.encode(nchwImage).squeezed(axis: 0)
+                var latentRaw = vae.encode(nchwImage)
+                // Apply Flux2 latent normalization (Ostris formula)
+                latentRaw = LatentUtils.normalizeFlux2Latents(latentRaw)
+                let latent = latentRaw.squeezed(axis: 0)
 
                 // Cache for next time with resolution
                 try saveLatent(latent, for: filename, width: width, height: height)

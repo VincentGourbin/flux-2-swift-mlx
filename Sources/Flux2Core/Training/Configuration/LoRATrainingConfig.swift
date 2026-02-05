@@ -52,8 +52,8 @@ public enum LoRATargetLayers: String, Codable, Sendable, CaseIterable {
     
     public var displayName: String {
         switch self {
-        case .attention: return "Attention only (Q, K, V)"
-        case .attentionOutput: return "Attention + Output"
+        case .attention: return "Attention (Q, K, V, O)"  // Includes output projections like Ostris
+        case .attentionOutput: return "Attention + Output (same as attention)"
         case .attentionFFN: return "Attention + FFN"
         case .all: return "All linear layers"
         }
@@ -66,10 +66,10 @@ public enum LoRATargetLayers: String, Codable, Sendable, CaseIterable {
     public var includesSingleAttention: Bool { true }
     
     /// Whether to include output projections
+    /// NOTE: All modes now include output projections by default (like Ostris/AI-Toolkit)
     public var includesOutputProjections: Bool {
         switch self {
-        case .attention: return false
-        case .attentionOutput, .attentionFFN, .all: return true
+        case .attention, .attentionOutput, .attentionFFN, .all: return true
         }
     }
     
@@ -128,6 +128,10 @@ public enum TimestepSampling: String, Codable, Sendable, CaseIterable {
     /// Best for learning artistic styles, textures, compositions
     case style = "style"
 
+    /// Balanced mode (Ostris) - 50/50 mix of content and style sampling
+    /// Good general-purpose option for most LoRA training
+    case balanced = "balanced"
+
     public var displayName: String {
         switch self {
         case .uniform: return "Uniform (default)"
@@ -135,6 +139,24 @@ public enum TimestepSampling: String, Codable, Sendable, CaseIterable {
         case .fluxShift: return "Flux Shift (composition focus)"
         case .content: return "Content (subject/face focus)"
         case .style: return "Style (artistic style focus)"
+        case .balanced: return "Balanced (content+style mix)"
+        }
+    }
+}
+
+/// Loss weighting strategy for diffusion training
+public enum LossWeighting: String, Codable, Sendable, CaseIterable {
+    /// No weighting - standard MSE loss
+    case none = "none"
+
+    /// Bell-shaped weighting (Ostris "weighted") - peaks at t=500
+    /// Focuses training on medium noise levels
+    case bellShaped = "bell_shaped"
+
+    public var displayName: String {
+        switch self {
+        case .none: return "None (standard MSE)"
+        case .bellShaped: return "Bell-shaped (Ostris weighted)"
         }
     }
 }
@@ -247,6 +269,22 @@ public struct LoRATrainingConfig: Codable, Sendable {
     /// Loss weighting strategy (Ostris "weighted" = bellShaped)
     public var lossWeighting: LossWeighting
 
+    // MARK: - Differential Output Preservation (DOP)
+
+    /// Enable Differential Output Preservation (Ostris regularization)
+    /// Prevents LoRA from affecting outputs when trigger word is absent
+    public var diffOutputPreservation: Bool
+
+    /// Class name to replace trigger word for preservation loss (e.g., "person", "object")
+    /// Required when diffOutputPreservation is enabled
+    public var diffOutputPreservationClass: String?
+
+    /// Multiplier for preservation loss (default 1.0)
+    public var diffOutputPreservationMultiplier: Float
+
+    /// Run DOP every N steps (optimization: reduces overhead, default 1 = every step)
+    public var diffOutputPreservationEveryNSteps: Int
+
     // MARK: - Memory Optimization
     
     /// Quantization level for base model
@@ -277,19 +315,62 @@ public struct LoRATrainingConfig: Codable, Sendable {
     
     /// Keep only the last N checkpoints (0 to keep all) - default is 0 to let user manage checkpoints manually
     public var keepOnlyLastNCheckpoints: Int
-    
-    /// Validation prompt for preview generation
+
+    /// Generate learning curve SVG during training (default: true)
+    public var generateLearningCurve: Bool
+
+    /// Window size for moving average smoothing of learning curve (default: 20)
+    public var learningCurveSmoothingWindow: Int
+
+    /// Validation prompt for preview generation (legacy single prompt)
     public var validationPrompt: String?
-    
+
+    /// Array of validation prompts with individual settings
+    public var validationPrompts: [ValidationPromptConfig]
+
+    /// Configuration for a single validation prompt
+    public struct ValidationPromptConfig: Sendable, Codable {
+        public var prompt: String
+        public var is512: Bool
+        public var is1024: Bool
+        public var applyTrigger: Bool
+        public var seed: UInt64?  // Optional per-prompt seed
+
+        public init(prompt: String, is512: Bool = true, is1024: Bool = false, applyTrigger: Bool = true, seed: UInt64? = nil) {
+            self.prompt = prompt
+            self.is512 = is512
+            self.is1024 = is1024
+            self.applyTrigger = applyTrigger
+            self.seed = seed
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case prompt
+            case is512 = "is_512"
+            case is1024 = "is_1024"
+            case applyTrigger = "apply_trigger"
+            case seed
+        }
+    }
+
     /// Generate validation image every N steps (0 to disable)
     public var validationEveryNSteps: Int
-    
+
     /// Number of validation images to generate
     public var numValidationImages: Int
-    
+
     /// Seed for validation image generation (nil = random)
     public var validationSeed: UInt64?
-    
+
+    /// Width for validation image generation (default 768) - legacy, ignored if using prompts array
+    public var validationWidth: Int
+
+    /// Height for validation image generation (default 768) - legacy, ignored if using prompts array
+    public var validationHeight: Int
+
+    /// Number of inference steps for validation (default 4 for Klein distilled)
+    public var validationSteps: Int
+
     // MARK: - Logging
     
     /// Log training metrics every N steps
@@ -386,6 +467,11 @@ public struct LoRATrainingConfig: Codable, Sendable {
         fluxShiftValue: Float = 1.0,
         // Loss weighting
         lossWeighting: LossWeighting = .none,
+        // Differential Output Preservation
+        diffOutputPreservation: Bool = false,
+        diffOutputPreservationClass: String? = nil,
+        diffOutputPreservationMultiplier: Float = 1.0,
+        diffOutputPreservationEveryNSteps: Int = 1,  // Optimization: 1=every step, 2=every 2nd, etc.
         // Memory
         quantization: TrainingQuantization = .bf16,
         gradientCheckpointing: Bool = true,
@@ -397,10 +483,16 @@ public struct LoRATrainingConfig: Codable, Sendable {
         outputPath: URL,
         saveEveryNSteps: Int = 500,
         keepOnlyLastNCheckpoints: Int = 0,
+        generateLearningCurve: Bool = true,
+        learningCurveSmoothingWindow: Int = 20,
         validationPrompt: String? = nil,
+        validationPrompts: [ValidationPromptConfig] = [],
         validationEveryNSteps: Int = 500,
         numValidationImages: Int = 1,
         validationSeed: UInt64? = nil,
+        validationWidth: Int = 768,
+        validationHeight: Int = 768,
+        validationSteps: Int = 4,
         // Logging
         logEveryNSteps: Int = 10,
         evalEveryNSteps: Int = 10,
@@ -453,6 +545,10 @@ public struct LoRATrainingConfig: Codable, Sendable {
         self.logitNormalStd = logitNormalStd
         self.fluxShiftValue = fluxShiftValue
         self.lossWeighting = lossWeighting
+        self.diffOutputPreservation = diffOutputPreservation
+        self.diffOutputPreservationClass = diffOutputPreservationClass
+        self.diffOutputPreservationMultiplier = diffOutputPreservationMultiplier
+        self.diffOutputPreservationEveryNSteps = diffOutputPreservationEveryNSteps
         self.quantization = quantization
         self.gradientCheckpointing = gradientCheckpointing
         self.cacheLatents = cacheLatents
@@ -462,10 +558,16 @@ public struct LoRATrainingConfig: Codable, Sendable {
         self.outputPath = outputPath
         self.saveEveryNSteps = saveEveryNSteps
         self.keepOnlyLastNCheckpoints = keepOnlyLastNCheckpoints
+        self.generateLearningCurve = generateLearningCurve
+        self.learningCurveSmoothingWindow = learningCurveSmoothingWindow
         self.validationPrompt = validationPrompt
+        self.validationPrompts = validationPrompts
         self.validationEveryNSteps = validationEveryNSteps
         self.numValidationImages = numValidationImages
         self.validationSeed = validationSeed
+        self.validationWidth = validationWidth
+        self.validationHeight = validationHeight
+        self.validationSteps = validationSteps
         self.logEveryNSteps = logEveryNSteps
         self.evalEveryNSteps = evalEveryNSteps
         self.verbose = verbose

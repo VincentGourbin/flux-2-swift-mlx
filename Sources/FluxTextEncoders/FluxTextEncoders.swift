@@ -180,6 +180,17 @@ public final class FluxTextEncoders: @unchecked Sendable {
         qwen3Model = try Qwen3ForCausalLM.load(from: modelPath)
         print("[Klein] Model weights loaded successfully")
 
+        // CRITICAL: Limit GPU cache to prevent memory accumulation during repeated inference
+        // This is essential for training where encode() is called many times
+        // Without this limit, the GPU cache grows unbounded
+        Memory.cacheLimit = 512 * 1024 * 1024  // 512 MB cache limit
+        print("[Klein] GPU cache limit set to 512 MB")
+
+        // Enable AGGRESSIVE memory optimization to prevent computation graph accumulation
+        // Use aggressive preset: eval every 4 layers with cache clearing
+        qwen3Model?.model.memoryConfig = .aggressive
+        print("[Klein] Memory optimization enabled (aggressive: eval every 4 layers + cache clear)")
+
         // Load tokenizer using HuggingFace Tokenizers library
         // Use from(modelFolder:) for local paths (not from(pretrained:) which treats path as Hub ID)
         print("[Klein] Loading tokenizer from local path...")

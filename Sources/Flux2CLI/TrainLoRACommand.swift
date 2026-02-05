@@ -717,6 +717,10 @@ struct TrainLoRA: AsyncParsableCommand {
         simpleConfig.dopEveryNSteps = config.diffOutputPreservationEveryNSteps ?? 1  // Default: every step
         simpleConfig.gradientAccumulationSteps = config.gradientAccumulationSteps
 
+        // Learning curve visualization
+        simpleConfig.generateLearningCurve = config.generateLearningCurve
+        simpleConfig.learningCurveSmoothingWindow = config.learningCurveSmoothingWindow
+
         // Load models
         print("=".repeating(60))
         print("Loading models...")

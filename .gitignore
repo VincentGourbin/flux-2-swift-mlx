@@ -29,3 +29,7 @@ result_checkpoints/
 # Package resolution
 Package.resolved
 datasets/
+.build-xcode/
+groot_training_ostris/
+flux2
+loras/

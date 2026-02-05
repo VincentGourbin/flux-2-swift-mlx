@@ -160,6 +160,23 @@ public enum ModelRegistry {
             case (.klein9B, .bf16), (.klein9B, .qint8): return .klein9B_bf16
             }
         }
+
+        /// Get the appropriate BASE variant for LoRA training (NOT distilled)
+        /// LoRA training MUST use base (non-distilled) models
+        /// Returns nil if no base model is available for the given model type
+        public static func trainingVariant(for model: Flux2Model) -> TransformerVariant? {
+            switch model {
+            case .klein4B:
+                // Base model only available in bf16
+                return .klein4B_base_bf16
+            case .klein9B:
+                // No base model available for Klein 9B yet
+                return nil
+            case .dev:
+                // Dev model is already "base" (not distilled)
+                return .bf16
+            }
+        }
     }
 
     /// Available Mistral text encoder variants (from mistral-small-3.2-swift-mlx)
