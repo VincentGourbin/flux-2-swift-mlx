@@ -176,7 +176,7 @@ training:
 - Best loss: 0.24 at step 244
 - DOP verified: trigger shows statue, no-trigger shows real cat
 
-See `docs/examples/cat-toy-results/` for validation images comparing baseline vs trained.
+See `docs/examples/cat-toy-results/` for learning curve and progression images.
 
 ### Subject LoRA on Klein 9B - Optimized DOP
 
@@ -264,22 +264,32 @@ Increase `diff_output_preservation_multiplier` (try 1.5 or 2.0) or ensure your c
 A complete training run produces:
 
 ```
-output/cat-toy-lora-4b/
+output/cat-toy-lora/
 ├── baseline/                    # Images BEFORE training (no LoRA)
-│   ├── prompt_0_trigger_512x512.png
-│   ├── prompt_1_trigger_512x512.png
-│   ├── prompt_2_notrigger_512x512.png
-│   └── prompt_3_notrigger_512x512.png
 ├── checkpoint_000125/           # Checkpoint at step 125
 │   ├── lora.safetensors         # LoRA weights
 │   ├── optimizer_state.safetensors
 │   ├── training_state.json
 │   └── prompt_*_512x512.png     # Validation images
 ├── checkpoint_000250/           # Final checkpoint
-│   └── ...
 ├── .latent_cache/               # Cached VAE latents (reused on resume)
 ├── learning_curve.svg           # Loss visualization
 └── lora_final.safetensors       # Final LoRA weights
+```
+
+## Example Results (Klein 4B, 250 steps)
+
+```
+docs/examples/cat-toy-results/
+├── learning_curve.svg           # Loss progression
+├── training_state.json          # Training metrics
+└── progression/
+    ├── step_000_trigger.png     # Baseline WITH trigger
+    ├── step_000_notrigger.png   # Baseline WITHOUT trigger
+    ├── step_125_trigger.png     # Step 125 WITH trigger
+    ├── step_125_notrigger.png   # Step 125 WITHOUT trigger
+    ├── step_250_trigger.png     # Final WITH trigger (cat-toy statue)
+    └── step_250_notrigger.png   # Final WITHOUT trigger (real cat = DOP works)
 ```
 
 ## Training Control (File-based)
