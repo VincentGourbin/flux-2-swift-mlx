@@ -135,7 +135,6 @@ public class LoRALoader {
             if layerPath.hasPrefix("transformer.") {
                 layerPath = String(layerPath.dropFirst("transformer.".count))
             }
-            // BFL format uses "diffusion_model." prefix (e.g., Koni anime LoRA)
             if layerPath.hasPrefix("diffusion_model.") {
                 layerPath = String(layerPath.dropFirst("diffusion_model.".count))
             }
@@ -264,7 +263,6 @@ public class LoRALoader {
         path = path.replacingOccurrences(of: "transformer_blocks.", with: "transformerBlocks.")
 
         // Map attention projections (single blocks)
-        // Note: Some LoRAs use "to_qkv_mlp_proj", our trained LoRAs use "to_qkv_mlp"
         path = path.replacingOccurrences(of: ".attn.to_qkv_mlp_proj", with: ".attn.toQkvMlp")
         path = path.replacingOccurrences(of: ".attn.to_qkv_mlp", with: ".attn.toQkvMlp")
         // Note: Single blocks use ".attn.to_out" without .0
@@ -306,7 +304,6 @@ public class LoRALoader {
         path = path.replacingOccurrences(of: "x_embedder", with: "xEmbedder")
         path = path.replacingOccurrences(of: "context_embedder", with: "contextEmbedder")
 
-        // Map embedders (BFL format - used by our training and fal.ai)
         if path == "img_in" {
             return "xEmbedder"
         }

@@ -1122,3 +1122,89 @@ final class GenerationResultTests: XCTestCase {
         XCTAssertTrue(true)
     }
 }
+
+// MARK: - MemoryConfig Tests
+
+final class MemoryConfigTests: XCTestCase {
+
+    func testCacheProfiles() {
+        // Test all profiles exist and have descriptions
+        for profile in MemoryConfig.CacheProfile.allCases {
+            XCTAssertFalse(profile.description.isEmpty)
+            XCTAssertFalse(profile.rawValue.isEmpty)
+        }
+    }
+
+    func testSystemRAMDetection() {
+        // System RAM should be detected and reasonable
+        let ram = MemoryConfig.systemRAMGB
+        XCTAssertGreaterThan(ram, 0)
+        XCTAssertLessThan(ram, 1024) // Less than 1TB
+    }
+
+    func testSafeCachePercentage() {
+        // Safe cache percentage should be between 0 and 1
+        let pct = MemoryConfig.safeCachePercentage
+        XCTAssertGreaterThan(pct, 0)
+        XCTAssertLessThanOrEqual(pct, 1.0)
+    }
+
+    func testConservativeProfileLimit() {
+        // Conservative should always return 512 MB
+        let limit = MemoryConfig.cacheLimitForProfile(.conservative)
+        XCTAssertNotNil(limit)
+        XCTAssertEqual(limit, 512 * 1024 * 1024) // 512 MB
+    }
+
+    func testPerformanceProfileLimit() {
+        // Performance should return up to 4 GB
+        let limit = MemoryConfig.cacheLimitForProfile(.performance)
+        XCTAssertNotNil(limit)
+        XCTAssertGreaterThan(limit!, 0)
+        XCTAssertLessThanOrEqual(limit!, 4 * 1024 * 1024 * 1024) // Max 4 GB
+    }
+
+    func testAutoProfileLimit() {
+        // Auto should return a dynamic limit based on system RAM
+        let limit = MemoryConfig.cacheLimitForProfile(.auto)
+        // For systems < 128GB, should return a limit
+        // For systems >= 128GB, might return nil (unlimited)
+        if MemoryConfig.systemRAMGB < 128 {
+            XCTAssertNotNil(limit)
+            XCTAssertGreaterThan(limit!, 256 * 1024 * 1024) // At least 256 MB
+        }
+    }
+
+    func testPhaseLimitsForKlein4B() {
+        let limits = MemoryConfig.PhaseLimits.forModel(.klein4B, profile: .conservative)
+        XCTAssertGreaterThan(limits.textEncoding, 0)
+        XCTAssertGreaterThan(limits.denoising, 0)
+        XCTAssertGreaterThan(limits.vaeDecoding, 0)
+    }
+
+    func testPhaseLimitsForDev() {
+        let limits = MemoryConfig.PhaseLimits.forModel(.dev, profile: .performance)
+        XCTAssertGreaterThan(limits.textEncoding, 0)
+        XCTAssertGreaterThan(limits.denoising, 0)
+        XCTAssertGreaterThan(limits.vaeDecoding, 0)
+
+        // Dev should have larger limits than Klein
+        let kleinLimits = MemoryConfig.PhaseLimits.forModel(.klein4B, profile: .performance)
+        XCTAssertGreaterThanOrEqual(limits.denoising, kleinLimits.denoising)
+    }
+
+    func testResolutionBasedCacheLimit() {
+        // Higher resolution should have higher cache limit
+        let limit512 = MemoryConfig.cacheLimitForResolution(width: 512, height: 512, model: .klein4B)
+        let limit1024 = MemoryConfig.cacheLimitForResolution(width: 1024, height: 1024, model: .klein4B)
+
+        XCTAssertGreaterThan(limit1024, limit512)
+    }
+
+    func testConfigurationSummary() {
+        // Configuration summary should not be empty
+        let summary = MemoryConfig.configurationSummary
+        XCTAssertFalse(summary.isEmpty)
+        XCTAssertTrue(summary.contains("Memory Configuration"))
+    }
+}

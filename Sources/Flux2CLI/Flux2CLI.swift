@@ -88,6 +88,12 @@ struct TextToImage: AsyncParsableCommand {
     @Option(name: .long, help: "LoRA config JSON file (alternative to --lora, includes scheduler overrides)")
     var loraConfigPath: String?
 
+    @Option(name: .long, help: "Memory profile: auto (default), conservative, balanced, performance")
+    var memoryProfile: String = "auto"
+
+    @Option(name: .long, help: "HuggingFace token for gated models (or set HF_TOKEN env var)")
+    var hfToken: String?
+
     func run() async throws {
         // Configure debug logging
         if debug {
@@ -103,6 +109,20 @@ struct TextToImage: AsyncParsableCommand {
         // Parse model variant
         guard let modelVariant = Flux2Model(rawValue: model) else {
             throw ValidationError("Invalid model: \(model). Use dev, klein-4b, or klein-9b")
+        }
+
+        // Check if model requires authentication (gated models)
+        // Gated: dev, klein-9b (both base and distilled)
+        // Non-gated: klein-4b
+        let token = hfToken ?? ProcessInfo.processInfo.environment["HF_TOKEN"]
+        let isGatedModel = modelVariant == .dev || modelVariant == .klein9B
+
+        if token == nil && isGatedModel {
+            print("⚠️  No HuggingFace token provided.")
+            print("   \(modelVariant.displayName) is a gated model. You need to:")
+            print("   1. Accept the license at https://huggingface.co/black-forest-labs/\(modelVariant == .dev ? "FLUX.2-dev" : "FLUX.2-klein-9B")")
+            print("   2. Set HF_TOKEN environment variable or use --hf-token")
+            print()
         }
 
         // Load LoRA config early to get scheduler overrides
@@ -222,8 +242,18 @@ struct TextToImage: AsyncParsableCommand {
         }
         print()
 
-        // Create pipeline
-        let pipeline = Flux2Pipeline(model: modelVariant, quantization: quantConfig)
+        // Create pipeline with HuggingFace token
+        let pipeline = Flux2Pipeline(model: modelVariant, quantization: quantConfig, hfToken: token)
+
+        // Set memory profile
+        switch memoryProfile.lowercased() {
+        case "conservative": pipeline.memoryProfile = .conservative
+        case "balanced": pipeline.memoryProfile = .balanced
+        case "performance": pipeline.memoryProfile = .performance
+        case "auto": pipeline.memoryProfile = .auto
+        default:
+            throw ValidationError("Invalid memory profile: \(memoryProfile). Use auto, conservative, balanced, or performance")
+        }
 
         // Load LoRA if specified
         if let loraConfig = loraConfig {
@@ -379,12 +409,32 @@ struct ImageToImage: AsyncParsableCommand {
     @Option(name: .long, help: "LoRA config JSON file (alternative to --lora, includes scheduler overrides)")
     var loraConfigPath: String?
 
+    @Option(name: .long, help: "Memory profile: auto (default), conservative, balanced, performance")
+    var memoryProfile: String = "auto"
+
+    @Option(name: .long, help: "HuggingFace token for gated models (or set HF_TOKEN env var)")
+    var hfToken: String?
+
     func run() async throws {
         let startTime = Date()
 
         // Parse model variant
         guard let modelVariant = Flux2Model(rawValue: model) else {
             throw ValidationError("Invalid model: \(model). Use dev, klein-4b, or klein-9b")
+        }
+
+        // Check if model requires authentication (gated models)
+        // Gated: dev, klein-9b (both base and distilled)
+        // Non-gated: klein-4b
+        let token = hfToken ?? ProcessInfo.processInfo.environment["HF_TOKEN"]
+        let isGatedModel = modelVariant == .dev || modelVariant == .klein9B
+
+        if token == nil && isGatedModel {
+            print("⚠️  No HuggingFace token provided.")
+            print("   \(modelVariant.displayName) is a gated model. You need to:")
+            print("   1. Accept the license at https://huggingface.co/black-forest-labs/\(modelVariant == .dev ? "FLUX.2-dev" : "FLUX.2-klein-9B")")
+            print("   2. Set HF_TOKEN environment variable or use --hf-token")
+            print()
         }
 
         // Load LoRA config early to get scheduler overrides
@@ -520,8 +570,18 @@ struct ImageToImage: AsyncParsableCommand {
             }
         }
 
-        // Create pipeline
-        let pipeline = Flux2Pipeline(model: modelVariant, quantization: quantConfig)
+        // Create pipeline with HuggingFace token
+        let pipeline = Flux2Pipeline(model: modelVariant, quantization: quantConfig, hfToken: token)
+
+        // Set memory profile
+        switch memoryProfile.lowercased() {
+        case "conservative": pipeline.memoryProfile = .conservative
+        case "balanced": pipeline.memoryProfile = .balanced
+        case "performance": pipeline.memoryProfile = .performance
+        case "auto": pipeline.memoryProfile = .auto
+        default:
+            throw ValidationError("Invalid memory profile: \(memoryProfile). Use auto, conservative, balanced, or performance")
+        }
 
         // Load LoRA if specified
         if let loraConfig = loraConfig {
@@ -628,17 +688,22 @@ struct Download: AsyncParsableCommand {
         // Get token from environment if not provided
         let token = hfToken ?? ProcessInfo.processInfo.environment["HF_TOKEN"]
 
-        if token == nil {
-            print("⚠️  No HuggingFace token provided.")
-            print("   For gated models like Flux.2, you may need to:")
-            print("   1. Accept the license at https://huggingface.co/black-forest-labs/FLUX.2-dev")
-            print("   2. Set HF_TOKEN environment variable or use --hf-token")
-            print()
-        }
-
         // Parse model variant
         guard let modelVariant = Flux2Model(rawValue: model) else {
             throw ValidationError("Invalid model: \(model). Use dev, klein-4b, or klein-9b")
+        }
+
+        // Check if model requires authentication (gated models)
+        // Gated: dev, klein-9b (both base and distilled)
+        // Non-gated: klein-4b
+        let isGatedModel = modelVariant == .dev || modelVariant == .klein9B
+
+        if token == nil && isGatedModel {
+            print("⚠️  No HuggingFace token provided.")
+            print("   \(modelVariant.displayName) is a gated model. You need to:")
+            print("   1. Accept the license at https://huggingface.co/black-forest-labs/\(modelVariant == .dev ? "FLUX.2-dev" : "FLUX.2-klein-9B")")
+            print("   2. Set HF_TOKEN environment variable or use --hf-token")
+            print()
         }
 
         let downloader = Flux2ModelDownloader(hfToken: token)

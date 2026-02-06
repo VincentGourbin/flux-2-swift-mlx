@@ -105,6 +105,12 @@ public class Flux2Pipeline: @unchecked Sendable {
     /// Whether models are loaded
     public private(set) var isLoaded: Bool = false
 
+    /// Memory profile for GPU cache management (auto = dynamic based on RAM)
+    public var memoryProfile: MemoryConfig.CacheProfile = .auto
+
+    /// Clear cache every N denoising steps (0 = disabled)
+    public var clearCacheEveryNSteps: Int = 5
+
     /// Initialize pipeline
     /// - Parameters:
     ///   - model: Model variant to use (default: .dev)
@@ -641,6 +647,10 @@ public class Flux2Pipeline: @unchecked Sendable {
         // Note: Progress will be reported once denoising loop starts with accurate step count
         Flux2Debug.log("=== PHASE 1: Text Encoding ===")
 
+        // MEMORY OPTIMIZATION: Set cache limit for text encoding phase
+        let phaseLimits = MemoryConfig.PhaseLimits.forModel(model, profile: memoryProfile)
+        MemoryConfig.applyCacheLimit(bytes: phaseLimits.textEncoding)
+
         profiler.start("1. Load Text Encoder")
         try await loadTextEncoder()
         profiler.end("1. Load Text Encoder")
@@ -894,6 +904,10 @@ public class Flux2Pipeline: @unchecked Sendable {
             // Guidance tensor (nil for Klein models which don't use guidance embeddings)
             let guidanceTensor: MLXArray? = model.usesGuidanceEmbeds ? MLXArray([guidance]) : nil
 
+            // MEMORY OPTIMIZATION: Set cache limit for denoising phase
+            let phaseLimits = MemoryConfig.PhaseLimits.forModel(model, profile: memoryProfile)
+            MemoryConfig.applyCacheLimit(bytes: phaseLimits.denoising)
+
             profiler.start("6. Denoising Loop")
 
             for stepIdx in 0..<(scheduler.sigmas.count - 1) {
@@ -931,6 +945,11 @@ public class Flux2Pipeline: @unchecked Sendable {
                     sample: packedOutputLatents
                 )
                 eval(packedOutputLatents)
+
+                // MEMORY OPTIMIZATION: Periodic cache clearing to prevent memory buildup
+                if clearCacheEveryNSteps > 0 && (stepIdx + 1) % clearCacheEveryNSteps == 0 {
+                    MemoryConfig.clearCache()
+                }
 
                 let stepDuration = Date().timeIntervalSince(stepStart)
                 profiler.recordStep(duration: stepDuration)
@@ -1040,6 +1059,9 @@ public class Flux2Pipeline: @unchecked Sendable {
         // Klein models don't use guidance embeddings
         let guidanceTensor: MLXArray? = model.usesGuidanceEmbeds ? MLXArray([guidance]) : nil
 
+        // MEMORY OPTIMIZATION: Set cache limit for denoising phase
+        MemoryConfig.applyCacheLimit(bytes: phaseLimits.denoising)
+
         profiler.start("6. Denoising Loop")
 
         // Denoising loop - use sigmas (in [0, 1] range) for transformer
@@ -1073,6 +1095,11 @@ public class Flux2Pipeline: @unchecked Sendable {
 
             // Synchronize GPU
             eval(packedLatents)
+
+            // MEMORY OPTIMIZATION: Periodic cache clearing to prevent memory buildup
+            if clearCacheEveryNSteps > 0 && (stepIdx + 1) % clearCacheEveryNSteps == 0 {
+                MemoryConfig.clearCache()
+            }
 
             // Record step time
             let stepDuration = Date().timeIntervalSince(stepStart)
@@ -1149,6 +1176,9 @@ public class Flux2Pipeline: @unchecked Sendable {
 
         // === PHASE 3: Decode to Image ===
         Flux2Debug.log("=== PHASE 3: VAE Decoding ===")
+
+        // MEMORY OPTIMIZATION: Set cache limit for VAE decoding phase
+        MemoryConfig.applyCacheLimit(bytes: phaseLimits.vaeDecoding)
 
         profiler.start("7. VAE Decode")
         let decoded = vae!.decode(finalLatents)
