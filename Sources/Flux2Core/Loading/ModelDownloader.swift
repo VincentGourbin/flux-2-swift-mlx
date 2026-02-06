@@ -104,7 +104,8 @@ public class Flux2ModelDownloader: @unchecked Sendable {
             // Text encoder uses MistralCore's download system
             return "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
         case .vae:
-            return "black-forest-labs/FLUX.2-dev"
+            // Use Klein 4B distilled repo (not gated, same VAE as all Flux.2 models)
+            return "black-forest-labs/FLUX.2-klein-4B"
         }
     }
 

@@ -15,6 +15,7 @@ DerivedData/
 # Test outputs
 test_checkpoints/
 result_checkpoints/
+output/
 *.png
 
 # But keep documentation images

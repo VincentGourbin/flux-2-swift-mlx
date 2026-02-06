@@ -317,7 +317,7 @@ public enum ModelRegistry {
         case .vae:
             return modelsDirectory
                 .appendingPathComponent("black-forest-labs")
-                .appendingPathComponent("FLUX.2-dev-vae")
+                .appendingPathComponent("FLUX.2-klein-4B-vae")
         }
     }
 
