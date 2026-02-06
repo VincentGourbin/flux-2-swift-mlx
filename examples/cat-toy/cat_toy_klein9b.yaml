@@ -11,7 +11,7 @@
 # =============================================================================
 model:
   name: klein-9b
-  quantization: int8
+  quantization: bf16  # Base models only available in bf16 (no int8)
 
 # =============================================================================
 # LoRA CONFIGURATION
@@ -19,7 +19,7 @@ model:
 lora:
   rank: 32
   alpha: 32.0
-  target_layers: all  # attention + FFN
+  target_layers: attention  # Memory-efficient for Klein 9B (no FFN)
 
 # =============================================================================
 # DATASET CONFIGURATION
@@ -44,15 +44,12 @@ training:
 loss:
   weighting: bell_shaped
   timestep_sampling: balanced  # Ostris balanced = 50/50 content/style
-  # DOP (Differential Output Preservation) - ENABLED for subject LoRAs
-  # This ensures the cat toy only appears when the trigger word is used
-  diff_output_preservation: true
-  diff_output_preservation_class: "cat"
-  diff_output_preservation_multiplier: 1.0
-  # OPTIMIZATION: For Klein 9B, run DOP every 4 steps to reduce overhead
-  # Klein 9B is larger, so DOP forward passes are slower
-  # Running every 4 steps gives ~4x speedup with minimal quality impact
-  diff_output_preservation_every_n_steps: 4
+  # DOP disabled for Klein 9B due to memory constraints
+  # Klein 9B in bf16 + DOP causes OOM - use Klein 4B for DOP training
+  diff_output_preservation: false
+  # diff_output_preservation_class: "cat"
+  # diff_output_preservation_multiplier: 1.0
+  # diff_output_preservation_every_n_steps: 4
 
 # =============================================================================
 # MEMORY OPTIMIZATION
@@ -63,8 +60,7 @@ memory:
   bucketing:
     enabled: true
     resolutions:
-      - 512
-      - 768
+      - 512  # Only 512 to save memory on Klein 9B
 
 # =============================================================================
 # CHECKPOINTING

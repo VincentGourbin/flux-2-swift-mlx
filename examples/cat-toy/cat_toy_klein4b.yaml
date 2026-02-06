@@ -1,14 +1,14 @@
-# Cat Toy LoRA Training Configuration
+# Cat Toy LoRA Training Configuration - Klein 4B
 # Dataset: diffusers/cat_toy_example
 # Trigger word: statue_cat_toy
-# Use case: Test DOP (Differential Output Preservation) for object/character focus
+# Use case: Subject/character LoRA with DOP (Differential Output Preservation)
 
 # =============================================================================
 # MODEL CONFIGURATION
 # =============================================================================
 model:
   name: klein-4b
-  quantization: int8
+  quantization: bf16  # Base models only available in bf16 (no int8)
 
 # =============================================================================
 # LoRA CONFIGURATION
@@ -40,8 +40,7 @@ training:
 # =============================================================================
 loss:
   weighting: bell_shaped
-  timestep_sampling: balanced  # Ostris balanced = 50/50 content/style
-  # DOP (Differential Output Preservation)
+  timestep_sampling: balanced
   diff_output_preservation: true
   diff_output_preservation_class: "cat"
   diff_output_preservation_multiplier: 1.0
@@ -62,7 +61,7 @@ memory:
 # CHECKPOINTING
 # =============================================================================
 checkpoints:
-  output: output/cat-toy-lora
+  output: output/cat-toy-klein4b
   save_every: 125
   keep_last: 3
 
@@ -71,7 +70,6 @@ checkpoints:
 # =============================================================================
 validation:
   prompts:
-    # WITH trigger - should show the specific cat toy statue
     - prompt: "a colorful wooden cat figurine sitting on a beach"
       apply_trigger: true
       is_512: true
@@ -80,7 +78,6 @@ validation:
       apply_trigger: true
       is_512: true
       is_1024: false
-    # WITHOUT trigger - should show a normal cat, NOT the statue
     - prompt: "a cat sitting on a couch"
       apply_trigger: false
       is_512: true

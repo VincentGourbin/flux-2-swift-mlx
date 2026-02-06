@@ -1453,16 +1453,18 @@ public final class SimpleLoRATrainer {
 
     /// Generate validation images using DISTILLED model via Flux2Pipeline
     /// This produces better results with few steps since distilled model is optimized for fast inference
+    /// WARNING: This loads a second copy of the model - may cause OOM on large models (Klein 9B, Dev)
     private func generateValidationImages(
         loraCheckpointPath: URL,
         checkpointDir: URL,
         step: Int
     ) async throws {
-        print("  Generating validation images with DISTILLED model...")
+        print("  Generating validation images...")
         fflush(stdout)
 
-        // Create pipeline with distilled model (optimized for few-step generation)
-        let pipeline = Flux2Pipeline(
+        // Create pipeline - this loads a SECOND copy of the model!
+        // For large models, consider disabling validation (validation.prompts: [])
+        var pipeline: Flux2Pipeline? = Flux2Pipeline(
             model: modelType,
             quantization: .balanced
         )
@@ -1472,7 +1474,7 @@ public final class SimpleLoRATrainer {
             filePath: loraCheckpointPath.path,
             scale: 1.0
         )
-        try pipeline.loadLoRA(loraConfig)
+        try pipeline!.loadLoRA(loraConfig)
 
         // Generate images for each validation prompt
         for (index, promptConfig) in config.validationPrompts.enumerated() {
@@ -1492,7 +1494,7 @@ public final class SimpleLoRATrainer {
             if promptConfig.is512 {
                 print("    [\(index + 1)/\(config.validationPrompts.count)] 512x512\(triggerSuffix)...")
                 fflush(stdout)
-                let result = try await pipeline.generateTextToImageWithResult(
+                let result = try await pipeline!.generateTextToImageWithResult(
                     prompt: prompt,
                     height: 512,
                     width: 512,
@@ -1510,7 +1512,7 @@ public final class SimpleLoRATrainer {
             if promptConfig.is1024 {
                 print("    [\(index + 1)/\(config.validationPrompts.count)] 1024x1024\(triggerSuffix)...")
                 fflush(stdout)
-                let result = try await pipeline.generateTextToImageWithResult(
+                let result = try await pipeline!.generateTextToImageWithResult(
                     prompt: prompt,
                     height: 1024,
                     width: 1024,
@@ -1525,8 +1527,23 @@ public final class SimpleLoRATrainer {
             }
         }
 
-        // Clear memory (pipeline will be released when this function returns)
+        // CRITICAL: Explicitly unload pipeline and force memory cleanup
+        // Without this, the second model copy stays in memory!
+        print("    Unloading validation pipeline...")
+        await pipeline!.clearAll()
+        pipeline = nil
+
+        // Force GPU sync and memory cleanup
+        eval([])
         MLX.Memory.clearCache()
+        eval([])
+        MLX.Memory.clearCache()
+
+        // Give the system time to reclaim memory
+        try await Task.sleep(nanoseconds: 500_000_000)  // 0.5 seconds
+        MLX.Memory.clearCache()
+
+        print("    Validation complete, memory released")
         fflush(stdout)
     }
     
