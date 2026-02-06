@@ -30,8 +30,8 @@ dataset:
 # =============================================================================
 training:
   batch_size: 1
-  max_steps: 1000
-  warmup_steps: 50
+  max_steps: 250
+  warmup_steps: 25
   learning_rate: 1.0e-4
   weight_decay: 0.0001
 
@@ -63,7 +63,7 @@ memory:
 # =============================================================================
 checkpoints:
   output: output/cat-toy-lora
-  save_every: 250
+  save_every: 125
   keep_last: 3
 
 # =============================================================================
@@ -89,7 +89,7 @@ validation:
       apply_trigger: false
       is_512: true
       is_1024: false
-  every_n_steps: 250
+  every_n_steps: 125
   seed: 42
   steps: 4
 

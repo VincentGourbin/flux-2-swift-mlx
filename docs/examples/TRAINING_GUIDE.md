@@ -128,8 +128,9 @@ Recommended starting points:
 |-------|--------------|
 | Klein 4B | 1e-4 |
 | Klein 9B | 1e-4 |
-| Dev | 1e-4 to 5e-5 |
+| Dev | 1e-4 |
 
+All Flux models use the same learning rate (Ostris standard).
 Higher learning rates train faster but risk overfitting.
 
 ---
@@ -166,9 +167,16 @@ loss:
   diff_output_preservation_multiplier: 1.0
 
 training:
-  max_steps: 1000
+  max_steps: 250  # Sufficient for subject LoRAs
   learning_rate: 1e-4
 ```
+
+**Real Results (cat-toy on Klein 4B):**
+- Training time: ~75 minutes (250 steps)
+- Best loss: 0.24 at step 244
+- DOP verified: trigger shows statue, no-trigger shows real cat
+
+See `docs/examples/cat-toy-results/` for validation images comparing baseline vs trained.
 
 ### Subject LoRA on Klein 9B - Optimized DOP
 
@@ -185,9 +193,36 @@ loss:
   diff_output_preservation_every_n_steps: 4  # Optimization for larger model
 
 training:
-  max_steps: 1000
+  max_steps: 250
   learning_rate: 1e-4
 ```
+
+### Subject LoRA on Dev - Optimized DOP
+
+```yaml
+model:
+  name: dev
+  quantization: int8  # Mistral 24B text encoder
+
+lora:
+  rank: 32
+  alpha: 32.0
+  target_layers: attention  # Memory-efficient for Dev
+
+loss:
+  timestep_sampling: balanced
+  weighting: bell_shaped
+  diff_output_preservation: true
+  diff_output_preservation_class: "cat"
+  diff_output_preservation_multiplier: 1.0
+  diff_output_preservation_every_n_steps: 8  # Dev is 32B, use 8 for best perf
+
+training:
+  max_steps: 250
+  learning_rate: 1e-4  # Standard Ostris recommendation
+```
+
+**Note:** Dev requires ~60GB VRAM. Use `target_layers: attention` (not `all`) to save memory.
 
 ---
 
@@ -195,7 +230,9 @@ training:
 
 ### Training is very slow with DOP on Klein 9B/Dev
 
-Use `diff_output_preservation_every_n_steps: 4` or higher to reduce DOP overhead.
+Use `diff_output_preservation_every_n_steps` to reduce DOP overhead:
+- Klein 9B: `4` (~4x speedup)
+- Dev: `8` (~8x speedup)
 
 ### Style LoRA affects images even without trigger word
 
@@ -217,3 +254,46 @@ Increase `diff_output_preservation_multiplier` (try 1.5 or 2.0) or ensure your c
 - Enable gradient checkpointing
 - Use smaller model (Klein 4B)
 - Reduce rank (16 instead of 32)
+- For Dev: use `target_layers: attention` instead of `all`
+- For Dev: limit resolutions to 512 only
+
+---
+
+## Training Output Structure
+
+A complete training run produces:
+
+```
+output/cat-toy-lora-4b/
+├── baseline/                    # Images BEFORE training (no LoRA)
+│   ├── prompt_0_trigger_512x512.png
+│   ├── prompt_1_trigger_512x512.png
+│   ├── prompt_2_notrigger_512x512.png
+│   └── prompt_3_notrigger_512x512.png
+├── checkpoint_000125/           # Checkpoint at step 125
+│   ├── lora.safetensors         # LoRA weights
+│   ├── optimizer_state.safetensors
+│   ├── training_state.json
+│   └── prompt_*_512x512.png     # Validation images
+├── checkpoint_000250/           # Final checkpoint
+│   └── ...
+├── .latent_cache/               # Cached VAE latents (reused on resume)
+├── learning_curve.svg           # Loss visualization
+└── lora_final.safetensors       # Final LoRA weights
+```
+
+## Training Control (File-based)
+
+Control training via files in the output directory:
+
+```bash
+# Pause training (saves checkpoint, waits)
+touch output/cat-toy-lora/.pause
+rm output/cat-toy-lora/.pause     # Resume
+
+# Request immediate checkpoint + validation images
+touch output/cat-toy-lora/.checkpoint
+
+# Stop training gracefully (saves final checkpoint)
+touch output/cat-toy-lora/.stop
+```

@@ -593,13 +593,17 @@ public final class SimpleLoRATrainer {
             controller?.updateState(trainingState!)
 
             // Checkpoint (regular or on-demand)
-            let shouldCheckpoint = step % config.saveEveryNSteps == 0 || (controller?.shouldCheckpoint() ?? false)
+            let isManualCheckpoint = controller?.shouldCheckpoint() ?? false
+            let isScheduledCheckpoint = step % config.saveEveryNSteps == 0
+            let shouldCheckpoint = isScheduledCheckpoint || isManualCheckpoint
             if shouldCheckpoint {
                 try await saveCheckpoint(step: step, transformer: transformer, optimizer: optimizer)
 
                 // Generate validation images using DISTILLED model (much better quality with few steps)
+                // Also generate on manual checkpoint (not just scheduled validation intervals)
+                let isScheduledValidation = step % config.validationEveryNSteps == 0
                 if !config.validationPrompts.isEmpty,
-                   step % config.validationEveryNSteps == 0 {
+                   (isScheduledValidation || isManualCheckpoint) {
                     let checkpointDir = config.outputDir.appendingPathComponent("checkpoint_\(String(format: "%06d", step))")
                     let checkpointPath = checkpointDir.appendingPathComponent("lora.safetensors")
                     try await generateValidationImages(

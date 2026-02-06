@@ -1,17 +1,18 @@
-# Cat Toy LoRA Training Configuration - Klein 9B
+# Cat Toy LoRA Training Configuration - Flux.2 Dev
 # Dataset: diffusers/cat_toy_example
 # Trigger word: statue_cat_toy
 # Use case: Subject/character LoRA with DOP (Differential Output Preservation)
 #
-# NOTE: Klein 9B is larger than Klein 4B, DOP is optimized to run every 4 steps
-# to reduce training time overhead while maintaining regularization benefits.
+# NOTE: Dev (32B) requires significant VRAM (~60GB with 8-bit text encoder)
+# Recommended: Mac Studio M2 Ultra 128GB or equivalent
+# DOP is optimized to run every 8 steps to reduce training time overhead
 
 # =============================================================================
 # MODEL CONFIGURATION
 # =============================================================================
 model:
-  name: klein-9b
-  quantization: int8
+  name: dev
+  quantization: int8  # Text encoder (Mistral 24B) quantization
 
 # =============================================================================
 # LoRA CONFIGURATION
@@ -19,7 +20,7 @@ model:
 lora:
   rank: 32
   alpha: 32.0
-  target_layers: all  # attention + FFN
+  target_layers: attention  # Q, K, V, O projections only (memory-efficient for Dev)
 
 # =============================================================================
 # DATASET CONFIGURATION
@@ -35,7 +36,7 @@ training:
   batch_size: 1
   max_steps: 250
   warmup_steps: 25
-  learning_rate: 1.0e-4
+  learning_rate: 1.0e-4  # Standard Ostris recommendation
   weight_decay: 0.0001
 
 # =============================================================================
@@ -49,10 +50,10 @@ loss:
   diff_output_preservation: true
   diff_output_preservation_class: "cat"
   diff_output_preservation_multiplier: 1.0
-  # OPTIMIZATION: For Klein 9B, run DOP every 4 steps to reduce overhead
-  # Klein 9B is larger, so DOP forward passes are slower
-  # Running every 4 steps gives ~4x speedup with minimal quality impact
-  diff_output_preservation_every_n_steps: 4
+  # OPTIMIZATION: For Dev, run DOP every 8 steps to reduce overhead
+  # Dev is much larger (32B), so DOP forward passes are significantly slower
+  # Running every 8 steps gives ~8x speedup with minimal quality impact
+  diff_output_preservation_every_n_steps: 8
 
 # =============================================================================
 # MEMORY OPTIMIZATION
@@ -63,14 +64,13 @@ memory:
   bucketing:
     enabled: true
     resolutions:
-      - 512
-      - 768
+      - 512  # Start with lower resolution for Dev to save memory
 
 # =============================================================================
 # CHECKPOINTING
 # =============================================================================
 checkpoints:
-  output: output/cat-toy-klein9b
+  output: output/cat-toy-dev
   save_every: 125
   keep_last: 3
 
@@ -99,7 +99,7 @@ validation:
       is_1024: false
   every_n_steps: 125
   seed: 42
-  steps: 4
+  steps: 28  # Dev uses 28 steps by default (not distilled)
 
 # =============================================================================
 # EMA
