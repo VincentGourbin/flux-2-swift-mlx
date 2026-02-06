@@ -113,6 +113,7 @@ public final class TrainingController: TrainingControllerProtocol, @unchecked Se
     // File-based control (for cross-process communication)
     private var pauseFileURL: URL { outputDirectory.appendingPathComponent(".pause") }
     private var stopFileURL: URL { outputDirectory.appendingPathComponent(".stop") }
+    private var checkpointFileURL: URL { outputDirectory.appendingPathComponent(".checkpoint") }
 
     // MARK: - Initialization
 
@@ -211,9 +212,21 @@ public final class TrainingController: TrainingControllerProtocol, @unchecked Se
         lock.lock()
         defer { lock.unlock() }
 
-        let requested = _checkpointRequested
-        _checkpointRequested = false
-        return requested
+        // Check programmatic flag
+        if _checkpointRequested {
+            _checkpointRequested = false
+            return true
+        }
+
+        // Check file-based signal (for cross-process control)
+        if FileManager.default.fileExists(atPath: checkpointFileURL.path) {
+            // Remove the file to acknowledge the request
+            try? FileManager.default.removeItem(at: checkpointFileURL)
+            print("📸 Checkpoint requested via .checkpoint file")
+            return true
+        }
+
+        return false
     }
 
     /// Wait while paused, checking periodically
