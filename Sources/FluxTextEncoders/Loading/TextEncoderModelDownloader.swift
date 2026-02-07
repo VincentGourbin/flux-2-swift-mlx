@@ -322,6 +322,7 @@ public class TextEncoderModelDownloader {
     }
 
     /// Find a Qwen3 model path (checks Hub cache)
+    /// Verifies safetensors files are complete before returning path
     public static func findQwen3ModelPath(for model: Qwen3ModelInfo) -> URL? {
         // Check new location: ~/Library/Caches/models/{org}/{repo}
         if let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first {
@@ -331,7 +332,11 @@ public class TextEncoderModelDownloader {
             }
 
             if FileManager.default.fileExists(atPath: newPath.appendingPathComponent("config.json").path) {
-                return newPath
+                // Verify safetensors files are complete
+                let verification = verifyShardedModel(at: newPath)
+                if verification.complete {
+                    return newPath
+                }
             }
         }
 
@@ -354,7 +359,11 @@ public class TextEncoderModelDownloader {
         let configPath = modelPath.appendingPathComponent("config.json")
 
         if FileManager.default.fileExists(atPath: configPath.path) {
-            return modelPath
+            // Verify safetensors files are complete
+            let verification = verifyShardedModel(at: modelPath)
+            if verification.complete {
+                return modelPath
+            }
         }
 
         return nil
@@ -366,6 +375,7 @@ public class TextEncoderModelDownloader {
     }
 
     /// Find a Qwen3 model path by variant
+    /// Verifies safetensors files are complete before returning path
     public static func findQwen3ModelPath(for variant: Qwen3Variant) -> URL? {
         let repoId = variant.repoId
 
@@ -377,7 +387,11 @@ public class TextEncoderModelDownloader {
             }
 
             if FileManager.default.fileExists(atPath: newPath.appendingPathComponent("config.json").path) {
-                return newPath
+                // Verify safetensors files are complete
+                let verification = verifyShardedModel(at: newPath)
+                if verification.complete {
+                    return newPath
+                }
             }
         }
 
@@ -400,7 +414,11 @@ public class TextEncoderModelDownloader {
         let configPath = modelPath.appendingPathComponent("config.json")
 
         if FileManager.default.fileExists(atPath: configPath.path) {
-            return modelPath
+            // Verify safetensors files are complete
+            let verification = verifyShardedModel(at: modelPath)
+            if verification.complete {
+                return modelPath
+            }
         }
 
         return nil

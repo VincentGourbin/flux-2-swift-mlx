@@ -87,9 +87,15 @@ public class Flux2ModelDownloader: @unchecked Sendable {
 
         let modelPath = snapshotsDir.appendingPathComponent(latestSnapshot)
         let configPath = modelPath.appendingPathComponent("config.json")
+        let modelIndexPath = modelPath.appendingPathComponent("model_index.json")
 
-        if FileManager.default.fileExists(atPath: configPath.path) {
-            return modelPath
+        if FileManager.default.fileExists(atPath: configPath.path) ||
+           FileManager.default.fileExists(atPath: modelIndexPath.path) {
+            // Verify safetensors files are complete
+            let verification = verifyModel(at: modelPath)
+            if verification.complete {
+                return modelPath
+            }
         }
 
         return nil
