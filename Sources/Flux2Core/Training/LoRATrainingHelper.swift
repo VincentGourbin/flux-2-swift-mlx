@@ -85,6 +85,30 @@ public final class LoRATrainingHelper: @unchecked Sendable {
 
     public init() {}
 
+    // MARK: - Debug Mode
+
+    /// Enable verbose debug logging for training
+    ///
+    /// Call this before starting training to see detailed logs including:
+    /// - Memory cleanup operations
+    /// - Model loading steps
+    /// - DOP encoder loading
+    /// - Timing information for each training step
+    ///
+    /// Example:
+    /// ```swift
+    /// let helper = LoRATrainingHelper()
+    /// helper.enableDebugMode()  // Call before training
+    /// ```
+    public func enableDebugMode() {
+        Flux2Debug.enableDebugMode()
+    }
+
+    /// Disable verbose logging (default mode)
+    public func disableDebugMode() {
+        Flux2Debug.setNormalMode()
+    }
+
     // MARK: - Training Data Preparation
 
     /// Input image for training preparation
