@@ -38,3 +38,7 @@ loras/
 
 # Serena MCP
 .serena/
+
+# Local dev files (user-specific configs and scripts)
+groot_training_*.yaml
+scripts/train_all_models.sh
