@@ -78,23 +78,26 @@ public enum ModelRegistry {
         /// Whether this model requires accepting a license on HuggingFace before downloading
         public var isGated: Bool {
             switch self {
-            case .bf16, .qint8:
-                // Dev models from black-forest-labs are gated
+            case .bf16:
+                // Dev bf16 from black-forest-labs is gated
                 return true
+            case .qint8:
+                // VincentGOURBIN repo is NOT gated
+                return false
             case .klein4B_bf16:
-                // Official Klein 4B from black-forest-labs is gated
-                return true
+                // Klein 4B from black-forest-labs is NOT gated
+                return false
             case .klein4B_8bit:
                 // Community 8-bit quantization is NOT gated
                 return false
             case .klein4B_base_bf16:
-                // Official Klein 4B Base from black-forest-labs is gated
-                return true
+                // Klein 4B Base from black-forest-labs is NOT gated
+                return false
             case .klein9B_bf16:
-                // Official Klein 9B from black-forest-labs is gated
+                // Klein 9B from black-forest-labs IS gated
                 return true
             case .klein9B_base_bf16:
-                // Official Klein 9B Base from black-forest-labs is gated
+                // Klein 9B Base from black-forest-labs IS gated
                 return true
             }
         }
@@ -278,8 +281,8 @@ public enum ModelRegistry {
 
         /// Whether this model requires accepting a license on HuggingFace before downloading
         public var isGated: Bool {
-            // VAE is from black-forest-labs/FLUX.2-dev which is gated
-            true
+            // VAE is downloaded from Klein 4B repo which is NOT gated
+            false
         }
 
         /// License information (inherits from FLUX.2 Dev)
