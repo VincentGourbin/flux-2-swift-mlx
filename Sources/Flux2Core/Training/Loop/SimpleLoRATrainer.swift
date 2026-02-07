@@ -291,6 +291,16 @@ public final class SimpleLoRATrainer {
         // Only on fresh start (not resume)
         if startStep == 0 && !config.validationPrompts.isEmpty {
             try await generateBaselineImages()
+
+            // CRITICAL: Baseline generation unloads the text encoder to save memory.
+            // We need to ensure it's reloaded before DOP setup which needs to encode
+            // preservation captions. The textEncoder closure will reload on demand,
+            // but we force a reload here to make the flow more explicit.
+            if let textEncoderClosure = textEncoder, config.dopEnabled && config.triggerWord != nil {
+                print("Reloading text encoder for DOP setup...")
+                // Trigger reload by encoding a dummy prompt
+                _ = try? await textEncoderClosure("")
+            }
         }
 
         // Inject LoRA into transformer
