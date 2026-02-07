@@ -144,10 +144,14 @@ public enum ModelRegistry {
             switch self {
             case .bf16, .qint8:
                 return .dev
-            case .klein4B_bf16, .klein4B_8bit, .klein4B_base_bf16:
+            case .klein4B_bf16, .klein4B_8bit:
                 return .klein4B
-            case .klein9B_bf16, .klein9B_base_bf16:
+            case .klein4B_base_bf16:
+                return .klein4BBase
+            case .klein9B_bf16:
                 return .klein9B
+            case .klein9B_base_bf16:
+                return .klein9BBase
             }
         }
 
@@ -169,6 +173,9 @@ public enum ModelRegistry {
             case (.dev, .qint8): return .qint8
             case (.klein4B, .bf16): return .klein4B_bf16
             case (.klein4B, .qint8): return .klein4B_8bit
+            // Base models only available in bf16
+            case (.klein4BBase, _): return .klein4B_base_bf16
+            case (.klein9BBase, _): return .klein9B_base_bf16
             // Klein 9B only has bf16 available - fallback to bf16 for any quantization request
             case (.klein9B, .bf16), (.klein9B, .qint8): return .klein9B_bf16
             }
@@ -179,10 +186,10 @@ public enum ModelRegistry {
         /// Returns nil if no base model is available for the given model type
         public static func trainingVariant(for model: Flux2Model) -> TransformerVariant? {
             switch model {
-            case .klein4B:
+            case .klein4B, .klein4BBase:
                 // Base model only available in bf16
                 return .klein4B_base_bf16
-            case .klein9B:
+            case .klein9B, .klein9BBase:
                 // Base model (non-distilled) for LoRA training
                 return .klein9B_base_bf16
             case .dev:

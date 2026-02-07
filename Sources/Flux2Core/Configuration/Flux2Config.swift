@@ -13,14 +13,39 @@ public enum Flux2Model: String, CaseIterable, Sendable {
     /// Flux.2 Klein 4B - 4B parameters, Qwen3-4B text encoder (Apache 2.0)
     case klein4B = "klein-4b"
 
+    /// Flux.2 Klein 4B Base - Non-distilled version for LoRA training (Apache 2.0)
+    case klein4BBase = "klein-4b-base"
+
     /// Flux.2 Klein 9B - 9B parameters, Qwen3-8B text encoder (Non-commercial)
     case klein9B = "klein-9b"
+
+    /// Flux.2 Klein 9B Base - Non-distilled version for LoRA training (Non-commercial)
+    case klein9BBase = "klein-9b-base"
 
     public var displayName: String {
         switch self {
         case .dev: return "Flux.2 Dev (32B)"
         case .klein4B: return "Flux.2 Klein 4B"
+        case .klein4BBase: return "Flux.2 Klein 4B Base"
         case .klein9B: return "Flux.2 Klein 9B"
+        case .klein9BBase: return "Flux.2 Klein 9B Base"
+        }
+    }
+
+    /// Whether this is a base (non-distilled) model for training
+    public var isBaseModel: Bool {
+        switch self {
+        case .klein4BBase, .klein9BBase: return true
+        case .dev, .klein4B, .klein9B: return false
+        }
+    }
+
+    /// Get the base (non-distilled) variant for training, if available
+    public var trainingVariant: Flux2Model {
+        switch self {
+        case .klein4B, .klein4BBase: return .klein4BBase
+        case .klein9B, .klein9BBase: return .klein9BBase
+        case .dev: return .dev  // Dev doesn't have a separate base model
         }
     }
 
@@ -28,7 +53,7 @@ public enum Flux2Model: String, CaseIterable, Sendable {
     public var usesGuidanceEmbeds: Bool {
         switch self {
         case .dev: return true
-        case .klein4B, .klein9B: return false
+        case .klein4B, .klein4BBase, .klein9B, .klein9BBase: return false
         }
     }
 
@@ -36,8 +61,8 @@ public enum Flux2Model: String, CaseIterable, Sendable {
     public var jointAttentionDim: Int {
         switch self {
         case .dev: return 15360      // Mistral: 3 × 5120
-        case .klein4B: return 7680   // Qwen3-4B: 3 × 2560
-        case .klein9B: return 12288  // Qwen3-8B: 3 × 4096
+        case .klein4B, .klein4BBase: return 7680   // Qwen3-4B: 3 × 2560
+        case .klein9B, .klein9BBase: return 12288  // Qwen3-8B: 3 × 4096
         }
     }
 
@@ -45,8 +70,8 @@ public enum Flux2Model: String, CaseIterable, Sendable {
     public var transformerConfig: Flux2TransformerConfig {
         switch self {
         case .dev: return .flux2Dev
-        case .klein4B: return .klein4B
-        case .klein9B: return .klein9B
+        case .klein4B, .klein4BBase: return .klein4B
+        case .klein9B, .klein9BBase: return .klein9B
         }
     }
 
@@ -54,8 +79,8 @@ public enum Flux2Model: String, CaseIterable, Sendable {
     public var estimatedVRAM: Int {
         switch self {
         case .dev: return 60     // ~32GB transformer + ~25GB Mistral
-        case .klein4B: return 13  // ~8GB transformer + ~5GB Qwen3-4B
-        case .klein9B: return 29  // ~18GB transformer + ~10GB Qwen3-8B
+        case .klein4B, .klein4BBase: return 13  // ~8GB transformer + ~5GB Qwen3-4B
+        case .klein9B, .klein9BBase: return 29  // ~18GB transformer + ~10GB Qwen3-8B
         }
     }
 
@@ -63,16 +88,16 @@ public enum Flux2Model: String, CaseIterable, Sendable {
     public var license: String {
         switch self {
         case .dev: return "FLUX.2 Non-Commercial"
-        case .klein4B: return "Apache 2.0"
-        case .klein9B: return "Non-Commercial"
+        case .klein4B, .klein4BBase: return "Apache 2.0"
+        case .klein9B, .klein9BBase: return "Non-Commercial"
         }
     }
 
     /// Whether this model can be used commercially
     public var isCommercialUseAllowed: Bool {
         switch self {
-        case .klein4B: return true
-        case .dev, .klein9B: return false
+        case .klein4B, .klein4BBase: return true
+        case .dev, .klein9B, .klein9BBase: return false
         }
     }
 
@@ -81,6 +106,7 @@ public enum Flux2Model: String, CaseIterable, Sendable {
         switch self {
         case .dev: return 28
         case .klein4B, .klein9B: return 4
+        case .klein4BBase, .klein9BBase: return 28  // Base models need more steps
         }
     }
 
@@ -88,7 +114,7 @@ public enum Flux2Model: String, CaseIterable, Sendable {
     public var defaultGuidance: Float {
         switch self {
         case .dev: return 4.0
-        case .klein4B, .klein9B: return 1.0
+        case .klein4B, .klein4BBase, .klein9B, .klein9BBase: return 1.0
         }
     }
 
@@ -97,7 +123,9 @@ public enum Flux2Model: String, CaseIterable, Sendable {
         switch self {
         case .dev: return 2100      // ~35 minutes
         case .klein4B: return 26    // ~26 seconds
+        case .klein4BBase: return 180  // ~3 minutes (28 steps)
         case .klein9B: return 62    // ~62 seconds
+        case .klein9BBase: return 420  // ~7 minutes (28 steps)
         }
     }
 
@@ -106,7 +134,7 @@ public enum Flux2Model: String, CaseIterable, Sendable {
     public var maxReferenceImages: Int {
         switch self {
         case .dev: return 6         // Limited by memory
-        case .klein4B, .klein9B: return 4
+        case .klein4B, .klein4BBase, .klein9B, .klein9BBase: return 4
         }
     }
 }

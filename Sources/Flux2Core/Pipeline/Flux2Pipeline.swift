@@ -177,7 +177,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         switch model {
         case .dev:
             guard textEncoder == nil else { return }
-        case .klein4B, .klein9B:
+        case .klein4B, .klein4BBase, .klein9B, .klein9BBase:
             guard kleinEncoder == nil else { return }
         }
 
@@ -202,11 +202,11 @@ public class Flux2Pipeline: @unchecked Sendable {
             textEncoder = Flux2TextEncoder(quantization: mistralQuant)
             try await textEncoder!.load()
 
-        case .klein4B:
+        case .klein4B, .klein4BBase:
             kleinEncoder = KleinTextEncoder(variant: .klein4B, quantization: mistralQuant)
             try await kleinEncoder!.load()
 
-        case .klein9B:
+        case .klein9B, .klein9BBase:
             kleinEncoder = KleinTextEncoder(variant: .klein9B, quantization: mistralQuant)
             try await kleinEncoder!.load()
         }
@@ -223,7 +223,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         case .dev:
             textEncoder?.unload()
             textEncoder = nil
-        case .klein4B, .klein9B:
+        case .klein4B, .klein4BBase, .klein9B, .klein9BBase:
             kleinEncoder?.unload()
             kleinEncoder = nil
         }
@@ -266,9 +266,9 @@ public class Flux2Pipeline: @unchecked Sendable {
             switch model {
             case .dev:
                 downloadCmd = "flux2 download --transformer \(quantization.transformer.rawValue)"
-            case .klein4B:
+            case .klein4B, .klein4BBase:
                 downloadCmd = "flux2 download --model klein-4b"
-            case .klein9B:
+            case .klein9B, .klein9BBase:
                 downloadCmd = "flux2 download --model klein-9b"
             }
             throw Flux2Error.modelNotLoaded("\(model.displayName) transformer weights not found. Run: \(downloadCmd)")
@@ -343,8 +343,8 @@ public class Flux2Pipeline: @unchecked Sendable {
             let expectedModel: LoRAInfo.TargetModel
             switch model {
             case .dev: expectedModel = .dev
-            case .klein4B: expectedModel = .klein4B
-            case .klein9B: expectedModel = .klein9B
+            case .klein4B, .klein4BBase: expectedModel = .klein4B
+            case .klein9B, .klein9BBase: expectedModel = .klein9B
             }
 
             if info.targetModel != expectedModel {
@@ -715,7 +715,7 @@ public class Flux2Pipeline: @unchecked Sendable {
 
                 profiler.end("1b. VLM Interpretation")
 
-            case .klein4B, .klein9B:
+            case .klein4B, .klein4BBase, .klein9B, .klein9BBase:
                 // Klein + --interpret: load Mistral VLM temporarily to analyze images
                 Flux2Debug.log("Klein with --interpret: loading Mistral VLM temporarily to analyze images...")
                 profiler.start("1b. VLM Interpretation")
@@ -785,7 +785,7 @@ public class Flux2Pipeline: @unchecked Sendable {
                 wasPromptUpsampled = upsamplePrompt && (usedPrompt != enrichedPrompt)
             }
 
-        case .klein4B, .klein9B:
+        case .klein4B, .klein4BBase, .klein9B, .klein9BBase:
             // Klein I2I with upsampling: load Mistral VLM temporarily to see reference images
             // This matches the official flux2 implementation which loads Mistral for Klein I2I upsampling
             if upsamplePrompt, case .imageToImage(let images, _) = mode {

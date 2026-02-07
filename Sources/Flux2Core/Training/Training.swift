@@ -66,14 +66,14 @@ public enum Training {
         quantization: TrainingQuantization
     ) -> Int {
         switch (model, quantization) {
-        case (.klein4B, .nf4): return 8
-        case (.klein4B, .int4): return 8
-        case (.klein4B, .int8): return 12
-        case (.klein4B, .bf16): return 16
-        case (.klein9B, .nf4): return 12
-        case (.klein9B, .int4): return 12
-        case (.klein9B, .int8): return 16
-        case (.klein9B, .bf16): return 24
+        case (.klein4B, .nf4), (.klein4BBase, .nf4): return 8
+        case (.klein4B, .int4), (.klein4BBase, .int4): return 8
+        case (.klein4B, .int8), (.klein4BBase, .int8): return 12
+        case (.klein4B, .bf16), (.klein4BBase, .bf16): return 16
+        case (.klein9B, .nf4), (.klein9BBase, .nf4): return 12
+        case (.klein9B, .int4), (.klein9BBase, .int4): return 12
+        case (.klein9B, .int8), (.klein9BBase, .int8): return 16
+        case (.klein9B, .bf16), (.klein9BBase, .bf16): return 24
         case (.dev, .nf4): return 18
         case (.dev, .int4): return 18
         case (.dev, .int8): return 24

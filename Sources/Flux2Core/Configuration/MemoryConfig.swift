@@ -105,8 +105,8 @@ public struct MemoryConfig {
         let modelFactor: Double
         switch model {
         case .dev: modelFactor = 1.5      // Dev is larger
-        case .klein9B: modelFactor = 1.2  // Klein 9B is medium
-        case .klein4B: modelFactor = 1.0  // Klein 4B is base
+        case .klein9B, .klein9BBase: modelFactor = 1.2  // Klein 9B is medium
+        case .klein4B, .klein4BBase: modelFactor = 1.0  // Klein 4B is base
         }
 
         let adjustedLimit = Int(Double(baseLimit) * scaleFactor * modelFactor)
@@ -230,11 +230,11 @@ public struct MemoryConfig {
                 textRatio = 0.4
                 denoiseRatio = 1.0
                 vaeRatio = 0.5
-            case .klein9B:
+            case .klein9B, .klein9BBase:
                 textRatio = 0.3
                 denoiseRatio = 0.8
                 vaeRatio = 0.4
-            case .klein4B:
+            case .klein4B, .klein4BBase:
                 textRatio = 0.25
                 denoiseRatio = 0.6
                 vaeRatio = 0.3

@@ -778,13 +778,13 @@ extension LoRATrainingConfig {
         
         // Base model memory (depends on quantization)
         switch model {
-        case .klein4B:
+        case .klein4B, .klein4BBase:
             switch quantization {
             case .bf16: baseMemory = 10
             case .int8: baseMemory = 6
             case .int4, .nf4: baseMemory = 4
             }
-        case .klein9B:
+        case .klein9B, .klein9BBase:
             switch quantization {
             case .bf16: baseMemory = 15
             case .int8: baseMemory = 10

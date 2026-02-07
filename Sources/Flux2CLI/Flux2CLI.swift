@@ -159,7 +159,7 @@ struct TextToImage: AsyncParsableCommand {
             // Priority: CLI flag > LoRA override > model default
             actualSteps = steps ?? loraOverrides?.numSteps ?? 50
             actualGuidance = guidance ?? loraOverrides?.guidance ?? 4.0
-        case .klein4B, .klein9B:
+        case .klein4B, .klein4BBase, .klein9B, .klein9BBase:
             actualSteps = steps ?? loraOverrides?.numSteps ?? 4
             actualGuidance = guidance ?? loraOverrides?.guidance ?? 1.0
         }
@@ -468,7 +468,7 @@ struct ImageToImage: AsyncParsableCommand {
         case .dev:
             actualSteps = steps ?? loraOverrides?.numSteps ?? 28
             actualGuidance = guidance ?? loraOverrides?.guidance ?? 4.0
-        case .klein4B, .klein9B:
+        case .klein4B, .klein4BBase, .klein9B, .klein9BBase:
             actualSteps = steps ?? loraOverrides?.numSteps ?? 4
             actualGuidance = guidance ?? loraOverrides?.guidance ?? 1.0
         }
@@ -751,7 +751,7 @@ struct Download: AsyncParsableCommand {
         switch modelVariant {
         case .dev:
             print("   Note: Text encoder (Mistral) will be auto-downloaded on first run")
-        case .klein4B, .klein9B:
+        case .klein4B, .klein4BBase, .klein9B, .klein9BBase:
             print("   Note: Text encoder (Qwen3) will be auto-downloaded on first run")
         }
     }

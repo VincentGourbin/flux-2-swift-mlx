@@ -1,0 +1,71 @@
+# Groot LoRA Training - 3000 steps
+# Dataset: 3 epochs of Groot (baby, teenager, adult)
+
+model:
+  name: klein-4b
+  quantization: int8
+
+lora:
+  rank: 32
+  alpha: 32.0
+
+dataset:
+  path: /Users/vincent/Developpements/flux-2-swift-mlx/datasets/groot_training
+  trigger_word: "groot"
+
+training:
+  batch_size: 1
+  max_steps: 3000
+  learning_rate: 1.0e-4
+
+loss:
+  weighting: bellShaped
+  timestep_sampling: balanced
+
+memory:
+  cache_latents: true
+  bucketing:
+    enabled: true
+    resolutions:
+      - 512
+
+checkpoints:
+  output: /Users/vincent/Developpements/flux-2-swift-mlx/loras/groot_3000
+  save_every: 250
+
+validation:
+  every_n_steps: 250
+  steps: 4
+  seed: 42
+  prompts:
+    # === Groot Epochs with Trigger ===
+
+    # Epoch 1: Baby Groot
+    - prompt: "a cute baby dancing happily, digital art, adorable, tiny"
+      is_512: true
+      is_1024: true
+      apply_trigger: true
+      seed: 42
+
+    # Epoch 2: Teenager Groot
+    - prompt: "a teenager standing confidently, digital art, young, energetic"
+      is_512: true
+      is_1024: true
+      apply_trigger: true
+      seed: 42
+
+    # Epoch 3: Adult Groot
+    - prompt: "an adult standing tall and proud, digital art, majestic, powerful"
+      is_512: true
+      is_1024: true
+      apply_trigger: true
+      seed: 42
+
+    # === Same prompt WITHOUT trigger (verify model doesn't break) ===
+
+    # Copy of Baby prompt - should NOT show Groot characteristics
+    - prompt: "a cute baby dancing happily, digital art, adorable, tiny"
+      is_512: true
+      is_1024: true
+      apply_trigger: false
+      seed: 42
