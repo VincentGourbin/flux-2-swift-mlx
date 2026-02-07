@@ -2,6 +2,8 @@
 
 LoRA (Low-Rank Adaptation) allows fine-tuning models for specific tasks without modifying the base weights. This enables specialized capabilities like object removal, spritesheet generation, style transfer, and more.
 
+> **Training your own LoRAs?** See the [Training Guide](examples/TRAINING_GUIDE.md) for detailed instructions on training subject and style LoRAs with DOP (Differential Output Preservation).
+
 ## Quick Start
 
 ```bash

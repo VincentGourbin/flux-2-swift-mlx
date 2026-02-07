@@ -23,14 +23,15 @@ public class Flux2ParallelSelfAttention: Module, @unchecked Sendable {
     let mlpHiddenDim: Int
 
     // Fused input projection: Q, K, V, MLP gate, MLP up
-    let toQkvMlp: Linear
+    // @ModuleInfo allows update(modules:) to replace with LoRA
+    @ModuleInfo var toQkvMlp: Linear
 
     // QK normalization
     let normQ: RMSNorm
     let normK: RMSNorm
 
     // Fused output projection: attention output + MLP output -> dim
-    let toOut: Linear
+    @ModuleInfo var toOut: Linear
 
     /// Initialize Parallel Self-Attention
     /// - Parameters:
@@ -53,14 +54,14 @@ public class Flux2ParallelSelfAttention: Module, @unchecked Sendable {
         // Fused projection dimensions:
         // Q: innerDim, K: innerDim, V: innerDim, gate: mlpHidden, up: mlpHidden
         let totalProjDim = innerDim * 3 + mlpHiddenDim * 2
-        self.toQkvMlp = Linear(dim, totalProjDim, bias: false)
+        self._toQkvMlp.wrappedValue = Linear(dim, totalProjDim, bias: false)
 
         // QK normalization
         self.normQ = RMSNorm(dim: headDim)
         self.normK = RMSNorm(dim: headDim)
 
         // Output projection: attention (innerDim) + mlp (mlpHidden) -> dim (no bias)
-        self.toOut = Linear(innerDim + mlpHiddenDim, dim, bias: false)
+        self._toOut.wrappedValue = Linear(innerDim + mlpHiddenDim, dim, bias: false)
     }
 
     /// Forward pass
@@ -182,20 +183,20 @@ public class Flux2ParallelSelfAttentionSplit: Module, @unchecked Sendable {
     let innerDim: Int
     let mlpHiddenDim: Int
 
-    // Separate projections
-    let toQ: Linear
-    let toK: Linear
-    let toV: Linear
-    let mlpGate: Linear
-    let mlpUp: Linear
+    // Separate projections (var for LoRA injection)
+    var toQ: Linear
+    var toK: Linear
+    var toV: Linear
+    var mlpGate: Linear
+    var mlpUp: Linear
 
     // QK normalization
     let normQ: RMSNorm
     let normK: RMSNorm
 
-    // Separate output projections
-    let toAttnOut: Linear
-    let mlpDown: Linear
+    // Separate output projections (var for LoRA injection)
+    var toAttnOut: Linear
+    var mlpDown: Linear
 
     public init(
         dim: Int,

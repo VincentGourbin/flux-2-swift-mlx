@@ -139,8 +139,11 @@ public class LoRAManager: @unchecked Sendable {
         guard let mappings = layerMappings[layerPath] else { return [] }
 
         return mappings.map { mapping in
-            (
-                scale: mapping.loader.config.effectiveScale,
+            // Effective scale = user scale * metadata scale (alpha/rank)
+            // This ensures LoRAs trained with different alpha/rank values work correctly
+            let effectiveScale = mapping.loader.config.effectiveScale * mapping.loader.metadataScale
+            return (
+                scale: effectiveScale,
                 loraA: mapping.pair.loraA.array,
                 loraB: mapping.pair.loraB.array
             )

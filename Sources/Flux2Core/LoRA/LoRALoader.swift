@@ -37,6 +37,10 @@ public class LoRALoader {
 
     /// The LoRA configuration
     public let config: LoRAConfig
+    
+    /// Scale factor derived from metadata (alpha/rank), defaults to 1.0
+    /// This is computed from the safetensors metadata if available
+    private(set) var metadataScale: Float = 1.0
 
     /// Initialize LoRA loader with configuration
     public init(config: LoRAConfig) {
@@ -53,8 +57,11 @@ public class LoRALoader {
 
         Flux2Debug.log("[LoRA] Loading from: \(path)")
 
-        // Load safetensors
-        let rawWeights = try loadArrays(url: URL(fileURLWithPath: path))
+        // Load safetensors with metadata
+        let (rawWeights, metadata) = try loadArraysAndMetadata(url: URL(fileURLWithPath: path))
+        
+        // Parse metadata for alpha/rank if available
+        parseMetadata(metadata)
 
         Flux2Debug.log("[LoRA] Loaded \(rawWeights.count) tensors")
 
@@ -62,6 +69,28 @@ public class LoRALoader {
         try parseAndMapWeights(rawWeights)
 
         Flux2Debug.log("[LoRA] Mapped \(weights.count) layer pairs")
+    }
+    
+    /// Parse metadata to extract LoRA scale factor (alpha/rank)
+    private func parseMetadata(_ metadata: [String: String]) {
+        // Try to extract alpha and rank from metadata
+        if let alphaStr = metadata["lora_alpha"], let rankStr = metadata["lora_rank"],
+           let alpha = Float(alphaStr), let rank = Float(rankStr), rank > 0 {
+            metadataScale = alpha / rank
+            Flux2Debug.log("[LoRA] Found metadata: alpha=\(alpha), rank=\(rank), computed scale=\(metadataScale)")
+        } else {
+            // Default to 1.0 if no metadata
+            metadataScale = 1.0
+            Flux2Debug.verbose("[LoRA] No alpha/rank metadata found, using default scale=1.0")
+        }
+        
+        // Log other useful metadata
+        if let format = metadata["format"] {
+            Flux2Debug.verbose("[LoRA] Format: \(format)")
+        }
+        if let software = metadata["software"] {
+            Flux2Debug.verbose("[LoRA] Created with: \(software)")
+        }
     }
 
     /// Detect if LoRA uses Diffusers format (vs BFL format)
@@ -106,7 +135,6 @@ public class LoRALoader {
             if layerPath.hasPrefix("transformer.") {
                 layerPath = String(layerPath.dropFirst("transformer.".count))
             }
-            // BFL format uses "diffusion_model." prefix (e.g., Ostris ai-toolkit, Koni anime LoRA)
             if layerPath.hasPrefix("diffusion_model.") {
                 layerPath = String(layerPath.dropFirst("diffusion_model.".count))
             }
@@ -235,7 +263,6 @@ public class LoRALoader {
         path = path.replacingOccurrences(of: "transformer_blocks.", with: "transformerBlocks.")
 
         // Map attention projections (single blocks)
-        // Note: Some LoRAs use "to_qkv_mlp_proj", others use "to_qkv_mlp"
         path = path.replacingOccurrences(of: ".attn.to_qkv_mlp_proj", with: ".attn.toQkvMlp")
         path = path.replacingOccurrences(of: ".attn.to_qkv_mlp", with: ".attn.toQkvMlp")
         // Note: Single blocks use ".attn.to_out" without .0
@@ -255,6 +282,11 @@ public class LoRALoader {
         path = path.replacingOccurrences(of: ".attn.add_v_proj", with: ".attn.addVProj")
         path = path.replacingOccurrences(of: ".attn.to_add_out", with: ".attn.toAddOut")
 
+        // Map FFN layers (trained LoRA uses snake_case, Swift uses camelCase)
+        // Note: Order matters - map linear_out before ff_context to handle both
+        path = path.replacingOccurrences(of: ".linear_out", with: ".linearOut")
+        path = path.replacingOccurrences(of: ".ff_context.", with: ".ffContext.")
+
         // Map time/guidance embeddings
         path = path.replacingOccurrences(of: "time_guidance_embed.", with: "timeGuidanceEmbed.")
         path = path.replacingOccurrences(of: "time_text_embed.", with: "timeGuidanceEmbed.")
@@ -272,7 +304,6 @@ public class LoRALoader {
         path = path.replacingOccurrences(of: "x_embedder", with: "xEmbedder")
         path = path.replacingOccurrences(of: "context_embedder", with: "contextEmbedder")
 
-        // Map embedders (BFL format - used by Ostris ai-toolkit and fal.ai)
         if path == "img_in" {
             return "xEmbedder"
         }

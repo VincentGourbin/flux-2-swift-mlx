@@ -25,20 +25,20 @@ public class Flux2Transformer2DModel: Module, @unchecked Sendable {
     /// Memory optimization settings for periodic graph evaluation
     public var memoryOptimization: MemoryOptimizationConfig
 
-    // Input embeddings
-    let xEmbedder: Linear           // Latent projection: 128 -> 6144
-    let contextEmbedder: Linear     // Text projection: 15360 -> 6144
+    // Input embeddings (var for LoRA injection)
+    @ModuleInfo var xEmbedder: Linear           // Latent projection: 128 -> 6144
+    @ModuleInfo var contextEmbedder: Linear     // Text projection: 15360 -> 6144
 
-    // Timestep/guidance embeddings
-    let timeGuidanceEmbed: Flux2TimestepGuidanceEmbeddings
+    // Timestep/guidance embeddings (var for LoRA injection)
+    @ModuleInfo var timeGuidanceEmbed: Flux2TimestepGuidanceEmbeddings
 
     // Positional embeddings (RoPE)
     let posEmbed: Flux2RoPE
 
-    // Modulation layers
-    let doubleStreamModulationImg: Flux2Modulation
-    let doubleStreamModulationTxt: Flux2Modulation
-    let singleStreamModulation: Flux2Modulation
+    // Modulation layers (var for LoRA injection)
+    @ModuleInfo var doubleStreamModulationImg: Flux2Modulation
+    @ModuleInfo var doubleStreamModulationTxt: Flux2Modulation
+    @ModuleInfo var singleStreamModulation: Flux2Modulation
 
     // Transformer blocks
     let transformerBlocks: [Flux2TransformerBlock]
@@ -46,7 +46,7 @@ public class Flux2Transformer2DModel: Module, @unchecked Sendable {
 
     // Output layers
     let normOut: AdaLayerNormContinuous
-    let projOut: Linear             // Output projection: 6144 -> 128
+    @ModuleInfo var projOut: Linear             // Output projection: 6144 -> 128
 
     /// Initialize Flux.2 Transformer
     /// - Parameters:

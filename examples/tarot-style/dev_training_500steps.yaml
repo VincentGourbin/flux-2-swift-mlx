@@ -1,0 +1,60 @@
+# Flux.2 Dev LoRA Training Configuration - 500 steps
+# Dataset: https://huggingface.co/datasets/multimodalart/tarot-dataset
+# Goal: Learn the vintage woodcut illustration style of Rider-Waite tarot cards
+#
+# NOTE: Dev training requires significant VRAM (~60GB with 8-bit text encoder)
+# Recommended: Mac Studio M2 Ultra 128GB or equivalent
+
+model:
+  name: dev
+  quantization: int8  # Text encoder quantization (Mistral 24B, 8-bit recommended)
+
+lora:
+  rank: 32
+  alpha: 32.0
+  target_layers: attention  # Includes Q, K, V, O projections
+
+dataset:
+  path: ./examples/tarot-style/train
+  trigger_word: rwaite
+  caption_format: txt
+
+training:
+  batch_size: 1
+  gradient_accumulation: 1
+  max_steps: 500
+  warmup_steps: 50
+  learning_rate: 1e-4
+  weight_decay: 0.0001
+  log_every_n_steps: 10
+  eval_every_n_steps: 10
+
+loss:
+  timestep_sampling: balanced  # 50/50 content/style mix
+  weighting: bell_shaped       # Focus on medium noise levels
+  # DOP disabled for style LoRAs - we WANT the style to affect everything
+  diff_output_preservation: false
+
+checkpoints:
+  output: ./output/dev-tarot-lora
+  save_every: 250
+  keep_last: 5
+  learning_curve: true
+  learning_curve_smoothing: 20
+
+validation:
+  every_n_steps: 250
+  seed: 42
+  steps: 28  # Dev uses 28 steps by default
+  prompts:
+    # WITH trigger word - should show tarot style
+    - prompt: "a wizard holding a glowing staff, standing in a mystical forest"
+      is_512: true
+      is_1024: false
+      apply_trigger: true
+
+    # WITHOUT trigger word - should be normal style (baseline)
+    - prompt: "a wizard holding a glowing staff, standing in a mystical forest"
+      is_512: true
+      is_1024: false
+      apply_trigger: false

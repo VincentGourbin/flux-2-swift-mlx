@@ -247,7 +247,7 @@ public enum LatentUtils {
 
     // MARK: - Position IDs
 
-    /// Generate position IDs for image latents
+    /// Generate position IDs for image latents using GPU-native operations
     /// - Parameters:
     ///   - height: Image height
     ///   - width: Image width
@@ -264,31 +264,37 @@ public enum LatentUtils {
         let numPatchesW = latentW / patchSize
         let numPatches = numPatchesH * numPatchesW
 
-        var positions: [Int32] = []
+        // GPU-native implementation using meshgrid-like operations
+        let hIndices = MLXArray.arange(numPatchesH, dtype: .int32)  // [H]
+        let wIndices = MLXArray.arange(numPatchesW, dtype: .int32)  // [W]
 
-        for h in 0..<numPatchesH {
-            for w in 0..<numPatchesW {
-                // Position encoding: [T=0, H, W, L=0]
-                // T (temporal) and L (layer) are 0 for images
-                positions.append(contentsOf: [0, Int32(h), Int32(w), 0])
-            }
-        }
+        // Create meshgrid using broadcast
+        let hExpanded = hIndices.expandedDimensions(axis: 1)  // [H, 1]
+        let wExpanded = wIndices.expandedDimensions(axis: 0)  // [1, W]
+        let hGrid = MLX.broadcast(hExpanded, to: [numPatchesH, numPatchesW])  // [H, W]
+        let wGrid = MLX.broadcast(wExpanded, to: [numPatchesH, numPatchesW])  // [H, W]
 
-        return MLXArray(positions).reshaped([numPatches, 4])
+        // Flatten to [numPatches]
+        let hFlat = hGrid.reshaped([numPatches])
+        let wFlat = wGrid.reshaped([numPatches])
+
+        // Create T=0 and L=0 columns
+        let zeros = MLXArray.zeros([numPatches], dtype: .int32)
+
+        // Stack to create [numPatches, 4] with format [T, H, W, L]
+        return MLX.stacked([zeros, hFlat, wFlat, zeros], axis: 1)
     }
 
-    /// Generate position IDs for text sequence
+    /// Generate position IDs for text sequence using GPU-native operations
     /// - Parameter length: Text sequence length
     /// - Returns: Position IDs [length, 4]
     public static func generateTextPositionIDs(length: Int) -> MLXArray {
-        var positions: [Int32] = []
+        // GPU-native implementation
+        let lIndices = MLXArray.arange(length, dtype: .int32)  // [length]
+        let zeros = MLXArray.zeros([length], dtype: .int32)
 
-        for l in 0..<length {
-            // Text uses L dimension for position
-            positions.append(contentsOf: [0, 0, 0, Int32(l)])
-        }
-
-        return MLXArray(positions).reshaped([length, 4])
+        // Stack to create [length, 4] with format [T, H, W, L]
+        return MLX.stacked([zeros, zeros, zeros, lIndices], axis: 1)
     }
 
     /// Combine text and image position IDs
@@ -411,6 +417,32 @@ extension LatentUtils {
     /// Unscale latents for VAE decoding
     public static func unscaleLatents(_ latents: MLXArray, scalingFactor: Float = 0.18215) -> MLXArray {
         latents / scalingFactor
+    }
+    
+    // MARK: - Flux2 Latent Normalization (Ostris formula)
+    
+    /// Flux2 VAE scaling factor (from HuggingFace config)
+    public static let flux2ScalingFactor: Float = 0.3611
+    
+    /// Flux2 VAE shift factor (from HuggingFace config)
+    public static let flux2ShiftFactor: Float = 0.1159
+    
+    /// Normalize latents after VAE encoding for Flux2 training
+    /// Formula: normalized = scalingFactor * (latents - shiftFactor)
+    /// This matches Ostris/ai-toolkit implementation for Flux LoRA training
+    /// - Parameter latents: Raw VAE-encoded latents [B, C, H/8, W/8]
+    /// - Returns: Normalized latents ready for flow matching training
+    public static func normalizeFlux2Latents(_ latents: MLXArray) -> MLXArray {
+        return flux2ScalingFactor * (latents - flux2ShiftFactor)
+    }
+    
+    /// Denormalize latents before VAE decoding for Flux2
+    /// Inverse of normalizeFlux2Latents
+    /// Formula: latents = (normalized / scalingFactor) + shiftFactor
+    /// - Parameter normalized: Normalized latents from training/inference
+    /// - Returns: Raw latents ready for VAE decoding
+    public static func denormalizeFlux2Latents(_ normalized: MLXArray) -> MLXArray {
+        return (normalized / flux2ScalingFactor) + flux2ShiftFactor
     }
 }
 

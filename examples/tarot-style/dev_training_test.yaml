@@ -1,0 +1,38 @@
+# Flux.2 Dev LoRA Training Configuration - TEST (5 steps)
+# Quick validation that training works without full run
+#
+# NOTE: Dev training requires significant VRAM (~60GB with 8-bit text encoder)
+
+model:
+  name: dev
+  quantization: int8  # Text encoder quantization (Mistral 24B, 8-bit recommended)
+
+lora:
+  rank: 32
+  alpha: 32.0
+  target_layers: attention  # Includes Q, K, V, O projections
+
+dataset:
+  path: ./examples/tarot-style/train
+  trigger_word: rwaite
+  caption_format: txt
+
+training:
+  batch_size: 1
+  gradient_accumulation: 1
+  max_steps: 5
+  warmup_steps: 1
+  learning_rate: 1e-4
+  weight_decay: 0.0001
+  log_every_n_steps: 1
+  eval_every_n_steps: 5
+
+loss:
+  timestep_sampling: balanced
+  weighting: bell_shaped
+
+checkpoints:
+  output: ./output/dev-tarot-test
+  save_every: 0  # No checkpoint for test
+  keep_last: 1
+  learning_curve: false

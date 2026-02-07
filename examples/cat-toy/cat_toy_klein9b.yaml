@@ -1,0 +1,104 @@
+# Cat Toy LoRA Training Configuration - Klein 9B
+# Dataset: diffusers/cat_toy_example
+# Trigger word: statue_cat_toy
+# Use case: Subject/character LoRA with DOP (Differential Output Preservation)
+#
+# NOTE: Klein 9B is larger than Klein 4B, DOP is optimized to run every 4 steps
+# to reduce training time overhead while maintaining regularization benefits.
+
+# =============================================================================
+# MODEL CONFIGURATION
+# =============================================================================
+model:
+  name: klein-9b
+  quantization: bf16  # Base models only available in bf16 (no int8)
+
+# =============================================================================
+# LoRA CONFIGURATION
+# =============================================================================
+lora:
+  rank: 32
+  alpha: 32.0
+  target_layers: attention  # Memory-efficient for Klein 9B (no FFN)
+
+# =============================================================================
+# DATASET CONFIGURATION
+# =============================================================================
+dataset:
+  path: examples/cat-toy/train
+  trigger_word: "statue_cat_toy"
+
+# =============================================================================
+# TRAINING PARAMETERS
+# =============================================================================
+training:
+  batch_size: 1
+  max_steps: 250
+  warmup_steps: 25
+  learning_rate: 1.0e-4
+  weight_decay: 0.0001
+
+# =============================================================================
+# LOSS & TIMESTEP CONFIGURATION
+# =============================================================================
+loss:
+  weighting: bell_shaped
+  timestep_sampling: balanced  # Ostris balanced = 50/50 content/style
+  # DOP disabled for Klein 9B due to memory constraints
+  # Klein 9B in bf16 + DOP causes OOM - use Klein 4B for DOP training
+  diff_output_preservation: false
+  # diff_output_preservation_class: "cat"
+  # diff_output_preservation_multiplier: 1.0
+  # diff_output_preservation_every_n_steps: 4
+
+# =============================================================================
+# MEMORY OPTIMIZATION
+# =============================================================================
+memory:
+  gradient_checkpointing: false  # NOT YET IMPLEMENTED - Klein 9B + DOP causes OOM
+  cache_latents: true
+  bucketing:
+    enabled: true
+    resolutions:
+      - 512  # Only 512 to save memory on Klein 9B
+
+# =============================================================================
+# CHECKPOINTING
+# =============================================================================
+checkpoints:
+  output: output/cat-toy-klein9b
+  save_every: 125
+  keep_last: 3
+
+# =============================================================================
+# VALIDATION
+# =============================================================================
+validation:
+  prompts:
+    # WITH trigger - should show the specific cat toy statue
+    - prompt: "a colorful wooden cat figurine sitting on a beach"
+      apply_trigger: true
+      is_512: true
+      is_1024: false
+    - prompt: "a striped cat statue in a garden"
+      apply_trigger: true
+      is_512: true
+      is_1024: false
+    # WITHOUT trigger - should show a normal cat, NOT the statue
+    - prompt: "a cat sitting on a couch"
+      apply_trigger: false
+      is_512: true
+      is_1024: false
+    - prompt: "a tabby cat on a wooden table"
+      apply_trigger: false
+      is_512: true
+      is_1024: false
+  every_n_steps: 125
+  seed: 42
+  steps: 4
+
+# =============================================================================
+# EMA
+# =============================================================================
+ema:
+  enabled: false

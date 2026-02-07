@@ -46,8 +46,8 @@ public class Timesteps: Module, @unchecked Sendable {
 
 /// MLP for embedding timesteps
 public class TimestepEmbedding: Module, @unchecked Sendable {
-    let linear1: Linear
-    let linear2: Linear
+    @ModuleInfo var linear1: Linear
+    @ModuleInfo var linear2: Linear
     let activation: @Sendable (MLXArray) -> MLXArray
 
     public init(

@@ -856,6 +856,148 @@ final class EmpiricalMuTests: XCTestCase {
     }
 }
 
+// MARK: - Training Variants Tests
+
+final class TrainingVariantsTests: XCTestCase {
+
+    // MARK: - Klein 9B Base Variant Tests
+
+    func testKlein9BBaseVariantHuggingFaceRepo() {
+        let variant = ModelRegistry.TransformerVariant.klein9B_base_bf16
+        XCTAssertEqual(variant.huggingFaceRepo, "black-forest-labs/FLUX.2-klein-base-9B")
+    }
+
+    func testKlein9BBaseVariantIsGated() {
+        let variant = ModelRegistry.TransformerVariant.klein9B_base_bf16
+        XCTAssertTrue(variant.isGated)
+    }
+
+    func testKlein9BBaseVariantIsTrainingOnly() {
+        let variant = ModelRegistry.TransformerVariant.klein9B_base_bf16
+        XCTAssertTrue(variant.isTrainingOnly)
+    }
+
+    func testKlein9BBaseVariantEstimatedSize() {
+        let variant = ModelRegistry.TransformerVariant.klein9B_base_bf16
+        XCTAssertEqual(variant.estimatedSizeGB, 18)  // Same as distilled
+    }
+
+    // MARK: - Klein 4B Base Variant Tests
+
+    func testKlein4BBaseVariantHuggingFaceRepo() {
+        let variant = ModelRegistry.TransformerVariant.klein4B_base_bf16
+        XCTAssertEqual(variant.huggingFaceRepo, "black-forest-labs/FLUX.2-klein-base-4B")
+    }
+
+    func testKlein4BBaseVariantIsGated() {
+        let variant = ModelRegistry.TransformerVariant.klein4B_base_bf16
+        XCTAssertTrue(variant.isGated)
+    }
+
+    func testKlein4BBaseVariantIsTrainingOnly() {
+        let variant = ModelRegistry.TransformerVariant.klein4B_base_bf16
+        XCTAssertTrue(variant.isTrainingOnly)
+    }
+
+    // MARK: - isTrainingOnly Property Tests
+
+    func testIsTrainingOnlyForBaseModels() {
+        // Base (non-distilled) models should be training-only
+        XCTAssertTrue(ModelRegistry.TransformerVariant.klein4B_base_bf16.isTrainingOnly)
+        XCTAssertTrue(ModelRegistry.TransformerVariant.klein9B_base_bf16.isTrainingOnly)
+    }
+
+    func testIsTrainingOnlyForInferenceModels() {
+        // Distilled/inference models should NOT be training-only
+        XCTAssertFalse(ModelRegistry.TransformerVariant.bf16.isTrainingOnly)
+        XCTAssertFalse(ModelRegistry.TransformerVariant.qint8.isTrainingOnly)
+        XCTAssertFalse(ModelRegistry.TransformerVariant.klein4B_bf16.isTrainingOnly)
+        XCTAssertFalse(ModelRegistry.TransformerVariant.klein4B_8bit.isTrainingOnly)
+        XCTAssertFalse(ModelRegistry.TransformerVariant.klein9B_bf16.isTrainingOnly)
+    }
+
+    // MARK: - trainingVariant(for:) Method Tests
+
+    func testTrainingVariantForKlein4B() {
+        let variant = ModelRegistry.TransformerVariant.trainingVariant(for: .klein4B)
+        XCTAssertEqual(variant, .klein4B_base_bf16)
+    }
+
+    func testTrainingVariantForKlein9B() {
+        let variant = ModelRegistry.TransformerVariant.trainingVariant(for: .klein9B)
+        XCTAssertEqual(variant, .klein9B_base_bf16)
+    }
+
+    func testTrainingVariantForDev() {
+        // Dev model is already "base" (not distilled), so it uses bf16
+        let variant = ModelRegistry.TransformerVariant.trainingVariant(for: .dev)
+        XCTAssertEqual(variant, .bf16)
+    }
+
+    func testTrainingVariantReturnsNonNil() {
+        // All model types should have a training variant
+        for model in [Flux2Model.klein4B, .klein9B, .dev] {
+            let variant = ModelRegistry.TransformerVariant.trainingVariant(for: model)
+            XCTAssertNotNil(variant, "Training variant should exist for \(model)")
+        }
+    }
+
+    // MARK: - Training Variant isTrainingOnly Consistency
+
+    func testTrainingVariantsAreTrainingOnlyOrDev() {
+        // Klein base models should be training-only
+        let klein4BTraining = ModelRegistry.TransformerVariant.trainingVariant(for: .klein4B)!
+        let klein9BTraining = ModelRegistry.TransformerVariant.trainingVariant(for: .klein9B)!
+        XCTAssertTrue(klein4BTraining.isTrainingOnly)
+        XCTAssertTrue(klein9BTraining.isTrainingOnly)
+
+        // Dev returns .bf16 which is NOT training-only (it's the main model)
+        let devTraining = ModelRegistry.TransformerVariant.trainingVariant(for: .dev)!
+        XCTAssertFalse(devTraining.isTrainingOnly)
+    }
+}
+
+// MARK: - DevTextEncoder Tests
+
+final class DevTextEncoderTests: XCTestCase {
+
+    func testDevTextEncoderDefaultInit() {
+        let encoder = DevTextEncoder()
+        XCTAssertEqual(encoder.quantization, .mlx8bit)
+        XCTAssertEqual(encoder.maxSequenceLength, 512)
+        XCTAssertEqual(encoder.outputDimension, 15360)
+    }
+
+    func testDevTextEncoderCustomQuantization() {
+        let encoder4bit = DevTextEncoder(quantization: .mlx4bit)
+        XCTAssertEqual(encoder4bit.quantization, .mlx4bit)
+
+        let encoderBf16 = DevTextEncoder(quantization: .bf16)
+        XCTAssertEqual(encoderBf16.quantization, .bf16)
+    }
+
+    func testDevTextEncoderEstimatedMemory() {
+        let bf16 = DevTextEncoder(quantization: .bf16)
+        let mlx8bit = DevTextEncoder(quantization: .mlx8bit)
+        let mlx4bit = DevTextEncoder(quantization: .mlx4bit)
+
+        // Higher precision should use more memory
+        XCTAssertGreaterThan(bf16.estimatedMemoryGB, mlx8bit.estimatedMemoryGB)
+        XCTAssertGreaterThan(mlx8bit.estimatedMemoryGB, mlx4bit.estimatedMemoryGB)
+    }
+
+    func testDevTextEncoderNotLoadedByDefault() {
+        let encoder = DevTextEncoder()
+        XCTAssertFalse(encoder.isLoaded)
+    }
+
+    func testDevTextEncoderOutputDimensionMatches() {
+        // Dev uses Mistral with 3 layers × 5120 hidden size = 15360
+        let encoder = DevTextEncoder()
+        XCTAssertEqual(encoder.outputDimension, 3 * 5120)
+    }
+}
+
 // MARK: - Generation Result Tests
 
 final class GenerationResultTests: XCTestCase {

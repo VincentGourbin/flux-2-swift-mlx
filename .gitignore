@@ -18,9 +18,10 @@ result_checkpoints/
 output/
 *.png
 
-# But keep documentation images
+# But keep documentation images and example datasets
 !docs/examples/**/*.png
 !docs/screenshots/**/*.png
+!examples/tarot-style/**/*.png
 
 # Temporary files
 *.tmp
@@ -29,4 +30,8 @@ output/
 
 # Package resolution
 Package.resolved
+datasets/
 .build-xcode/
+groot_training_ostris/
+flux2
+loras/

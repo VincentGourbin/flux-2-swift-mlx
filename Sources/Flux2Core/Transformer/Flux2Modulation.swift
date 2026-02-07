@@ -28,7 +28,7 @@ public struct ModulationParams {
 public class Flux2Modulation: Module, @unchecked Sendable {
     let dim: Int
     let numSets: Int
-    let linear: Linear
+    @ModuleInfo var linear: Linear
 
     /// Initialize modulation layer
     /// - Parameters:

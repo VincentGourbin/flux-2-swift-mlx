@@ -1,0 +1,53 @@
+# Dev (32B) Quick Test - 250 steps
+model:
+  name: dev
+  quantization: int8
+
+lora:
+  rank: 32
+  alpha: 32.0
+  target_layers: attention
+
+dataset:
+  path: ./examples/tarot-style/train
+  trigger_word: rwaite
+  caption_format: txt
+
+training:
+  batch_size: 1
+  gradient_accumulation: 1
+  max_steps: 250
+  warmup_steps: 25
+  learning_rate: 1e-4
+  weight_decay: 0.0001
+  log_every_n_steps: 10
+  eval_every_n_steps: 10
+
+loss:
+  timestep_sampling: balanced
+  weighting: bell_shaped
+  # DOP disabled for style LoRAs - we WANT the style to affect everything
+  # DOP is only useful for subject/character LoRAs where you want the trigger
+  # to control when the subject appears
+  diff_output_preservation: false
+
+checkpoints:
+  output: ./output/tarot-dev
+  save_every: 125
+  keep_last: 3
+  learning_curve: true
+  learning_curve_smoothing: 10
+
+validation:
+  every_n_steps: 125
+  seed: 42
+  steps: 50  # Dev uses more steps
+  prompts:
+    - prompt: "a wizard holding a glowing staff, standing in a mystical forest"
+      is_512: true
+      is_1024: false
+      apply_trigger: true
+    - prompt: "a wizard holding a glowing staff, standing in a mystical forest"
+      is_512: true
+      is_1024: false
+      apply_trigger: false

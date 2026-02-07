@@ -34,15 +34,15 @@ public class Flux2Attention: Module, @unchecked Sendable {
     let numHeads: Int
     let headDim: Int
 
-    // Image hidden states projections
-    let toQ: Linear
-    let toK: Linear
-    let toV: Linear
+    // Image hidden states projections (@ModuleInfo for LoRA injection via update)
+    @ModuleInfo var toQ: Linear
+    @ModuleInfo var toK: Linear
+    @ModuleInfo var toV: Linear
 
     // Text encoder hidden states projections
-    let addQProj: Linear
-    let addKProj: Linear
-    let addVProj: Linear
+    @ModuleInfo var addQProj: Linear
+    @ModuleInfo var addKProj: Linear
+    @ModuleInfo var addVProj: Linear
 
     // QK normalization (RMSNorm)
     let normQ: RMSNorm
@@ -51,8 +51,8 @@ public class Flux2Attention: Module, @unchecked Sendable {
     let normAddedK: RMSNorm
 
     // Output projections
-    let toOut: Linear
-    let toAddOut: Linear
+    @ModuleInfo var toOut: Linear
+    @ModuleInfo var toAddOut: Linear
 
     /// Initialize Joint Attention
     /// - Parameters:
@@ -74,14 +74,14 @@ public class Flux2Attention: Module, @unchecked Sendable {
         let ctxDim = contextDim ?? dim
 
         // Image projections (no bias to match checkpoint)
-        self.toQ = Linear(dim, innerDim, bias: false)
-        self.toK = Linear(dim, innerDim, bias: false)
-        self.toV = Linear(dim, innerDim, bias: false)
+        self._toQ.wrappedValue = Linear(dim, innerDim, bias: false)
+        self._toK.wrappedValue = Linear(dim, innerDim, bias: false)
+        self._toV.wrappedValue = Linear(dim, innerDim, bias: false)
 
         // Text projections (no bias to match checkpoint)
-        self.addQProj = Linear(ctxDim, innerDim, bias: false)
-        self.addKProj = Linear(ctxDim, innerDim, bias: false)
-        self.addVProj = Linear(ctxDim, innerDim, bias: false)
+        self._addQProj.wrappedValue = Linear(ctxDim, innerDim, bias: false)
+        self._addKProj.wrappedValue = Linear(ctxDim, innerDim, bias: false)
+        self._addVProj.wrappedValue = Linear(ctxDim, innerDim, bias: false)
 
         // QK normalization
         self.normQ = RMSNorm(dim: headDim)
@@ -90,8 +90,8 @@ public class Flux2Attention: Module, @unchecked Sendable {
         self.normAddedK = RMSNorm(dim: headDim)
 
         // Output projections (no bias to match checkpoint)
-        self.toOut = Linear(innerDim, dim, bias: false)
-        self.toAddOut = Linear(innerDim, ctxDim, bias: false)
+        self._toOut.wrappedValue = Linear(innerDim, dim, bias: false)
+        self._toAddOut.wrappedValue = Linear(innerDim, ctxDim, bias: false)
     }
 
     /// Forward pass for joint attention

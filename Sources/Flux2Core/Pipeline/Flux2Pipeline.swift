@@ -228,8 +228,26 @@ public class Flux2Pipeline: @unchecked Sendable {
             kleinEncoder = nil
         }
 
+        // Force synchronization to ensure all GPU operations complete
+        // This helps release memory before loading the next model
+        eval([])
+
         memoryManager.fullCleanup()
+
+        // Additional sync after cache clear
+        eval([])
+
+        // Log memory state to verify release
         memoryManager.logMemoryState()
+
+        // For large models (Dev), give the system a moment to reclaim memory
+        // This prevents the text encoder and transformer from overlapping in memory
+        if model == .dev {
+            Flux2Debug.log("Waiting for memory reclamation (Dev model)...")
+            Thread.sleep(forTimeInterval: 0.5)
+            memoryManager.fullCleanup()
+            eval([])
+        }
     }
 
     /// Load transformer for Phase 2
@@ -263,9 +281,20 @@ public class Flux2Pipeline: @unchecked Sendable {
         )
         Flux2Debug.log("Memory optimization: \(memoryOptimization)")
 
-        // Load weights
-        let weights = try Flux2WeightLoader.loadWeights(from: modelPath)
+        // Load weights with explicit memory management
+        // For large models (Dev), this can temporarily use 2x memory during mapping
+        Flux2Debug.log("Loading transformer weights from disk...")
+        var weights = try Flux2WeightLoader.loadWeights(from: modelPath)
+
+        Flux2Debug.log("Applying weights to model...")
         try Flux2WeightLoader.applyTransformerWeights(weights, to: transformer!)
+
+        // Explicitly release the raw weights dictionary to free memory
+        // This is important for Dev model where weights can be ~32GB
+        weights.removeAll()
+        eval([])  // Sync to ensure weights are released
+        memoryManager.fullCleanup()
+        Flux2Debug.log("Raw weights released from memory")
 
         // Merge LoRA weights if any are loaded
         if let loraManager = loraManager, loraManager.count > 0 {

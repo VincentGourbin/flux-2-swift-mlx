@@ -1,0 +1,97 @@
+# Cat Toy LoRA Training Configuration - Klein 4B
+# Dataset: diffusers/cat_toy_example
+# Trigger word: statue_cat_toy
+# Use case: Subject/character LoRA with DOP (Differential Output Preservation)
+
+# =============================================================================
+# MODEL CONFIGURATION
+# =============================================================================
+model:
+  name: klein-4b
+  quantization: bf16  # Base models only available in bf16 (no int8)
+
+# =============================================================================
+# LoRA CONFIGURATION
+# =============================================================================
+lora:
+  rank: 32
+  alpha: 32.0
+  target_layers: all  # attention + FFN
+
+# =============================================================================
+# DATASET CONFIGURATION
+# =============================================================================
+dataset:
+  path: examples/cat-toy/train
+  trigger_word: "statue_cat_toy"
+
+# =============================================================================
+# TRAINING PARAMETERS
+# =============================================================================
+training:
+  batch_size: 1
+  max_steps: 250
+  warmup_steps: 25
+  learning_rate: 1.0e-4
+  weight_decay: 0.0001
+
+# =============================================================================
+# LOSS & TIMESTEP CONFIGURATION
+# =============================================================================
+loss:
+  weighting: bell_shaped
+  timestep_sampling: balanced
+  diff_output_preservation: true
+  diff_output_preservation_class: "cat"
+  diff_output_preservation_multiplier: 1.0
+
+# =============================================================================
+# MEMORY OPTIMIZATION
+# =============================================================================
+memory:
+  gradient_checkpointing: false  # NOT YET IMPLEMENTED
+  cache_latents: true
+  bucketing:
+    enabled: true
+    resolutions:
+      - 512
+      - 768
+
+# =============================================================================
+# CHECKPOINTING
+# =============================================================================
+checkpoints:
+  output: output/cat-toy-klein4b
+  save_every: 125
+  keep_last: 3
+
+# =============================================================================
+# VALIDATION
+# =============================================================================
+validation:
+  prompts:
+    - prompt: "a colorful wooden cat figurine sitting on a beach"
+      apply_trigger: true
+      is_512: true
+      is_1024: false
+    - prompt: "a striped cat statue in a garden"
+      apply_trigger: true
+      is_512: true
+      is_1024: false
+    - prompt: "a cat sitting on a couch"
+      apply_trigger: false
+      is_512: true
+      is_1024: false
+    - prompt: "a tabby cat on a wooden table"
+      apply_trigger: false
+      is_512: true
+      is_1024: false
+  every_n_steps: 125
+  seed: 42
+  steps: 4
+
+# =============================================================================
+# EMA
+# =============================================================================
+ema:
+  enabled: false

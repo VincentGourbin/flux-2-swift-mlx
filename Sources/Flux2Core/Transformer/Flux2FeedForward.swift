@@ -40,7 +40,7 @@ public class GEGLU: Module, @unchecked Sendable {
 /// Used in Flux.2 transformer feedforward blocks
 /// Optimized with kernel fusion for the gating operation
 public class SwiGLU: Module, @unchecked Sendable {
-    let proj: Linear
+    @ModuleInfo var proj: Linear
     let dim: Int
     let innerDim: Int
 
@@ -53,7 +53,7 @@ public class SwiGLU: Module, @unchecked Sendable {
         self.dim = dim
         self.innerDim = innerDim
         // Projects to 2x inner_dim for gate and value
-        self.proj = Linear(dim, innerDim * 2, bias: bias)
+        self._proj.wrappedValue = Linear(dim, innerDim * 2, bias: bias)
     }
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
@@ -75,8 +75,8 @@ public class SwiGLU: Module, @unchecked Sendable {
 public class Flux2FeedForward: Module, @unchecked Sendable {
     let dim: Int
     let innerDim: Int
-    let activation: SwiGLU
-    let linearOut: Linear
+    @ModuleInfo var activation: SwiGLU
+    @ModuleInfo var linearOut: Linear
 
     /// Initialize FeedForward block
     /// - Parameters:
@@ -93,10 +93,10 @@ public class Flux2FeedForward: Module, @unchecked Sendable {
         self.innerDim = innerDim ?? (dim * 4)
 
         // SwiGLU combines input projection and gating
-        self.activation = SwiGLU(dim: dim, innerDim: self.innerDim, bias: bias)
+        self._activation.wrappedValue = SwiGLU(dim: dim, innerDim: self.innerDim, bias: bias)
 
         // Output projection
-        self.linearOut = Linear(self.innerDim, dim, bias: bias)
+        self._linearOut.wrappedValue = Linear(self.innerDim, dim, bias: bias)
     }
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
