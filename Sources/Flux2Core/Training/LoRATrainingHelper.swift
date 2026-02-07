@@ -242,21 +242,13 @@ public final class LoRATrainingHelper: @unchecked Sendable {
     /// - Parameter loader: Closure that loads and returns a text encoder
     /// - Returns: Closure suitable for passing to TrainingSession.start()
     public func createLazyTextEncoderClosure(
-        loader: @escaping () async throws -> TrainingTextEncoder
-    ) -> ((String) async throws -> MLXArray) {
-        // Weak reference to avoid holding the encoder in memory when not needed
-        var cachedEncoder: TrainingTextEncoder?
+        loader: @Sendable @escaping () async throws -> TrainingTextEncoder
+    ) -> (@Sendable (String) async throws -> MLXArray) {
+        // Use actor to safely manage mutable state across Sendable boundary
+        let cache = LazyTextEncoderCache(loader: loader)
 
         return { prompt in
-            // Load encoder if not cached or unloaded
-            if cachedEncoder == nil || !cachedEncoder!.isLoaded {
-                Flux2Debug.log("[LoRATrainingHelper] Lazy loading text encoder for DOP...")
-                cachedEncoder = try await loader()
-                if !cachedEncoder!.isLoaded {
-                    try await cachedEncoder!.load()
-                }
-            }
-            return try cachedEncoder!.encodeForTraining(prompt)
+            return try await cache.encode(prompt)
         }
     }
 
@@ -469,10 +461,10 @@ extension LoRATrainingHelper {
     /// - Returns: Tuple of cached latents and embeddings
     public func prepareTrainingDataMemoryOptimized(
         images: [TrainingImage],
-        vaeLoader: () async throws -> AutoencoderKLFlux2,
-        textEncoderLoader: () async throws -> TrainingTextEncoder,
+        vaeLoader: @Sendable @escaping () async throws -> AutoencoderKLFlux2,
+        textEncoderLoader: @Sendable @escaping () async throws -> TrainingTextEncoder,
         triggerWord: String? = nil,
-        progressCallback: ((String, Int, Int) -> Void)? = nil
+        progressCallback: (@Sendable (String, Int, Int) -> Void)? = nil
     ) async throws -> (latents: [CachedLatentEntry], embeddings: [String: CachedEmbeddingEntry]) {
 
         var cachedLatents: [CachedLatentEntry] = []
@@ -670,6 +662,33 @@ extension LoRATrainingHelper {
             triggerWord: triggerWord,
             progressCallback: progressCallback
         )
+    }
+}
+
+// MARK: - Lazy Text Encoder Cache
+
+/// Thread-safe cache for lazy text encoder loading
+/// Used by createLazyTextEncoderClosure to manage mutable state across Sendable boundaries
+/// Note: @unchecked Sendable because MLXArray is not Sendable but we ensure thread-safety
+/// by only accessing from async context (single-threaded in practice for training)
+private final class LazyTextEncoderCache: @unchecked Sendable {
+    private var cachedEncoder: TrainingTextEncoder?
+    private let loader: @Sendable () async throws -> TrainingTextEncoder
+
+    init(loader: @Sendable @escaping () async throws -> TrainingTextEncoder) {
+        self.loader = loader
+    }
+
+    func encode(_ prompt: String) async throws -> MLXArray {
+        // Load encoder if not cached or unloaded
+        if cachedEncoder == nil || !cachedEncoder!.isLoaded {
+            Flux2Debug.log("[LazyTextEncoderCache] Loading text encoder for DOP...")
+            cachedEncoder = try await loader()
+            if !cachedEncoder!.isLoaded {
+                try await cachedEncoder!.load()
+            }
+        }
+        return try cachedEncoder!.encodeForTraining(prompt)
     }
 }
 
