@@ -40,6 +40,23 @@ public enum Flux2Model: String, CaseIterable, Sendable {
         }
     }
 
+    /// Whether this model can be used for inference
+    public var isForInference: Bool {
+        switch self {
+        case .dev, .klein4B, .klein9B: return true
+        case .klein4BBase, .klein9BBase: return false  // Base models not for inference
+        }
+    }
+
+    /// Whether this model can be used for LoRA training
+    public var isForTraining: Bool {
+        switch self {
+        case .dev: return true  // Dev bf16 can train
+        case .klein4BBase, .klein9BBase: return true  // Base models for training
+        case .klein4B, .klein9B: return false  // Distilled cannot train
+        }
+    }
+
     /// Get the base (non-distilled) variant for training, if available
     public var trainingVariant: Flux2Model {
         switch self {

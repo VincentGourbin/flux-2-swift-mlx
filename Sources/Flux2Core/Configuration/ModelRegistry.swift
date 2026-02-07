@@ -155,14 +155,35 @@ public enum ModelRegistry {
             }
         }
 
-        /// Whether this variant is for training only (not inference)
-        /// Base models (non-distilled) should only be used for LoRA training
-        public var isTrainingOnly: Bool {
+        /// Whether this variant can be used for inference
+        /// Distilled models and Dev are for inference
+        public var isForInference: Bool {
             switch self {
-            case .klein4B_base_bf16, .klein9B_base_bf16:
+            case .bf16, .qint8:  // Dev
                 return true
-            default:
+            case .klein4B_bf16, .klein4B_8bit:  // Klein 4B distilled
+                return true
+            case .klein9B_bf16:  // Klein 9B distilled
+                return true
+            case .klein4B_base_bf16, .klein9B_base_bf16:  // Base models
                 return false
+            }
+        }
+
+        /// Whether this variant can be used for LoRA training
+        /// Base (non-distilled) models and Dev bf16 are for training
+        public var isForTraining: Bool {
+            switch self {
+            case .bf16:  // Dev bf16 - can train
+                return true
+            case .qint8:  // Dev int8 - cannot train (quantized)
+                return false
+            case .klein4B_bf16, .klein4B_8bit:  // Distilled - cannot train
+                return false
+            case .klein9B_bf16:  // Distilled - cannot train
+                return false
+            case .klein4B_base_bf16, .klein9B_base_bf16:  // Base models - for training
+                return true
             }
         }
 
@@ -271,7 +292,9 @@ public enum ModelRegistry {
         case standard = "standard"
 
         public var huggingFaceRepo: String {
-            "black-forest-labs/FLUX.2-dev"
+            // VAE is downloaded from Klein 4B repo (NOT gated)
+            // Same VAE weights as all Flux.2 models
+            "black-forest-labs/FLUX.2-klein-4B"
         }
 
         /// Subfolder within the HuggingFace repo
