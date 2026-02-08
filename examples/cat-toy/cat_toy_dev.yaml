@@ -59,7 +59,7 @@ loss:
 # MEMORY OPTIMIZATION
 # =============================================================================
 memory:
-  gradient_checkpointing: false  # NOT YET IMPLEMENTED - requires layer-wise checkpointing
+  gradient_checkpointing: true  # Recommended for Dev to reduce memory (~50% less activations)
   cache_latents: true
   bucketing:
     enabled: true

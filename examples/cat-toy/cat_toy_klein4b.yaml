@@ -49,7 +49,7 @@ loss:
 # MEMORY OPTIMIZATION
 # =============================================================================
 memory:
-  gradient_checkpointing: false  # NOT YET IMPLEMENTED
+  gradient_checkpointing: false  # Optional for Klein 4B (fits in 96GB without it)
   cache_latents: true
   bucketing:
     enabled: true

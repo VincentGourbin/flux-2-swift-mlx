@@ -1,0 +1,52 @@
+# Cat Toy LoRA Training - Klein 4B - Gradient Checkpointing Test
+# Quick test (5 steps) to verify gradient checkpointing produces non-zero gradients
+# Compare loss values with cat_toy_klein4b.yaml (should be identical for same seed)
+
+model:
+  name: klein-4b
+  quantization: bf16
+
+lora:
+  rank: 32
+  alpha: 32.0
+  target_layers: all
+
+dataset:
+  path: examples/cat-toy/train
+  trigger_word: "statue_cat_toy"
+
+training:
+  batch_size: 1
+  max_steps: 5
+  warmup_steps: 0
+  learning_rate: 1.0e-4
+  weight_decay: 0.0001
+
+loss:
+  weighting: bell_shaped
+  timestep_sampling: balanced
+  diff_output_preservation: true
+  diff_output_preservation_class: "cat"
+  diff_output_preservation_multiplier: 1.0
+
+memory:
+  gradient_checkpointing: true  # Testing gradient checkpointing
+  cache_latents: true
+  bucketing:
+    enabled: true
+    resolutions:
+      - 512
+
+checkpoints:
+  output: output/cat-toy-klein4b-checkpoint-test
+  save_every: 5
+  keep_last: 1
+
+validation:
+  prompts: []  # No validation for quick test
+  every_n_steps: 999
+  seed: 42
+  steps: 4
+
+ema:
+  enabled: false

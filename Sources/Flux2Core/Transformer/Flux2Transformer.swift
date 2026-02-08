@@ -25,6 +25,11 @@ public class Flux2Transformer2DModel: Module, @unchecked Sendable {
     /// Memory optimization settings for periodic graph evaluation
     public var memoryOptimization: MemoryOptimizationConfig
 
+    /// Enable gradient checkpointing for training (reduces memory, increases compute ~2x)
+    /// When enabled, each transformer block's forward pass is wrapped with checkpoint()
+    /// so intermediate activations are recomputed during backward instead of stored.
+    public var gradientCheckpointing: Bool = false
+
     // Input embeddings (var for LoRA injection)
     @ModuleInfo var xEmbedder: Linear           // Latent projection: 128 -> 6144
     @ModuleInfo var contextEmbedder: Linear     // Text projection: 15360 -> 6144
@@ -159,21 +164,65 @@ public class Flux2Transformer2DModel: Module, @unchecked Sendable {
         for (blockIdx, block) in transformerBlocks.enumerated() {
             Flux2Debug.verbose("Double-stream block \(blockIdx)")
 
-            let (newTxt, newImg) = block(
-                hiddenStates: imgHS,
-                encoderHiddenStates: txtHS,
-                temb: temb,
-                rotaryEmb: ropeEmb,
-                imgModParams: imgMod,
-                txtModParams: txtMod
-            )
+            if gradientCheckpointing {
+                // Gradient checkpointing: wrap block forward pass with checkpoint()
+                // Pack all inputs (activations + trainable params) as explicit arguments
+                // so checkpoint() can track gradients through them during backward pass.
+                let paramTemplate = block.trainableParameters()
+                let paramValues = paramTemplate.flattenedValues()
+                let numActivations = 17  // imgHS, txtHS, temb, ropeCos, ropeSin, 6×imgMod, 6×txtMod
 
-            imgHS = newImg
-            txtHS = newTxt
+                var inputs: [MLXArray] = [imgHS, txtHS, temb, ropeEmb.cos, ropeEmb.sin]
+                inputs.append(contentsOf: imgMod.flatMap { [$0.shift, $0.scale, $0.gate] })
+                inputs.append(contentsOf: txtMod.flatMap { [$0.shift, $0.scale, $0.gate] })
+                inputs.append(contentsOf: paramValues)
+
+                let checkpointedForward = checkpoint { (arrays: [MLXArray]) -> [MLXArray] in
+                    // Unpack activations
+                    let hs = arrays[0], ehs = arrays[1], t = arrays[2]
+                    let rope = (cos: arrays[3], sin: arrays[4])
+                    let iMod = [ModulationParams(shift: arrays[5], scale: arrays[6], gate: arrays[7]),
+                                ModulationParams(shift: arrays[8], scale: arrays[9], gate: arrays[10])]
+                    let tMod = [ModulationParams(shift: arrays[11], scale: arrays[12], gate: arrays[13]),
+                                ModulationParams(shift: arrays[14], scale: arrays[15], gate: arrays[16])]
+
+                    // Unpack and restore trainable parameters in block
+                    let blockParams = Array(arrays[numActivations...])
+                    block.update(parameters: paramTemplate.replacingValues(with: blockParams))
+
+                    let (newTxt, newImg) = block(
+                        hiddenStates: hs,
+                        encoderHiddenStates: ehs,
+                        temb: t,
+                        rotaryEmb: rope,
+                        imgModParams: iMod,
+                        txtModParams: tMod
+                    )
+                    return [newTxt, newImg]
+                }
+
+                let out = checkpointedForward(inputs)
+                txtHS = out[0]
+                imgHS = out[1]
+            } else {
+                let (newTxt, newImg) = block(
+                    hiddenStates: imgHS,
+                    encoderHiddenStates: txtHS,
+                    temb: temb,
+                    rotaryEmb: ropeEmb,
+                    imgModParams: imgMod,
+                    txtModParams: txtMod
+                )
+
+                imgHS = newImg
+                txtHS = newTxt
+            }
             Flux2Debug.verbose("After block \(blockIdx) - imgHS: \(imgHS.shape), txtHS: \(txtHS.shape)")
 
             // Memory optimization: periodic evaluation to prevent graph accumulation
-            if memoryOptimization.evalFrequency > 0 &&
+            // Skip when gradient checkpointing is active (checkpoint boundaries handle segmentation)
+            if !gradientCheckpointing &&
+                memoryOptimization.evalFrequency > 0 &&
                 (blockIdx + 1) % memoryOptimization.evalFrequency == 0 {
                 eval(imgHS, txtHS)
                 if memoryOptimization.clearCacheOnEval {
@@ -203,17 +252,52 @@ public class Flux2Transformer2DModel: Module, @unchecked Sendable {
         let singleMod = singleStreamModulation(temb)
 
         for (blockIdx, block) in singleTransformerBlocks.enumerated() {
-            // Pass encoder_hidden_states=nil since everything is in combinedHS
-            combinedHS = block(
-                hiddenStates: combinedHS,
-                encoderHiddenStates: nil,
-                temb: temb,
-                rotaryEmb: ropeEmb,
-                modParams: singleMod
-            )
+            if gradientCheckpointing {
+                // Gradient checkpointing: same pattern as double-stream blocks
+                let paramTemplate = block.trainableParameters()
+                let paramValues = paramTemplate.flattenedValues()
+                let numActivations = 7  // combinedHS, temb, ropeCos, ropeSin, mod.shift, mod.scale, mod.gate
+
+                var inputs: [MLXArray] = [combinedHS, temb, ropeEmb.cos, ropeEmb.sin]
+                inputs.append(contentsOf: singleMod.flatMap { [$0.shift, $0.scale, $0.gate] })
+                inputs.append(contentsOf: paramValues)
+
+                let checkpointedForward = checkpoint { (arrays: [MLXArray]) -> [MLXArray] in
+                    let hs = arrays[0], t = arrays[1]
+                    let rope = (cos: arrays[2], sin: arrays[3])
+                    let mod = [ModulationParams(shift: arrays[4], scale: arrays[5], gate: arrays[6])]
+
+                    // Restore trainable parameters in block
+                    let blockParams = Array(arrays[numActivations...])
+                    block.update(parameters: paramTemplate.replacingValues(with: blockParams))
+
+                    let result = block(
+                        hiddenStates: hs,
+                        encoderHiddenStates: nil,
+                        temb: t,
+                        rotaryEmb: rope,
+                        modParams: mod
+                    )
+                    return [result]
+                }
+
+                let out = checkpointedForward(inputs)
+                combinedHS = out[0]
+            } else {
+                // Pass encoder_hidden_states=nil since everything is in combinedHS
+                combinedHS = block(
+                    hiddenStates: combinedHS,
+                    encoderHiddenStates: nil,
+                    temb: temb,
+                    rotaryEmb: ropeEmb,
+                    modParams: singleMod
+                )
+            }
 
             // Memory optimization: periodic evaluation to prevent graph accumulation
-            if memoryOptimization.evalFrequency > 0 &&
+            // Skip when gradient checkpointing is active (checkpoint boundaries handle segmentation)
+            if !gradientCheckpointing &&
+                memoryOptimization.evalFrequency > 0 &&
                 (blockIdx + 1) % memoryOptimization.evalFrequency == 0 {
                 eval(combinedHS)
                 if memoryOptimization.clearCacheOnEval {
