@@ -44,18 +44,17 @@ training:
 loss:
   weighting: bell_shaped
   timestep_sampling: balanced  # Ostris balanced = 50/50 content/style
-  # DOP disabled for Klein 9B due to memory constraints
-  # Klein 9B in bf16 + DOP causes OOM - use Klein 4B for DOP training
-  diff_output_preservation: false
-  # diff_output_preservation_class: "cat"
-  # diff_output_preservation_multiplier: 1.0
-  # diff_output_preservation_every_n_steps: 4
+  # DOP enabled with gradient checkpointing to fit in memory
+  diff_output_preservation: true
+  diff_output_preservation_class: "cat"
+  diff_output_preservation_multiplier: 1.0
+  diff_output_preservation_every_n_steps: 4
 
 # =============================================================================
 # MEMORY OPTIMIZATION
 # =============================================================================
 memory:
-  gradient_checkpointing: false  # NOT YET IMPLEMENTED - Klein 9B + DOP causes OOM
+  gradient_checkpointing: true  # Recommended for Klein 9B to reduce memory (~50% less activations)
   cache_latents: true
   bucketing:
     enabled: true

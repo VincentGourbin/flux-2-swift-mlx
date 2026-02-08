@@ -174,7 +174,7 @@ Text encoding uses [Mistral Small 3.2](https://github.com/VincentGourbin/mistral
 - **Dev Performance**: Generation takes ~35 min for 1024x1024 images (use Klein for faster results)
 - **Dev Memory**: Requires 64GB+ unified memory (Klein 4B works with 16GB)
 - **Klein 9B**: Only bf16 available (no quantized variants yet)
-- **LoRA Training**: Fully functional on Klein 4B. Larger models (Klein 9B with DOP, Dev) require [gradient checkpointing](https://github.com/VincentGourbin/flux-2-swift-mlx/issues/38) not yet implemented — contributions welcome!
+- **LoRA Training**: Supported on Klein 4B, Klein 9B, and Dev. Enable `gradient_checkpointing: true` for larger models to reduce memory usage.
 
 ## Roadmap
 

@@ -357,12 +357,12 @@ public final class SimpleLoRATrainer {
         let lossWeightingMode = config.lossWeighting
         let useGradientCheckpointing = config.gradientCheckpointing
 
-        // Note: gradient_checkpointing config exists but is NOT YET IMPLEMENTED
-        // The naive approach of wrapping forward pass breaks gradient flow.
-        // Proper implementation requires layer-wise checkpointing in the transformer itself.
+        // Enable layer-wise gradient checkpointing in the transformer
+        // Each block's forward pass is wrapped with checkpoint() so activations are
+        // recomputed during backward instead of stored, trading ~2x compute for ~50% less memory.
         if useGradientCheckpointing {
-            print("  ⚠️  Gradient checkpointing: NOT YET IMPLEMENTED (config ignored)")
-            print("      Klein 9B + DOP requires layer-wise checkpointing in transformer")
+            transformer.gradientCheckpointing = true
+            print("  Gradient checkpointing: ENABLED (layer-wise, ~2x forward compute for ~50% less memory)")
         }
 
         func lossFunction(model: Flux2Transformer2DModel, arrays: [MLXArray]) -> [MLXArray] {

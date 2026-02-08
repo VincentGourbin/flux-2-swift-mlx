@@ -2,9 +2,9 @@
 
 This guide covers the key parameters for LoRA training with Flux.2 models.
 
-> ⚠️ **Model Compatibility Note**
+> **Model Compatibility Note**
 >
-> LoRA training is **fully functional on Klein 4B**. Training on larger models (Klein 9B, Dev) requires more investigation due to memory constraints. See [Issue #38](https://github.com/VincentGourbin/flux-2-swift-mlx/issues/38) for details on gradient checkpointing implementation needed for larger models. **Any help is welcome!**
+> LoRA training is supported on Klein 4B, Klein 9B, and Dev. For larger models (Klein 9B, Dev), enable `gradient_checkpointing: true` in your config to reduce memory usage by ~50% (at the cost of ~2x forward compute time).
 
 ## Model Comparison
 
@@ -276,9 +276,8 @@ Increase `diff_output_preservation_multiplier` (try 1.5 or 2.0) or ensure your c
 - Reduce rank (16 instead of 32)
 - For Dev: use `target_layers: attention` instead of `all`
 - For Dev: limit resolutions to 512 only
-- Disable DOP for larger models (Klein 9B, Dev)
-
-> **Note:** `gradient_checkpointing` config option exists but is **not yet implemented**. It requires layer-wise checkpointing in the transformer model. See [Issue #38](https://github.com/VincentGourbin/flux-2-swift-mlx/issues/38) for progress and to contribute.
+- Enable `gradient_checkpointing: true` for larger models (Klein 9B, Dev) — reduces activation memory by ~50% at the cost of ~2x forward compute time
+- Disable DOP for larger models if memory is still tight
 
 ---
 
@@ -344,21 +343,16 @@ The verbose crash log shows shapes like:
 
 3. **Disable DOP** for marginal memory savings (DOP adds ~40% overhead with extra forward passes)
 
-#### Future Solution: Gradient Checkpointing
+#### Gradient Checkpointing
 
-The proper fix is **layer-wise gradient checkpointing** which trades compute for memory by recomputing activations during backprop instead of storing them. This is tracked in [Issue #38](https://github.com/VincentGourbin/flux-2-swift-mlx/issues/38).
+Enable `gradient_checkpointing: true` in your config to trade compute for memory. Each transformer block's forward pass is wrapped with `checkpoint()`, so intermediate activations are recomputed during backprop instead of stored. This reduces activation memory by ~50% at the cost of ~2x forward compute time.
 
-With gradient checkpointing, each single-stream block would checkpoint its forward pass:
-```swift
-// Instead of storing all 48 blocks' activations:
-let output = checkpoint { hiddenStates in
-    singleStreamBlock(hiddenStates)  // Recomputed during backward
-}
+```yaml
+memory:
+  gradient_checkpointing: true  # Recommended for Klein 9B, Dev, or high-res training
 ```
 
-This would allow 768×768 and potentially 1024×1024 training, at the cost of ~2x training time.
-
-**Contributions welcome!** See Issue #38 for implementation details.
+This enables 768x768 and potentially 1024x1024 training on 96GB machines.
 
 ---
 
