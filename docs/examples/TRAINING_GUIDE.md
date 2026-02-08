@@ -294,11 +294,13 @@ During the **backward pass** (gradient computation via `valueAndGrad`), MLX must
 
 The token count scales with resolution:
 
-| Resolution | Latent Size | Tokens | Attention Shape | Memory (Klein 4B) |
-|------------|-------------|--------|-----------------|-------------------|
-| 512×512 | 64×64 | ~1,536 | `[1, 1536, 3072]` | ✅ ~15-20 GB |
-| 768×768 | 96×96 | ~2,816 | `[1, 2816, 3072]` | ⚠️ ~40-50 GB |
+| Resolution | Latent Size | Tokens | Attention Shape | Peak Memory (Klein 4B) |
+|------------|-------------|--------|-----------------|------------------------|
+| 512×512 | 64×64 | ~1,536 | `[1, 1536, 3072]` | ✅ ~60 GB |
+| 768×768 | 96×96 | ~2,816 | `[1, 2816, 3072]` | ⚠️ ~100 GB |
 | 1024×1024 | 128×128 | ~5,908 | `[1, 5908, 3072]` | 💥 170+ GB → OOM |
+
+> **Practical limit:** Even with 96GB unified memory, **512×512 is the maximum reliable resolution** for Klein 4B training. At 768×768, peak memory during backprop approaches 100GB which causes swapping and potential OOM on M2/M3 Max.
 
 #### Technical Details
 
