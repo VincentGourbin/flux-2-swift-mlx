@@ -399,16 +399,18 @@ final class ModelRegistryTests: XCTestCase {
     // MARK: - Gated Status Tests
 
     func testTransformerVariantIsGated() {
-        // Dev variants from black-forest-labs are gated
+        // Dev bf16 from black-forest-labs is gated
         XCTAssertTrue(ModelRegistry.TransformerVariant.bf16.isGated)
-        XCTAssertTrue(ModelRegistry.TransformerVariant.qint8.isGated)
 
-        // Klein bf16 from black-forest-labs are gated
-        XCTAssertTrue(ModelRegistry.TransformerVariant.klein4B_bf16.isGated)
-        XCTAssertTrue(ModelRegistry.TransformerVariant.klein9B_bf16.isGated)
+        // qint8 from VincentGOURBIN repo is NOT gated
+        XCTAssertFalse(ModelRegistry.TransformerVariant.qint8.isGated)
 
-        // Community klein4B 8bit is NOT gated
+        // Klein 4B is NOT gated (open access)
+        XCTAssertFalse(ModelRegistry.TransformerVariant.klein4B_bf16.isGated)
         XCTAssertFalse(ModelRegistry.TransformerVariant.klein4B_8bit.isGated)
+
+        // Klein 9B from black-forest-labs IS gated
+        XCTAssertTrue(ModelRegistry.TransformerVariant.klein9B_bf16.isGated)
     }
 
     func testTextEncoderVariantIsGated() {
@@ -422,8 +424,8 @@ final class ModelRegistryTests: XCTestCase {
     }
 
     func testVAEVariantIsGated() {
-        // VAE from black-forest-labs is gated
-        XCTAssertTrue(ModelRegistry.VAEVariant.standard.isGated)
+        // VAE is downloaded from Klein 4B repo which is NOT gated
+        XCTAssertFalse(ModelRegistry.VAEVariant.standard.isGated)
     }
 
     // MARK: - HuggingFace URL Tests
@@ -884,9 +886,10 @@ final class TrainingVariantsTests: XCTestCase {
         XCTAssertEqual(variant.huggingFaceRepo, "black-forest-labs/FLUX.2-klein-base-4B")
     }
 
-    func testKlein4BBaseVariantIsGated() {
+    func testKlein4BBaseVariantIsNotGated() {
+        // Klein 4B Base from black-forest-labs is NOT gated (open access)
         let variant = ModelRegistry.TransformerVariant.klein4B_base_bf16
-        XCTAssertTrue(variant.isGated)
+        XCTAssertFalse(variant.isGated)
     }
 
     // MARK: - Training/Inference Model Variant Tests
