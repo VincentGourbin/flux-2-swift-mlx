@@ -66,6 +66,15 @@ public enum Flux2Model: String, CaseIterable, Sendable {
         }
     }
 
+    /// Get the distilled variant for inference (validation images during training)
+    public var inferenceVariant: Flux2Model {
+        switch self {
+        case .klein4B, .klein4BBase: return .klein4B
+        case .klein9B, .klein9BBase: return .klein9B
+        case .dev: return .dev
+        }
+    }
+
     /// Whether this model uses guidance embeddings
     public var usesGuidanceEmbeds: Bool {
         switch self {

@@ -1420,10 +1420,12 @@ public final class SimpleLoRATrainer {
         let baselineDir = config.outputDir.appendingPathComponent("baseline")
         try FileManager.default.createDirectory(at: baselineDir, withIntermediateDirectories: true)
 
-        // Create pipeline with distilled model
+        // Create pipeline with distilled model for inference
+        let inferenceModel = modelType.inferenceVariant
+        let inferenceQuantization: Flux2QuantizationConfig = (inferenceModel == .klein9B) ? .highQuality : .balanced
         let pipeline = Flux2Pipeline(
-            model: modelType,
-            quantization: .balanced
+            model: inferenceModel,
+            quantization: inferenceQuantization
         )
 
         // Generate images for each validation prompt
@@ -1493,11 +1495,13 @@ public final class SimpleLoRATrainer {
         print("  Generating validation images...")
         fflush(stdout)
 
-        // Create pipeline - this loads a SECOND copy of the model!
+        // Create pipeline with distilled model - this loads a SECOND copy of the model!
         // For large models, consider disabling validation (validation.prompts: [])
+        let inferenceModel = modelType.inferenceVariant
+        let inferenceQuantization: Flux2QuantizationConfig = (inferenceModel == .klein9B) ? .highQuality : .balanced
         var pipeline: Flux2Pipeline? = Flux2Pipeline(
-            model: modelType,
-            quantization: .balanced
+            model: inferenceModel,
+            quantization: inferenceQuantization
         )
 
         // Load LoRA from checkpoint we just saved

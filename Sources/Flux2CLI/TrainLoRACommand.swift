@@ -828,6 +828,22 @@ struct TrainLoRA: AsyncParsableCommand {
             print()
         }
 
+        // Pre-download distilled model for validation if needed
+        if !simpleConfig.validationPrompts.isEmpty {
+            let inferenceModel = model.inferenceVariant
+            let inferenceVariant = ModelRegistry.TransformerVariant.variant(for: inferenceModel, quantization: .bf16)
+            let inferenceComponent = ModelRegistry.ModelComponent.transformer(inferenceVariant)
+            if Flux2ModelDownloader.findModelPath(for: inferenceComponent) == nil {
+                print("Pre-downloading distilled model for validation images...")
+                let hfToken = ProcessInfo.processInfo.environment["HF_TOKEN"]
+                let downloader = Flux2ModelDownloader(hfToken: hfToken)
+                _ = try await downloader.download(inferenceComponent) { progress, message in
+                    print("  Download: \(Int(progress * 100))% - \(message)")
+                }
+                print("  Distilled model downloaded ✓")
+            }
+        }
+
         // Run training
         print()
         try await trainer.train(
