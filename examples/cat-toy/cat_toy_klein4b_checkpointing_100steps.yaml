@@ -1,0 +1,59 @@
+# Cat Toy LoRA Training - Klein 4B - Gradient Checkpointing 100 Steps
+# Extended test to verify training stability with gradient checkpointing
+
+model:
+  name: klein-4b
+  quantization: bf16
+
+lora:
+  rank: 32
+  alpha: 32.0
+  target_layers: all
+
+dataset:
+  path: examples/cat-toy/train
+  trigger_word: "statue_cat_toy"
+
+training:
+  batch_size: 1
+  max_steps: 100
+  warmup_steps: 10
+  learning_rate: 1.0e-4
+  weight_decay: 0.0001
+
+loss:
+  weighting: bell_shaped
+  timestep_sampling: balanced
+  diff_output_preservation: true
+  diff_output_preservation_class: "cat"
+  diff_output_preservation_multiplier: 1.0
+
+memory:
+  gradient_checkpointing: true
+  cache_latents: true
+  bucketing:
+    enabled: true
+    resolutions:
+      - 512
+
+checkpoints:
+  output: output/cat-toy-klein4b-checkpoint-100steps
+  save_every: 50
+  keep_last: 2
+
+validation:
+  prompts:
+    - prompt: "a colorful wooden cat figurine sitting on a beach"
+      apply_trigger: true
+      is_512: true
+      is_1024: false
+    - prompt: "a cat sitting on a couch"
+      apply_trigger: false
+      is_512: true
+      is_1024: false
+  every_n_steps: 50
+  seed: 42
+  steps: 4
+
+ema:
+  enabled: false
