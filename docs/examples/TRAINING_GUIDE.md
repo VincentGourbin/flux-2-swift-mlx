@@ -282,6 +282,84 @@ Increase `diff_output_preservation_multiplier` (try 1.5 or 2.0) or ensure your c
 
 ---
 
+## Known Issues
+
+### Memory Explosion with Large Resolutions
+
+**Critical limitation:** Training memory consumption explodes quadratically with image resolution due to the attention mechanism in the transformer's single-stream blocks.
+
+#### Why This Happens
+
+During the **backward pass** (gradient computation via `valueAndGrad`), MLX must keep ALL intermediate activations in memory to compute gradients. The attention layers in single-stream blocks have complexity O(n²) where n = number of tokens.
+
+The token count scales with resolution:
+
+| Resolution | Latent Size | Tokens | Attention Shape | Memory (Klein 4B) |
+|------------|-------------|--------|-----------------|-------------------|
+| 512×512 | 64×64 | ~1,536 | `[1, 1536, 3072]` | ✅ ~15-20 GB |
+| 768×768 | 96×96 | ~2,816 | `[1, 2816, 3072]` | ⚠️ ~40-50 GB |
+| 1024×1024 | 128×128 | ~5,908 | `[1, 5908, 3072]` | 💥 170+ GB → OOM |
+
+#### Technical Details
+
+The crash occurs in the transformer's **48 single-stream blocks**. Each block performs self-attention on the packed latent sequence. During backprop:
+
+```
+Forward pass: Store attention matrices (n × n × heads × layers)
+Backward pass: Recompute gradients using stored activations
+
+For 1024×1024:
+  - 5,908 tokens × 5,908 tokens × 48 heads × 48 layers
+  - Memory grows exponentially, exceeding even 96GB unified memory
+```
+
+The verbose crash log shows shapes like:
+```
+[single_stream_block.0] input: [1, 5908, 3072]
+[single_stream_block.0] attention: [48, 5908, 5908]  ← THIS explodes
+... (OOM before reaching block 48)
+```
+
+#### Current Workarounds
+
+1. **Limit resolution to 512×512** for Klein 4B training:
+   ```yaml
+   memory:
+     bucketing:
+       resolutions:
+         - 512  # Only 512, no 768 or 1024
+   ```
+
+2. **Use the `maxResolution` API parameter** when integrating:
+   ```swift
+   let (latents, embeddings) = try await helper.prepareTrainingData(
+       images: images,
+       vae: vae,
+       textEncoder: textEncoder,
+       maxResolution: 512  // ← Prevents OOM
+   )
+   ```
+
+3. **Disable DOP** for marginal memory savings (DOP adds ~40% overhead with extra forward passes)
+
+#### Future Solution: Gradient Checkpointing
+
+The proper fix is **layer-wise gradient checkpointing** which trades compute for memory by recomputing activations during backprop instead of storing them. This is tracked in [Issue #38](https://github.com/VincentGourbin/flux-2-swift-mlx/issues/38).
+
+With gradient checkpointing, each single-stream block would checkpoint its forward pass:
+```swift
+// Instead of storing all 48 blocks' activations:
+let output = checkpoint { hiddenStates in
+    singleStreamBlock(hiddenStates)  // Recomputed during backward
+}
+```
+
+This would allow 768×768 and potentially 1024×1024 training, at the cost of ~2x training time.
+
+**Contributions welcome!** See Issue #38 for implementation details.
+
+---
+
 ## Training Output Structure
 
 A complete training run produces:
