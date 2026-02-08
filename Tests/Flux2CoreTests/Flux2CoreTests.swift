@@ -872,11 +872,6 @@ final class TrainingVariantsTests: XCTestCase {
         XCTAssertTrue(variant.isGated)
     }
 
-    func testKlein9BBaseVariantIsTrainingOnly() {
-        let variant = ModelRegistry.TransformerVariant.klein9B_base_bf16
-        XCTAssertTrue(variant.isTrainingOnly)
-    }
-
     func testKlein9BBaseVariantEstimatedSize() {
         let variant = ModelRegistry.TransformerVariant.klein9B_base_bf16
         XCTAssertEqual(variant.estimatedSizeGB, 18)  // Same as distilled
@@ -894,26 +889,22 @@ final class TrainingVariantsTests: XCTestCase {
         XCTAssertTrue(variant.isGated)
     }
 
-    func testKlein4BBaseVariantIsTrainingOnly() {
-        let variant = ModelRegistry.TransformerVariant.klein4B_base_bf16
-        XCTAssertTrue(variant.isTrainingOnly)
+    // MARK: - Training/Inference Model Variant Tests
+
+    func testBaseModelsAreForTraining() {
+        // Base (non-distilled) Flux2Models should be for training
+        XCTAssertTrue(Flux2Model.klein4BBase.isForTraining)
+        XCTAssertTrue(Flux2Model.klein9BBase.isForTraining)
+        XCTAssertTrue(Flux2Model.klein4BBase.isBaseModel)
+        XCTAssertTrue(Flux2Model.klein9BBase.isBaseModel)
     }
 
-    // MARK: - isTrainingOnly Property Tests
-
-    func testIsTrainingOnlyForBaseModels() {
-        // Base (non-distilled) models should be training-only
-        XCTAssertTrue(ModelRegistry.TransformerVariant.klein4B_base_bf16.isTrainingOnly)
-        XCTAssertTrue(ModelRegistry.TransformerVariant.klein9B_base_bf16.isTrainingOnly)
-    }
-
-    func testIsTrainingOnlyForInferenceModels() {
-        // Distilled/inference models should NOT be training-only
-        XCTAssertFalse(ModelRegistry.TransformerVariant.bf16.isTrainingOnly)
-        XCTAssertFalse(ModelRegistry.TransformerVariant.qint8.isTrainingOnly)
-        XCTAssertFalse(ModelRegistry.TransformerVariant.klein4B_bf16.isTrainingOnly)
-        XCTAssertFalse(ModelRegistry.TransformerVariant.klein4B_8bit.isTrainingOnly)
-        XCTAssertFalse(ModelRegistry.TransformerVariant.klein9B_bf16.isTrainingOnly)
+    func testDistilledModelsAreForInference() {
+        // Distilled models should be for inference, not training
+        XCTAssertTrue(Flux2Model.klein4B.isForInference)
+        XCTAssertTrue(Flux2Model.klein9B.isForInference)
+        XCTAssertFalse(Flux2Model.klein4B.isForTraining)
+        XCTAssertFalse(Flux2Model.klein9B.isForTraining)
     }
 
     // MARK: - trainingVariant(for:) Method Tests
@@ -942,18 +933,15 @@ final class TrainingVariantsTests: XCTestCase {
         }
     }
 
-    // MARK: - Training Variant isTrainingOnly Consistency
+    // MARK: - Training Variant Consistency
 
-    func testTrainingVariantsAreTrainingOnlyOrDev() {
-        // Klein base models should be training-only
-        let klein4BTraining = ModelRegistry.TransformerVariant.trainingVariant(for: .klein4B)!
-        let klein9BTraining = ModelRegistry.TransformerVariant.trainingVariant(for: .klein9B)!
-        XCTAssertTrue(klein4BTraining.isTrainingOnly)
-        XCTAssertTrue(klein9BTraining.isTrainingOnly)
+    func testTrainingVariantsResolveToBaseModels() {
+        // Klein models should resolve to base variants for training
+        XCTAssertEqual(Flux2Model.klein4B.trainingVariant, .klein4BBase)
+        XCTAssertEqual(Flux2Model.klein9B.trainingVariant, .klein9BBase)
 
-        // Dev returns .bf16 which is NOT training-only (it's the main model)
-        let devTraining = ModelRegistry.TransformerVariant.trainingVariant(for: .dev)!
-        XCTAssertFalse(devTraining.isTrainingOnly)
+        // Dev doesn't have a separate base model
+        XCTAssertEqual(Flux2Model.dev.trainingVariant, .dev)
     }
 }
 
@@ -1206,5 +1194,183 @@ final class MemoryConfigTests: XCTestCase {
         let summary = MemoryConfig.configurationSummary
         XCTAssertFalse(summary.isEmpty)
         XCTAssertTrue(summary.contains("Memory Configuration"))
+    }
+}
+
+// MARK: - Inference Variant Tests
+
+final class InferenceVariantTests: XCTestCase {
+
+    func testInferenceVariantForDistilledModels() {
+        // Distilled models should return themselves
+        XCTAssertEqual(Flux2Model.klein4B.inferenceVariant, .klein4B)
+        XCTAssertEqual(Flux2Model.klein9B.inferenceVariant, .klein9B)
+        XCTAssertEqual(Flux2Model.dev.inferenceVariant, .dev)
+    }
+
+    func testInferenceVariantForBaseModels() {
+        // Base models should return distilled variants
+        XCTAssertEqual(Flux2Model.klein4BBase.inferenceVariant, .klein4B)
+        XCTAssertEqual(Flux2Model.klein9BBase.inferenceVariant, .klein9B)
+    }
+
+    func testInferenceVariantIsAlwaysForInference() {
+        // The inference variant should always be usable for inference
+        for model in Flux2Model.allCases {
+            XCTAssertTrue(model.inferenceVariant.isForInference,
+                          "\(model).inferenceVariant should be for inference")
+        }
+    }
+
+    func testInferenceVariantIsNeverBase() {
+        // The inference variant should never be a base model
+        for model in Flux2Model.allCases {
+            XCTAssertFalse(model.inferenceVariant.isBaseModel,
+                           "\(model).inferenceVariant should not be a base model")
+        }
+    }
+
+    func testTrainingAndInferenceVariantsAreInverse() {
+        // For each model, trainingVariant.inferenceVariant should return the distilled version
+        for model in [Flux2Model.klein4B, .klein9B, .dev] {
+            let training = model.trainingVariant
+            let inference = training.inferenceVariant
+            XCTAssertTrue(inference.isForInference,
+                          "trainingVariant.inferenceVariant of \(model) should be for inference")
+        }
+    }
+}
+
+// MARK: - Gradient Checkpointing Config Tests
+
+final class GradientCheckpointingConfigTests: XCTestCase {
+
+    func testGradientCheckpointingReducesMemoryEstimate() {
+        let tmpDataset = URL(fileURLWithPath: "/tmp/test")
+        let tmpOutput = URL(fileURLWithPath: "/tmp/output")
+
+        let configWithout = LoRATrainingConfig(
+            datasetPath: tmpDataset,
+            rank: 32,
+            alpha: 32.0,
+            gradientCheckpointing: false,
+            outputPath: tmpOutput
+        )
+
+        let configWith = LoRATrainingConfig(
+            datasetPath: tmpDataset,
+            rank: 32,
+            alpha: 32.0,
+            gradientCheckpointing: true,
+            outputPath: tmpOutput
+        )
+
+        let memWithout = configWithout.estimateMemoryGB(for: .klein4B)
+        let memWith = configWith.estimateMemoryGB(for: .klein4B)
+
+        // Gradient checkpointing should reduce memory estimate
+        XCTAssertLessThan(memWith, memWithout)
+    }
+
+    func testGradientCheckpointingSuggestion() {
+        let config = LoRATrainingConfig(
+            datasetPath: URL(fileURLWithPath: "/tmp/test"),
+            rank: 32,
+            alpha: 32.0,
+            gradientCheckpointing: false,
+            outputPath: URL(fileURLWithPath: "/tmp/output")
+        )
+
+        // Request suggestions for tight memory
+        let suggestions = config.suggestAdjustments(for: .klein9B, availableGB: 16)
+
+        // Should suggest enabling gradient checkpointing
+        XCTAssertTrue(suggestions.contains { $0.contains("gradient checkpointing") },
+                      "Should suggest gradient checkpointing when disabled and memory is tight")
+    }
+
+    func testGradientCheckpointingNoSuggestionWhenEnabled() {
+        let config = LoRATrainingConfig(
+            datasetPath: URL(fileURLWithPath: "/tmp/test"),
+            rank: 32,
+            alpha: 32.0,
+            gradientCheckpointing: true,
+            outputPath: URL(fileURLWithPath: "/tmp/output")
+        )
+
+        let suggestions = config.suggestAdjustments(for: .klein9B, availableGB: 16)
+
+        // Should NOT suggest gradient checkpointing when already enabled
+        XCTAssertFalse(suggestions.contains { $0.contains("gradient checkpointing") },
+                       "Should not suggest gradient checkpointing when already enabled")
+    }
+
+    func testPresetsHaveGradientCheckpointing() {
+        let tmpDataset = URL(fileURLWithPath: "/tmp/test")
+        let tmpOutput = URL(fileURLWithPath: "/tmp/output")
+
+        // All presets should have gradient checkpointing enabled
+        let minimal = LoRATrainingConfig.minimal8GB(
+            datasetPath: tmpDataset,
+            outputPath: tmpOutput
+        )
+        XCTAssertTrue(minimal.gradientCheckpointing)
+
+        let balanced = LoRATrainingConfig.balanced16GB(
+            datasetPath: tmpDataset,
+            outputPath: tmpOutput
+        )
+        XCTAssertTrue(balanced.gradientCheckpointing)
+
+        let quality = LoRATrainingConfig.quality32GB(
+            datasetPath: tmpDataset,
+            outputPath: tmpOutput
+        )
+        XCTAssertTrue(quality.gradientCheckpointing)
+    }
+
+    func testGradientCheckpointingDefaultTrue() {
+        // Default init should have gradient checkpointing enabled
+        let config = LoRATrainingConfig(
+            datasetPath: URL(fileURLWithPath: "/tmp/test"),
+            outputPath: URL(fileURLWithPath: "/tmp/output")
+        )
+        XCTAssertTrue(config.gradientCheckpointing)
+    }
+}
+
+// MARK: - Validation Quantization Tests
+
+final class ValidationQuantizationTests: XCTestCase {
+
+    func testKlein9BRequiresHighQualityQuantization() {
+        // Klein 9B has no int8 variant, must use bf16 for inference
+        let balanced = Flux2QuantizationConfig.balanced
+        XCTAssertEqual(balanced.transformer, .qint8,
+                       "Balanced preset uses qint8 - but Klein 9B has no qint8 variant")
+
+        let highQuality = Flux2QuantizationConfig.highQuality
+        XCTAssertEqual(highQuality.transformer, .bf16,
+                       "High quality uses bf16 - required for Klein 9B inference")
+    }
+
+    func testKlein9BTransformerConfigMatchesDistilled() {
+        // Base and distilled Klein 9B should share the same transformer config
+        XCTAssertEqual(Flux2Model.klein9B.transformerConfig.numLayers,
+                       Flux2Model.klein9BBase.transformerConfig.numLayers)
+        XCTAssertEqual(Flux2Model.klein9B.transformerConfig.numSingleLayers,
+                       Flux2Model.klein9BBase.transformerConfig.numSingleLayers)
+    }
+
+    func testKlein9BConfig() {
+        let config = Flux2TransformerConfig.klein9B
+
+        // Klein 9B should be between Klein 4B and Dev in size
+        let klein4B = Flux2TransformerConfig.klein4B
+        let dev = Flux2TransformerConfig.flux2Dev
+
+        XCTAssertGreaterThan(config.numLayers, klein4B.numLayers)
+        XCTAssertGreaterThan(config.numSingleLayers, klein4B.numSingleLayers)
+        XCTAssertLessThanOrEqual(config.numLayers, dev.numLayers)
     }
 }
