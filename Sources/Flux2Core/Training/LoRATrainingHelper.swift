@@ -432,8 +432,8 @@ extension LoRATrainingHelper {
         Flux2Debug.log("[LoRATrainingHelper] Loading transformer with aggressive memory optimization")
 
         // Load weights
-        let weights = try Flux2WeightLoader.loadWeights(from: weightsPath)
-        try Flux2WeightLoader.applyTransformerWeights(weights, to: transformer)
+        var weights = try Flux2WeightLoader.loadWeights(from: weightsPath)
+        try Flux2WeightLoader.applyTransformerWeights(&weights, to: transformer)
 
         // Force evaluation to materialize weights
         eval(transformer.parameters())

@@ -9,7 +9,7 @@ import MLXNN
 /// Used in some transformer variants
 /// Optimized with kernel fusion for the gating operation
 public class GEGLU: Module, @unchecked Sendable {
-    let proj: Linear
+    @ModuleInfo var proj: Linear
     let dim: Int
     let innerDim: Int
 
@@ -22,7 +22,7 @@ public class GEGLU: Module, @unchecked Sendable {
         self.dim = dim
         self.innerDim = innerDim
         // Projects to 2x inner_dim for gate and value
-        self.proj = Linear(dim, innerDim * 2, bias: bias)
+        self._proj = ModuleInfo(wrappedValue: Linear(dim, innerDim * 2, bias: bias))
     }
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
@@ -113,9 +113,9 @@ public class Flux2FeedForward: Module, @unchecked Sendable {
 public class Flux2FeedForwardSplit: Module, @unchecked Sendable {
     let dim: Int
     let innerDim: Int
-    let linearGate: Linear
-    let linearUp: Linear
-    let linearDown: Linear
+    @ModuleInfo var linearGate: Linear
+    @ModuleInfo var linearUp: Linear
+    @ModuleInfo var linearDown: Linear
 
     public init(
         dim: Int,
@@ -125,9 +125,9 @@ public class Flux2FeedForwardSplit: Module, @unchecked Sendable {
         self.dim = dim
         self.innerDim = innerDim ?? (dim * 4)
 
-        self.linearGate = Linear(dim, self.innerDim, bias: bias)
-        self.linearUp = Linear(dim, self.innerDim, bias: bias)
-        self.linearDown = Linear(self.innerDim, dim, bias: bias)
+        self._linearGate = ModuleInfo(wrappedValue: Linear(dim, self.innerDim, bias: bias))
+        self._linearUp = ModuleInfo(wrappedValue: Linear(dim, self.innerDim, bias: bias))
+        self._linearDown = ModuleInfo(wrappedValue: Linear(self.innerDim, dim, bias: bias))
     }
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {

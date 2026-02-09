@@ -113,19 +113,25 @@ public final class Flux2MemoryManager: @unchecked Sendable {
             }
         }
 
+        let metalActiveMB = MLX.Memory.activeMemory / 1_048_576
+        let metalPeakMB = MLX.Memory.peakMemory / 1_048_576
+        let metalCacheMB = MLX.Memory.cacheMemory / 1_048_576
+
         if result == KERN_SUCCESS {
             let usedMB = info.resident_size / 1_048_576
-            let physicalMB = physicalMemory / 1_048_576
 
             return """
             Memory Usage:
-              Resident: \(usedMB) MB
-              Physical: \(physicalMB) MB (\(physicalMemoryGB) GB)
-              Estimated Available: ~\(estimatedAvailableMemoryGB) GB
+              Metal GPU — active: \(metalActiveMB) MB, peak: \(metalPeakMB) MB, cache: \(metalCacheMB) MB
+              Process Resident: \(usedMB) MB | System RAM: \(physicalMemoryGB) GB
             """
         }
 
-        return "Memory info unavailable"
+        return """
+        Memory Usage:
+          Metal GPU — active: \(metalActiveMB) MB, peak: \(metalPeakMB) MB, cache: \(metalCacheMB) MB
+          Process info unavailable | System RAM: \(physicalMemoryGB) GB
+        """
     }
 
     /// Log current memory state

@@ -519,8 +519,8 @@ struct TrainLoRA: AsyncParsableCommand {
             memoryOptimization: .aggressive  // Use aggressive memory mode for training
         )
 
-        let weights = try Flux2WeightLoader.loadWeights(from: modelPath)
-        try Flux2WeightLoader.applyTransformerWeights(weights, to: transformer)
+        var weights = try Flux2WeightLoader.loadWeights(from: modelPath)
+        try Flux2WeightLoader.applyTransformerWeights(&weights, to: transformer)
         eval(transformer.parameters())
 
         return transformer

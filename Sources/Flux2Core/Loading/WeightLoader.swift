@@ -55,7 +55,9 @@ public class Flux2WeightLoader {
     /// Convert HuggingFace transformer weight keys to Swift module paths
     /// Also handles dequantization of quanto qint8 weights
     /// Supports both Diffusers format and BFL native format
-    public static func mapTransformerWeights(_ weights: [String: MLXArray]) -> [String: MLXArray] {
+    /// Note: For Diffusers quanto format, entries are removed from `weights` as they are mapped
+    /// to avoid holding both raw quanto (~32GB) and dequantified float16 (~60GB) simultaneously.
+    public static func mapTransformerWeights(_ weights: inout [String: MLXArray]) -> [String: MLXArray] {
         // Detect format
         if isBFLFormat(weights) {
             Flux2Debug.log("Detected BFL native format weights")
@@ -63,7 +65,7 @@ public class Flux2WeightLoader {
         }
 
         Flux2Debug.log("Detected Diffusers format weights")
-        return mapDiffusersTransformerWeights(weights)
+        return mapDiffusersTransformerWeights(&weights)
     }
 
     /// Map weights in BFL (Black Forest Labs) native format
@@ -276,13 +278,18 @@ public class Flux2WeightLoader {
     }
 
     /// Map weights in Diffusers format (HuggingFace/quanto quantized)
-    private static func mapDiffusersTransformerWeights(_ weights: [String: MLXArray]) -> [String: MLXArray] {
+    /// Entries are removed from the input dict as they are processed to minimize peak memory.
+    /// This avoids holding both raw quanto data (~32GB) and dequantified float16 (~60GB) simultaneously.
+    private static func mapDiffusersTransformerWeights(_ weights: inout [String: MLXArray]) -> [String: MLXArray] {
         var mapped: [String: MLXArray] = [:]
         var quantizedData: [String: MLXArray] = [:]  // base_key -> ._data
         var quantizedScales: [String: MLXArray] = [:]  // base_key -> ._scale
 
-        // First pass: collect quantized weights and their scales
-        for (key, value) in weights {
+        // First pass: extract entries from input dict and remove them to free memory
+        let allKeys = Array(weights.keys)
+        for key in allKeys {
+            guard let value = weights.removeValue(forKey: key) else { continue }
+
             var processedKey = key
 
             // Remove common prefixes
@@ -300,7 +307,7 @@ public class Flux2WeightLoader {
                 let mappedKey = mapTransformerKeySimple(baseKey)
                 quantizedScales[mappedKey] = value
             } else if processedKey.hasSuffix(".input_scale") || processedKey.hasSuffix(".output_scale") {
-                // Skip activation scales for quanto
+                // Skip activation scales for quanto (value is released)
                 continue
             } else {
                 // Non-quantized weight, map directly
@@ -308,12 +315,17 @@ public class Flux2WeightLoader {
                 mapped[mappedKey] = value
             }
         }
+        // Input dict is now empty — raw safetensors references freed
+        Flux2Debug.log("Input dict cleared — freed raw weight entries")
 
-        // Second pass: dequantize qint8 weights to float16 for memory efficiency
-        // Process in smaller batches to reduce peak memory
+        // Second pass: dequantize qint8 weights to float16
+        // Release quanto data/scale entries progressively to keep peak ≈ 60GB (float16 only)
         var dequantCount = 0
-        for (key, data) in quantizedData {
-            if let scale = quantizedScales[key] {
+        let quantizedKeys = Array(quantizedData.keys)
+        for key in quantizedKeys {
+            guard let data = quantizedData.removeValue(forKey: key) else { continue }
+
+            if let scale = quantizedScales.removeValue(forKey: key) {
                 // Dequantize: weight = data.float() * scale, then convert to float16
                 let dequantized = (data.asType(.float32) * scale).asType(.float16)
                 mapped[key] = dequantized
@@ -323,9 +335,10 @@ public class Flux2WeightLoader {
                 mapped[key] = data.asType(.float16)
                 Flux2Debug.warning("No scale found for quantized weight: \(key)")
             }
-            // Periodically clear unused memory
+            // Periodically materialize and clear GPU cache
             if dequantCount % 50 == 0 {
                 eval(mapped.values.map { $0 })
+                MLX.Memory.clearCache()
             }
         }
         Flux2Debug.log("Dequantized \(dequantCount) qint8 weights to float16")
@@ -520,11 +533,13 @@ public class Flux2WeightLoader {
     // MARK: - Weight Application
 
     /// Apply weights to a transformer model
+    /// Note: `weights` is passed inout — for Diffusers quanto format, entries are freed during mapping
+    /// to reduce peak memory from ~98GB to ~60GB.
     public static func applyTransformerWeights(
-        _ weights: [String: MLXArray],
+        _ weights: inout [String: MLXArray],
         to model: Flux2Transformer2DModel
     ) throws {
-        let mapped = mapTransformerWeights(weights)
+        let mapped = mapTransformerWeights(&weights)
 
         // Use MLX's built-in weight loading - flatten to get full paths
         let flattenedArray = model.parameters().flattened()
@@ -677,6 +692,15 @@ public class Flux2WeightLoader {
     /// This computes `newWeight = originalWeight + scale * (loraB @ loraA)` for each LoRA pair
     /// and updates the model weights in place.
     ///
+    /// For QuantizedLinear layers (qint8 models), the merge performs:
+    /// 1. Dequantize weight from MLX qint8 → float16
+    /// 2. Add LoRA delta
+    /// 3. Requantize → MLX qint8
+    /// 4. Update weight, scales, and biases in the model
+    ///
+    /// This keeps memory overhead minimal (~80MB per layer) compared to the previous
+    /// approach of duplicating full float16 weights (~10GB peak for 170 layers).
+    ///
     /// - Parameters:
     ///   - loraManager: The LoRA manager containing loaded LoRA weights
     ///   - model: The transformer model to merge weights into
@@ -689,6 +713,19 @@ public class Flux2WeightLoader {
         var flatParameters: [String: MLXArray] = [:]
         for (key, value) in flattenedArray {
             flatParameters[key] = value
+        }
+
+        // Build a lookup of QuantizedLinear modules by path for detecting quantized layers
+        var quantizedModules: [String: QuantizedLinear] = [:]
+        for (path, module) in model.leafModules().flattened() {
+            if let ql = module as? QuantizedLinear {
+                quantizedModules[path] = ql
+            }
+        }
+
+        let isQuantized = !quantizedModules.isEmpty
+        if isQuantized {
+            Flux2Debug.log("[LoRA] Detected QuantizedLinear model — will use dequant→merge→requant path")
         }
 
         var mergedCount = 0
@@ -722,32 +759,56 @@ public class Flux2WeightLoader {
                     continue
                 }
 
-                // Start with the original weight
-                var mergedWeight = originalWeight
+                // Check if this layer is a QuantizedLinear
+                if let ql = quantizedModules[layerPath] {
+                    // === QuantizedLinear path: dequant → merge → requant ===
+                    // 1. Dequantize MLX qint8 → float16
+                    var mergedWeight = dequantized(
+                        ql.weight, scales: ql.scales, biases: ql.biases,
+                        groupSize: ql.groupSize, bits: ql.bits
+                    ).asType(.float16)
 
-                // Apply all LoRA pairs for this layer
-                for (scale, loraA, loraB) in pairs {
-                    // Log dtypes once for debugging
-                    if !dtypeLogged {
-                        Flux2Debug.log("[LoRA] dtypes - original: \(originalWeight.dtype), loraA: \(loraA.dtype), loraB: \(loraB.dtype)")
-                        dtypeLogged = true
+                    // 2. Apply all LoRA pairs
+                    for (scale, loraA, loraB) in pairs {
+                        if !dtypeLogged {
+                            Flux2Debug.log("[LoRA] dtypes - dequantized: \(mergedWeight.dtype), loraA: \(loraA.dtype), loraB: \(loraB.dtype)")
+                            dtypeLogged = true
+                        }
+                        let loraAConverted = loraA.asType(mergedWeight.dtype)
+                        let loraBConverted = loraB.asType(mergedWeight.dtype)
+                        let loraDelta = scale * matmul(loraBConverted, loraAConverted)
+                        mergedWeight = mergedWeight + loraDelta
                     }
 
-                    // Compute LoRA delta: scale * (loraB @ loraA)
-                    // loraA: [rank, in_features], loraB: [out_features, rank]
-                    // Result: [out_features, in_features]
-                    //
-                    // IMPORTANT: Convert LoRA weights to same dtype as original weight
-                    // to avoid dtype mismatches that can cause color issues
-                    let loraAConverted = loraA.asType(originalWeight.dtype)
-                    let loraBConverted = loraB.asType(originalWeight.dtype)
-                    let loraDelta = scale * matmul(loraBConverted, loraAConverted)
+                    // 3. Requantize → MLX qint8
+                    let (newWeight, newScales, newBiases) = quantized(
+                        mergedWeight, groupSize: ql.groupSize, bits: ql.bits
+                    )
 
-                    // Add to weight
-                    mergedWeight = mergedWeight + loraDelta
+                    // 4. Update weight, scales, and biases
+                    updates[weightKey] = newWeight
+                    updates[layerPath + ".scales"] = newScales
+                    if let nb = newBiases {
+                        updates[layerPath + ".biases"] = nb
+                    }
+                } else {
+                    // === Non-quantized path (bf16 model) ===
+                    var mergedWeight = originalWeight
+
+                    for (scale, loraA, loraB) in pairs {
+                        if !dtypeLogged {
+                            Flux2Debug.log("[LoRA] dtypes - original: \(originalWeight.dtype), loraA: \(loraA.dtype), loraB: \(loraB.dtype)")
+                            dtypeLogged = true
+                        }
+                        let loraAConverted = loraA.asType(originalWeight.dtype)
+                        let loraBConverted = loraB.asType(originalWeight.dtype)
+                        let loraDelta = scale * matmul(loraBConverted, loraAConverted)
+                        mergedWeight = mergedWeight + loraDelta
+                    }
+
+                    updates[weightKey] = mergedWeight
                 }
 
-                updates[weightKey] = mergedWeight
                 mergedCount += 1
             }
 
