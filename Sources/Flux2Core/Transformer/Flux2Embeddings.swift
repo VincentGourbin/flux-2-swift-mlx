@@ -143,14 +143,14 @@ public class Flux2TimestepGuidanceEmbeddings: Module, @unchecked Sendable {
 
 /// Pooled text embedding projection for conditioning
 public class PooledTextProjection: Module, @unchecked Sendable {
-    let linear: Linear
+    @ModuleInfo var linear: Linear
 
     /// Initialize pooled text projection
     /// - Parameters:
     ///   - inputDim: Input dimension from text encoder
     ///   - outputDim: Output dimension (time embed dim)
     public init(inputDim: Int = 768, outputDim: Int = 6144) {
-        self.linear = Linear(inputDim, outputDim)
+        self._linear = ModuleInfo(wrappedValue: Linear(inputDim, outputDim))
     }
 
     public func callAsFunction(_ pooledEmbedding: MLXArray) -> MLXArray {

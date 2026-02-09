@@ -184,19 +184,19 @@ public class Flux2ParallelSelfAttentionSplit: Module, @unchecked Sendable {
     let mlpHiddenDim: Int
 
     // Separate projections (var for LoRA injection)
-    var toQ: Linear
-    var toK: Linear
-    var toV: Linear
-    var mlpGate: Linear
-    var mlpUp: Linear
+    @ModuleInfo var toQ: Linear
+    @ModuleInfo var toK: Linear
+    @ModuleInfo var toV: Linear
+    @ModuleInfo var mlpGate: Linear
+    @ModuleInfo var mlpUp: Linear
 
     // QK normalization
     let normQ: RMSNorm
     let normK: RMSNorm
 
     // Separate output projections (var for LoRA injection)
-    var toAttnOut: Linear
-    var mlpDown: Linear
+    @ModuleInfo var toAttnOut: Linear
+    @ModuleInfo var mlpDown: Linear
 
     public init(
         dim: Int,
@@ -210,17 +210,17 @@ public class Flux2ParallelSelfAttentionSplit: Module, @unchecked Sendable {
         self.innerDim = numHeads * headDim
         self.mlpHiddenDim = Int(Float(dim) * mlpRatio)
 
-        self.toQ = Linear(dim, innerDim, bias: false)
-        self.toK = Linear(dim, innerDim, bias: false)
-        self.toV = Linear(dim, innerDim, bias: false)
-        self.mlpGate = Linear(dim, mlpHiddenDim, bias: false)
-        self.mlpUp = Linear(dim, mlpHiddenDim, bias: false)
+        self._toQ = ModuleInfo(wrappedValue: Linear(dim, innerDim, bias: false))
+        self._toK = ModuleInfo(wrappedValue: Linear(dim, innerDim, bias: false))
+        self._toV = ModuleInfo(wrappedValue: Linear(dim, innerDim, bias: false))
+        self._mlpGate = ModuleInfo(wrappedValue: Linear(dim, mlpHiddenDim, bias: false))
+        self._mlpUp = ModuleInfo(wrappedValue: Linear(dim, mlpHiddenDim, bias: false))
 
         self.normQ = RMSNorm(dim: headDim)
         self.normK = RMSNorm(dim: headDim)
 
-        self.toAttnOut = Linear(innerDim, dim, bias: false)
-        self.mlpDown = Linear(mlpHiddenDim, dim, bias: false)
+        self._toAttnOut = ModuleInfo(wrappedValue: Linear(innerDim, dim, bias: false))
+        self._mlpDown = ModuleInfo(wrappedValue: Linear(mlpHiddenDim, dim, bias: false))
     }
 
     public func callAsFunction(

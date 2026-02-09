@@ -125,13 +125,13 @@ public func applyGate(_ residual: MLXArray, gate: MLXArray) -> MLXArray {
 public class AdaLayerNormContinuous: Module, @unchecked Sendable {
     let dim: Int
     let norm: LayerNorm
-    let linear: Linear
+    @ModuleInfo var linear: Linear
 
     public init(dim: Int, eps: Float = 1e-6) {
         self.dim = dim
         self.norm = LayerNorm(dimensions: dim, eps: eps, affine: false)
         // Projects conditioning to shift and scale (no bias to match checkpoint)
-        self.linear = Linear(dim, dim * 2, bias: false)
+        self._linear = ModuleInfo(wrappedValue: Linear(dim, dim * 2, bias: false))
     }
 
     /// Apply adaptive layer norm

@@ -254,6 +254,7 @@ public class Flux2Pipeline: @unchecked Sendable {
     private func loadTransformer() async throws {
         guard transformer == nil else { return }
 
+        MLX.Memory.peakMemory = 0
         memoryManager.logMemoryState()
         Flux2Debug.log("Loading transformer for \(model.displayName)...")
 
@@ -287,7 +288,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         var weights = try Flux2WeightLoader.loadWeights(from: modelPath)
 
         Flux2Debug.log("Applying weights to model...")
-        try Flux2WeightLoader.applyTransformerWeights(weights, to: transformer!)
+        try Flux2WeightLoader.applyTransformerWeights(&weights, to: transformer!)
 
         // Explicitly release the raw weights dictionary to free memory
         // This is important for Dev model where weights can be ~32GB
@@ -296,11 +297,35 @@ public class Flux2Pipeline: @unchecked Sendable {
         memoryManager.fullCleanup()
         Flux2Debug.log("Raw weights released from memory")
 
+        // Quantize transformer to native MLX QuantizedLinear if qint8
+        // The quanto weights were dequantized to float16 during mapping (mapDiffusersTransformerWeights).
+        // Now we requantize into MLX's native QuantizedLinear format which:
+        // 1. Halves memory usage (~32GB instead of ~60GB for Dev)
+        // 2. Uses optimized quantizedMM() for faster inference on Apple Silicon
+        // 3. Enables efficient dequant→merge→requant for LoRA weight merging
+        // Note: This is a double quantization (quanto→float16→MLX qint8) but the
+        // precision loss is negligible for inference (<1% error typical for int8).
+        if quantization.transformer == .qint8 {
+            Flux2Debug.log("Quantizing transformer to native MLX QuantizedLinear (8-bit, groupSize=64)...")
+            memoryManager.logMemoryState()
+            quantize(model: transformer!, groupSize: 64, bits: 8)
+            eval(transformer!.parameters())
+            memoryManager.fullCleanup()
+            memoryManager.logMemoryState()
+            Flux2Debug.log("Transformer quantized to QuantizedLinear — memory reduced ~2x")
+        }
+
         // Merge LoRA weights if any are loaded
         if let loraManager = loraManager, loraManager.count > 0 {
+            MLX.Memory.peakMemory = 0
+            Flux2Debug.log("[LoRA] Before merge:")
+            memoryManager.logMemoryState()
             Flux2WeightLoader.mergeLoRAWeights(from: loraManager, into: transformer!)
             // Free LoRA matrices from memory after fusion (they're now baked into base weights)
             loraManager.clearWeightsAfterFusion()
+            memoryManager.fullCleanup()
+            Flux2Debug.log("[LoRA] After merge:")
+            memoryManager.logMemoryState()
         }
 
         // Ensure weights are evaluated
