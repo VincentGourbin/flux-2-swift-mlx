@@ -17,7 +17,7 @@ This directory contains example images and documentation for the Flux.2 Swift ML
 | Parameters | 32B | 4B | 9B |
 | Text Encoder | Mistral Small 3.2 | Qwen3-4B | Qwen3-8B |
 | Default Steps | 50 | 4 (distilled) | 4 (distilled) |
-| VRAM Usage | ~60GB | ~5-8GB | ~20GB |
+| Transformer (qint8) | ~33GB | ~4GB | ~9GB |
 | 1024x1024 Time | ~35 min | ~26s | ~56s |
 | License | Non-commercial | **Apache 2.0** | Non-commercial |
 | **Speedup** | 1x | **~80x** | **~38x** |
@@ -66,7 +66,7 @@ For detailed comparison, see [**Model Comparison**](comparison.md).
 |---------------|----------------|
 | ![Cat Beach](flux2-dev/cat_beach_upsampled/final.png) | ![Watercolor](flux2-dev/i2i_artistic_variation/final.png) |
 
-*~35 min generation time, ~60GB VRAM*
+*~30 min generation time, ~33GB transformer (qint8)*
 
 ### Flux.2 Klein 4B - Fast Generation
 

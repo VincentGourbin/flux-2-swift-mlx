@@ -33,11 +33,13 @@ public enum MistralQuantization: String, CaseIterable, Codable, Sendable {
 public enum TransformerQuantization: String, CaseIterable, Codable, Sendable {
     case bf16 = "bf16"      // Full precision ~64GB
     case qint8 = "qint8"    // 8-bit ~32GB
+    case int4 = "int4"      // 4-bit ~16GB (on-the-fly quantization)
 
     public var estimatedMemoryGB: Int {
         switch self {
         case .bf16: return 64
         case .qint8: return 32
+        case .int4: return 16
         }
     }
 
@@ -45,6 +47,7 @@ public enum TransformerQuantization: String, CaseIterable, Codable, Sendable {
         switch self {
         case .bf16: return "Full Precision (bf16)"
         case .qint8: return "8-bit (qint8)"
+        case .int4: return "4-bit (int4)"
         }
     }
 
@@ -52,6 +55,7 @@ public enum TransformerQuantization: String, CaseIterable, Codable, Sendable {
         switch self {
         case .bf16: return 16
         case .qint8: return 8
+        case .int4: return 4
         }
     }
 
@@ -99,22 +103,28 @@ public struct Flux2QuantizationConfig: Codable, Sendable {
         transformer: .bf16
     )
 
-    /// Balanced preset - requires ~60GB RAM (recommended for 64GB Macs)
+    /// Balanced preset - requires ~57GB RAM (recommended for 64GB Macs)
     public static let balanced = Flux2QuantizationConfig(
         textEncoder: .mlx8bit,
         transformer: .qint8
     )
 
-    /// Memory efficient preset - requires ~50GB RAM
+    /// Memory efficient preset - requires ~47GB RAM
     public static let memoryEfficient = Flux2QuantizationConfig(
         textEncoder: .mlx4bit,
         transformer: .qint8
     )
 
-    /// Minimal preset - requires ~40GB RAM
+    /// Minimal preset - requires ~47GB RAM
     public static let minimal = Flux2QuantizationConfig(
         textEncoder: .mlx4bit,
         transformer: .qint8
+    )
+
+    /// Ultra-minimal preset - requires ~30GB RAM (4-bit transformer)
+    public static let ultraMinimal = Flux2QuantizationConfig(
+        textEncoder: .mlx4bit,
+        transformer: .int4
     )
 
     /// Default preset (balanced)

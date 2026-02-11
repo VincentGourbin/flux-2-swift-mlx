@@ -161,6 +161,10 @@ public class Flux2Transformer2DModel: Module, @unchecked Sendable {
         let txtMod = doubleStreamModulationTxt(temb)
         Flux2Debug.verbose("imgMod count: \(imgMod.count), first shift: \(imgMod.first?.shift.shape ?? [])")
 
+        // Pre-compute flattened modulation arrays once (avoids re-creating at each iteration)
+        let imgModFlat = imgMod.flatMap { [$0.shift, $0.scale, $0.gate] }
+        let txtModFlat = txtMod.flatMap { [$0.shift, $0.scale, $0.gate] }
+
         for (blockIdx, block) in transformerBlocks.enumerated() {
             Flux2Debug.verbose("Double-stream block \(blockIdx)")
 
@@ -173,8 +177,8 @@ public class Flux2Transformer2DModel: Module, @unchecked Sendable {
                 let numActivations = 17  // imgHS, txtHS, temb, ropeCos, ropeSin, 6×imgMod, 6×txtMod
 
                 var inputs: [MLXArray] = [imgHS, txtHS, temb, ropeEmb.cos, ropeEmb.sin]
-                inputs.append(contentsOf: imgMod.flatMap { [$0.shift, $0.scale, $0.gate] })
-                inputs.append(contentsOf: txtMod.flatMap { [$0.shift, $0.scale, $0.gate] })
+                inputs.append(contentsOf: imgModFlat)
+                inputs.append(contentsOf: txtModFlat)
                 inputs.append(contentsOf: paramValues)
 
                 let checkpointedForward = checkpoint { (arrays: [MLXArray]) -> [MLXArray] in
@@ -250,6 +254,7 @@ public class Flux2Transformer2DModel: Module, @unchecked Sendable {
 
         // OPTIMIZATION: Compute single-stream modulation ONCE before the loop
         let singleMod = singleStreamModulation(temb)
+        let singleModFlat = singleMod.flatMap { [$0.shift, $0.scale, $0.gate] }
 
         for (blockIdx, block) in singleTransformerBlocks.enumerated() {
             if gradientCheckpointing {
@@ -259,7 +264,7 @@ public class Flux2Transformer2DModel: Module, @unchecked Sendable {
                 let numActivations = 7  // combinedHS, temb, ropeCos, ropeSin, mod.shift, mod.scale, mod.gate
 
                 var inputs: [MLXArray] = [combinedHS, temb, ropeEmb.cos, ropeEmb.sin]
-                inputs.append(contentsOf: singleMod.flatMap { [$0.shift, $0.scale, $0.gate] })
+                inputs.append(contentsOf: singleModFlat)
                 inputs.append(contentsOf: paramValues)
 
                 let checkpointedForward = checkpoint { (arrays: [MLXArray]) -> [MLXArray] in

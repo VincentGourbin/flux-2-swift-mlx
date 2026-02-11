@@ -41,6 +41,9 @@ public struct SimpleLoRAConfig: Sendable {
     // Memory optimization
     public var gradientCheckpointing: Bool = false  // Wrap forward pass with checkpoint() to save memory
 
+    // Performance optimization
+    public var compileTraining: Bool = false  // Use MLX compile() to fuse GPU kernels (experimental)
+
     // Checkpointing
     public var saveEveryNSteps: Int = 250
     public var logEveryNSteps: Int = 1
@@ -156,6 +159,9 @@ public final class SimpleLoRATrainer {
     // Cached valueAndGrad functions
     private var cachedLossAndGrad: ((Flux2Transformer2DModel, [MLXArray]) -> ([MLXArray], NestedDictionary<String, MLXArray>))?
     private var cachedDOPLossAndGrad: ((Flux2Transformer2DModel, [MLXArray]) -> ([MLXArray], NestedDictionary<String, MLXArray>))?
+
+    // Compiled training step (forward + backward + clip + optimizer update, fused GPU kernels)
+    private var compiledTrainingStep: (([MLXArray]) -> [MLXArray])?
 
     // DOP (Differential Output Preservation) caches
     private var preservationEmbeddings: [String: CachedEmbeddingEntry] = [:]  // caption -> preservation embedding
@@ -502,6 +508,41 @@ public final class SimpleLoRATrainer {
         MLX.Memory.clearCache()
         Flux2Debug.log("[SimpleLoRATrainer] Memory prepared, cache cleared")
 
+        // Compiled training step (experimental)
+        // compile() fuses GPU kernels for forward + backward + optimizer update, giving ~5-15% speedup.
+        // Only safe when: no gradient checkpointing, no DOP, no gradient accumulation
+        // (these features have side effects / conditional logic incompatible with compile tracing)
+        let canCompile = config.compileTraining
+            && !useGradientCheckpointing
+            && !dopEnabled
+            && config.gradientAccumulationSteps == 1
+        if canCompile {
+            let lossAndGradRef = cachedLossAndGrad!
+            compiledTrainingStep = compile(
+                inputs: [transformer, optimizer],
+                outputs: [transformer, optimizer]
+            ) { [weak self] (arrays: [MLXArray]) -> [MLXArray] in
+                guard let self = self else { return [MLXArray(0.0)] }
+
+                // Forward + backward (traced by compile)
+                let (losses, grads) = lossAndGradRef(transformer, arrays)
+
+                // Filter to LoRA gradients only
+                let filteredGrads = self.filterLoRAGradients(grads)
+
+                // Clip gradient norm (no eval inside — everything stays lazy for kernel fusion)
+                let clippedGrads = self.clipGradNormLazy(filteredGrads, maxNorm: 1.0)
+
+                // Optimizer update (compile tracks model/optimizer state via inputs/outputs)
+                optimizer.update(model: transformer, gradients: clippedGrads)
+
+                return [losses[0]]
+            }
+            print("  Compiled training step: ENABLED (experimental, ~5-15% speedup)")
+        } else if config.compileTraining {
+            print("  Compiled training step: DISABLED (incompatible with gradient checkpointing, DOP, or accumulation)")
+        }
+
         print("Starting training...")
         if config.gradientAccumulationSteps > 1 {
             print("  Gradient accumulation: \(config.gradientAccumulationSteps) steps (effective batch = \(config.batchSize * config.gradientAccumulationSteps))")
@@ -743,33 +784,61 @@ public final class SimpleLoRATrainer {
         ]
         inputArrays.append(guidance ?? MLXArray(0.0))
         
+        // === Compiled training path ===
+        // When compile() is active, the entire forward + backward + clip + optimizer update
+        // is fused into optimized GPU kernels. No eval/clearCache inside — everything is lazy.
+        if let compiledStep = compiledTrainingStep {
+            let t0 = CFAbsoluteTimeGetCurrent()
+            let result = compiledStep(inputArrays)
+            let mainLossValue = result[0].item(Float.self)
+            let t1 = CFAbsoluteTimeGetCurrent()
+
+            // Evaluate parameters and clear cache OUTSIDE the compiled graph
+            eval(transformer.trainableParameters())
+            MLX.Memory.clearCache()
+            let t2 = CFAbsoluteTimeGetCurrent()
+
+            if currentStep <= 5 {
+                Flux2Debug.log("[Timing] Step \(currentStep) (compiled): step=\(String(format: "%.1f", (t1-t0)*1000))ms, eval+clear=\(String(format: "%.1f", (t2-t1)*1000))ms")
+            }
+
+            // Debug: gradient norm (every 50 steps, computed separately since compile doesn't expose grads)
+            if currentStep % 50 == 1 || currentStep <= 5 {
+                // Grad norm is not available in compiled path (grads are internal to compile)
+                Flux2Debug.log("[Grad Debug] Step \(currentStep): grad_norm not available in compiled mode")
+            }
+
+            return (mainLoss: mainLossValue, dopLoss: nil)
+        }
+
+        // === Non-compiled training path ===
         // Forward + backward
         guard let lossAndGrad = cachedLossAndGrad else {
             throw SimpleLoRATrainerError.notInitialized
         }
-        
+
         // Timing: Main forward + backward
         let t0 = CFAbsoluteTimeGetCurrent()
         let (losses, grads) = lossAndGrad(transformer, inputArrays)
         let mainLoss = losses[0]
         let t1 = CFAbsoluteTimeGetCurrent()
-        
+
         // Filter to LoRA gradients only
         var filteredGrads = filterLoRAGradients(grads)
         let t2 = CFAbsoluteTimeGetCurrent()
-        
+
         // Evaluate main loss and gradients to free backward graph before DOP
         let mainLossValue = mainLoss.item(Float.self)
         eval(filteredGrads)
         let t3 = CFAbsoluteTimeGetCurrent()
         MLX.Memory.clearCache()
         let t4 = CFAbsoluteTimeGetCurrent()
-        
+
         // Log timing for first 5 steps
         if currentStep <= 5 {
             Flux2Debug.log("[Timing] Step \(currentStep): fwd+bwd=\(String(format: "%.2f", (t1-t0)*1000))ms, filter=\(String(format: "%.2f", (t2-t1)*1000))ms, eval=\(String(format: "%.2f", (t3-t2)*1000))ms, clear=\(String(format: "%.2f", (t4-t3)*1000))ms")
         }
-        
+
         // DOP (Differential Output Preservation) - Ostris regularization
         // OPTIMIZATION: Only do DOP every N steps to reduce overhead
         var dopLossValue: Float? = nil
@@ -778,15 +847,15 @@ public final class SimpleLoRATrainer {
         if shouldDoDOP,
            let preservationEmb = preservationEmbedding,
            let dopLossAndGrad = cachedDOPLossAndGrad {
-            
+
             let dopT0 = CFAbsoluteTimeGetCurrent()
-            
+
             // Ensure batch dimension for preservation embedding
             var batchedPreservationEmb = preservationEmb
             if batchedPreservationEmb.shape.count == 2 {
                 batchedPreservationEmb = batchedPreservationEmb.expandedDimensions(axis: 0)
             }
-            
+
             // 1. Get base model output (LoRA disabled)
             // OPTIMIZATION: Use stopGradient to prevent unnecessary gradient tracking
             transformer.disableLoRA()  // Disable LoRA (sets all scales to 0)
@@ -803,7 +872,7 @@ public final class SimpleLoRATrainer {
             eval(baseOutput)
             transformer.restoreLoRAScales()  // Re-enable LoRA
             let dopT1 = CFAbsoluteTimeGetCurrent()
-            
+
             // 2. Compute DOP loss and gradients
             var dopInputArrays: [MLXArray] = [
                 packedLatent,
@@ -814,25 +883,25 @@ public final class SimpleLoRATrainer {
                 baseOutput
             ]
             dopInputArrays.append(guidance ?? MLXArray(0.0))
-            
+
             let (dopLosses, dopGrads) = dopLossAndGrad(transformer, dopInputArrays)
             let dopLoss = dopLosses[0]
             dopLossValue = dopLoss.item(Float.self)
-            
+
             // Filter DOP gradients
             let filteredDOPGrads = filterLoRAGradients(dopGrads)
             eval(filteredDOPGrads)
             MLX.Memory.clearCache()
             let dopT2 = CFAbsoluteTimeGetCurrent()
-            
+
             // 3. Combine gradients: total = main + multiplier * dop
             let dopMultiplier = config.dopMultiplier
             filteredGrads = combineGradients(filteredGrads, filteredDOPGrads, multiplier: dopMultiplier)
             let dopT3 = CFAbsoluteTimeGetCurrent()
-            
+
             dopTiming = (base: (dopT1-dopT0)*1000, fwdBwd: (dopT2-dopT1)*1000, combine: (dopT3-dopT2)*1000)
         }
-        
+
         // Timing: Optimizer update
         let optT0 = CFAbsoluteTimeGetCurrent()
 
@@ -1021,6 +1090,50 @@ public final class SimpleLoRATrainer {
         return clipped
     }
     
+    /// Clip gradient norm without eval() — keeps everything lazy for compile() kernel fusion
+    /// Same logic as clipGradNorm but without the eval(clipCoef) materialization point.
+    /// In compiled mode, the compiler handles common subexpression elimination.
+    private func clipGradNormLazy(_ grads: NestedDictionary<String, MLXArray>, maxNorm: Float) -> NestedDictionary<String, MLXArray> {
+        var allGrads: [MLXArray] = []
+        func collectGrads(_ item: NestedItem<String, MLXArray>) {
+            switch item {
+            case .none: break
+            case .value(let arr): allGrads.append(arr)
+            case .array(let items): items.forEach { collectGrads($0) }
+            case .dictionary(let dict): dict.values.forEach { collectGrads($0) }
+            }
+        }
+        for (_, item) in grads { collectGrads(item) }
+
+        guard !allGrads.isEmpty else { return grads }
+
+        var totalNormSq = MLXArray(0.0)
+        for grad in allGrads {
+            totalNormSq = totalNormSq + MLX.sum(grad * grad)
+        }
+        let totalNorm = MLX.sqrt(totalNormSq)
+        let clipCoef = MLX.minimum(MLXArray(maxNorm) / (totalNorm + MLXArray(1e-6)), MLXArray(1.0))
+        // No eval() here — stays lazy for compile() to fuse kernels
+
+        func clipItem(_ item: NestedItem<String, MLXArray>) -> NestedItem<String, MLXArray> {
+            switch item {
+            case .none: return .none
+            case .value(let arr): return .value(arr * clipCoef)
+            case .array(let items): return .array(items.map { clipItem($0) })
+            case .dictionary(let dict):
+                var newDict: [String: NestedItem<String, MLXArray>] = [:]
+                for (k, v) in dict { newDict[k] = clipItem(v) }
+                return .dictionary(newDict)
+            }
+        }
+
+        var clipped = NestedDictionary<String, MLXArray>()
+        for (key, item) in grads {
+            clipped[key] = clipItem(item)
+        }
+        return clipped
+    }
+
     private func filterLoRAGradients(_ grads: NestedDictionary<String, MLXArray>) -> NestedDictionary<String, MLXArray> {
         var filtered = NestedDictionary<String, MLXArray>()
         
@@ -1422,7 +1535,7 @@ public final class SimpleLoRATrainer {
 
         // Create pipeline with distilled model for inference
         let inferenceModel = modelType.inferenceVariant
-        let inferenceQuantization: Flux2QuantizationConfig = (inferenceModel == .klein9B) ? .highQuality : .balanced
+        let inferenceQuantization: Flux2QuantizationConfig = .balanced
         let pipeline = Flux2Pipeline(
             model: inferenceModel,
             quantization: inferenceQuantization
@@ -1498,7 +1611,7 @@ public final class SimpleLoRATrainer {
         // Create pipeline with distilled model - this loads a SECOND copy of the model!
         // For large models, consider disabling validation (validation.prompts: [])
         let inferenceModel = modelType.inferenceVariant
-        let inferenceQuantization: Flux2QuantizationConfig = (inferenceModel == .klein9B) ? .highQuality : .balanced
+        let inferenceQuantization: Flux2QuantizationConfig = .balanced
         var pipeline: Flux2Pipeline? = Flux2Pipeline(
             model: inferenceModel,
             quantization: inferenceQuantization
@@ -1568,13 +1681,8 @@ public final class SimpleLoRATrainer {
         await pipeline!.clearAll()
         pipeline = nil
 
-        // Force GPU sync and memory cleanup
+        // Force GPU sync, wait for deferred deallocations, then clear cache once
         eval([])
-        MLX.Memory.clearCache()
-        eval([])
-        MLX.Memory.clearCache()
-
-        // Give the system time to reclaim memory
         try await Task.sleep(nanoseconds: 500_000_000)  // 0.5 seconds
         MLX.Memory.clearCache()
 

@@ -39,6 +39,39 @@ final class Flux2CoreTests: XCTestCase {
 
         XCTAssertEqual(Flux2QuantizationConfig.minimal.textEncoder, .mlx4bit)
         XCTAssertEqual(Flux2QuantizationConfig.minimal.transformer, .qint8)
+
+        XCTAssertEqual(Flux2QuantizationConfig.ultraMinimal.textEncoder, .mlx4bit)
+        XCTAssertEqual(Flux2QuantizationConfig.ultraMinimal.transformer, .int4)
+    }
+
+    func testTransformerQuantizationInt4() {
+        XCTAssertEqual(TransformerQuantization.int4.bits, 4)
+        XCTAssertEqual(TransformerQuantization.int4.groupSize, 64)
+        XCTAssertEqual(TransformerQuantization.int4.rawValue, "int4")
+    }
+
+    func testModelRegistryVariantOnTheFlyQuantization() {
+        // Klein 9B should always return bf16 variant (quantize on-the-fly)
+        XCTAssertEqual(
+            ModelRegistry.TransformerVariant.variant(for: .klein9B, quantization: .qint8),
+            .klein9B_bf16
+        )
+        XCTAssertEqual(
+            ModelRegistry.TransformerVariant.variant(for: .klein9B, quantization: .int4),
+            .klein9B_bf16
+        )
+
+        // Dev int4 should return bf16 variant (quantize on-the-fly)
+        XCTAssertEqual(
+            ModelRegistry.TransformerVariant.variant(for: .dev, quantization: .int4),
+            .bf16
+        )
+
+        // Klein 4B int4 should return bf16 variant (quantize on-the-fly)
+        XCTAssertEqual(
+            ModelRegistry.TransformerVariant.variant(for: .klein4B, quantization: .int4),
+            .klein4B_bf16
+        )
     }
 
     // MARK: - Latent Utils Tests
@@ -387,6 +420,10 @@ final class ModelRegistryTests: XCTestCase {
     }
 
     func testRecommendedConfigForRAM() {
+        // Very low RAM should recommend ultra-minimal config (4-bit)
+        let veryLowRamConfig = ModelRegistry.recommendedConfig(forRAMGB: 24)
+        XCTAssertEqual(veryLowRamConfig.transformer, .int4)
+
         // Low RAM should recommend minimal config
         let lowRamConfig = ModelRegistry.recommendedConfig(forRAMGB: 32)
         XCTAssertEqual(lowRamConfig.transformer, .qint8)
@@ -775,8 +812,155 @@ final class QuantizationConfigTests: XCTestCase {
     func testTransformerQuantizationMemory() {
         let bf16 = TransformerQuantization.bf16.estimatedMemoryGB
         let qint8 = TransformerQuantization.qint8.estimatedMemoryGB
+        let int4 = TransformerQuantization.int4.estimatedMemoryGB
 
         XCTAssertGreaterThan(bf16, qint8)
+        XCTAssertGreaterThan(qint8, int4)
+    }
+
+    func testTransformerQuantizationAllCases() {
+        let allCases = TransformerQuantization.allCases
+        XCTAssertEqual(allCases.count, 3)
+        XCTAssertTrue(allCases.contains(.bf16))
+        XCTAssertTrue(allCases.contains(.qint8))
+        XCTAssertTrue(allCases.contains(.int4))
+    }
+
+    func testTransformerQuantizationBitsOrdering() {
+        XCTAssertGreaterThan(TransformerQuantization.bf16.bits, TransformerQuantization.qint8.bits)
+        XCTAssertGreaterThan(TransformerQuantization.qint8.bits, TransformerQuantization.int4.bits)
+    }
+
+    func testTransformerQuantizationDisplayNames() {
+        XCTAssertFalse(TransformerQuantization.bf16.displayName.isEmpty)
+        XCTAssertFalse(TransformerQuantization.qint8.displayName.isEmpty)
+        XCTAssertFalse(TransformerQuantization.int4.displayName.isEmpty)
+    }
+
+    func testMemoryEfficientPreset() {
+        XCTAssertEqual(Flux2QuantizationConfig.memoryEfficient.textEncoder, .mlx4bit)
+        XCTAssertEqual(Flux2QuantizationConfig.memoryEfficient.transformer, .qint8)
+    }
+
+    func testPresetMemoryOrdering() {
+        let ultra = Flux2QuantizationConfig.ultraMinimal.estimatedTotalMemoryGB
+        let minimal = Flux2QuantizationConfig.minimal.estimatedTotalMemoryGB
+        let balanced = Flux2QuantizationConfig.balanced.estimatedTotalMemoryGB
+        let high = Flux2QuantizationConfig.highQuality.estimatedTotalMemoryGB
+
+        XCTAssertLessThanOrEqual(ultra, minimal)
+        XCTAssertLessThanOrEqual(minimal, balanced)
+        XCTAssertLessThanOrEqual(balanced, high)
+    }
+}
+
+// MARK: - On-the-fly Quantization Variant Tests
+
+final class OnTheFlyQuantizationTests: XCTestCase {
+
+    func testDevVariantMapping() {
+        // Dev has pre-quantized qint8 available
+        XCTAssertEqual(
+            ModelRegistry.TransformerVariant.variant(for: .dev, quantization: .bf16),
+            .bf16
+        )
+        XCTAssertEqual(
+            ModelRegistry.TransformerVariant.variant(for: .dev, quantization: .qint8),
+            .qint8,
+            "Dev qint8 should use pre-quantized variant"
+        )
+        XCTAssertEqual(
+            ModelRegistry.TransformerVariant.variant(for: .dev, quantization: .int4),
+            .bf16,
+            "Dev int4 should load bf16 and quantize on-the-fly"
+        )
+    }
+
+    func testKlein4BVariantMapping() {
+        XCTAssertEqual(
+            ModelRegistry.TransformerVariant.variant(for: .klein4B, quantization: .bf16),
+            .klein4B_bf16
+        )
+        XCTAssertEqual(
+            ModelRegistry.TransformerVariant.variant(for: .klein4B, quantization: .qint8),
+            .klein4B_8bit,
+            "Klein 4B qint8 should use pre-quantized variant"
+        )
+        XCTAssertEqual(
+            ModelRegistry.TransformerVariant.variant(for: .klein4B, quantization: .int4),
+            .klein4B_bf16,
+            "Klein 4B int4 should load bf16 and quantize on-the-fly"
+        )
+    }
+
+    func testKlein9BAlwaysLoadsBf16() {
+        // Klein 9B has no pre-quantized variants — always loads bf16
+        for quant in TransformerQuantization.allCases {
+            XCTAssertEqual(
+                ModelRegistry.TransformerVariant.variant(for: .klein9B, quantization: quant),
+                .klein9B_bf16,
+                "Klein 9B should always load bf16 variant for \(quant)"
+            )
+        }
+    }
+
+    func testBaseModelsAlwaysReturnBaseVariant() {
+        for quant in TransformerQuantization.allCases {
+            XCTAssertEqual(
+                ModelRegistry.TransformerVariant.variant(for: .klein4BBase, quantization: quant),
+                .klein4B_base_bf16,
+                "Klein 4B base should always return base bf16 for \(quant)"
+            )
+            XCTAssertEqual(
+                ModelRegistry.TransformerVariant.variant(for: .klein9BBase, quantization: quant),
+                .klein9B_base_bf16,
+                "Klein 9B base should always return base bf16 for \(quant)"
+            )
+        }
+    }
+
+    func testRecommendedConfigAllTiers() {
+        // Ultra-minimal tier (<32GB)
+        let ultra = ModelRegistry.recommendedConfig(forRAMGB: 24)
+        XCTAssertEqual(ultra.transformer, .int4)
+
+        // Minimal tier (32-48GB)
+        let minimal = ModelRegistry.recommendedConfig(forRAMGB: 32)
+        XCTAssertEqual(minimal.transformer, .qint8)
+
+        // Balanced tier (48-96GB)
+        let balanced48 = ModelRegistry.recommendedConfig(forRAMGB: 48)
+        XCTAssertEqual(balanced48.transformer, .qint8)
+
+        let balanced64 = ModelRegistry.recommendedConfig(forRAMGB: 64)
+        XCTAssertEqual(balanced64.transformer, .qint8)
+
+        // High quality tier (96GB+)
+        let high = ModelRegistry.recommendedConfig(forRAMGB: 96)
+        XCTAssertEqual(high.transformer, .bf16)
+
+        let veryHigh = ModelRegistry.recommendedConfig(forRAMGB: 128)
+        XCTAssertEqual(veryHigh.transformer, .bf16)
+    }
+
+    func testInt4QuantizationGroupSize() {
+        // All quantization levels use the same group size
+        XCTAssertEqual(TransformerQuantization.bf16.groupSize, 64)
+        XCTAssertEqual(TransformerQuantization.qint8.groupSize, 64)
+        XCTAssertEqual(TransformerQuantization.int4.groupSize, 64)
+    }
+
+    func testQuantizationCodable() throws {
+        // Verify int4 round-trips through JSON encoding
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+
+        let config = Flux2QuantizationConfig.ultraMinimal
+        let data = try encoder.encode(config)
+        let decoded = try decoder.decode(Flux2QuantizationConfig.self, from: data)
+
+        XCTAssertEqual(decoded.transformer, .int4)
+        XCTAssertEqual(decoded.textEncoder, .mlx4bit)
     }
 }
 
@@ -1346,15 +1530,23 @@ final class GradientCheckpointingConfigTests: XCTestCase {
 
 final class ValidationQuantizationTests: XCTestCase {
 
-    func testKlein9BRequiresHighQualityQuantization() {
-        // Klein 9B has no int8 variant, must use bf16 for inference
-        let balanced = Flux2QuantizationConfig.balanced
-        XCTAssertEqual(balanced.transformer, .qint8,
-                       "Balanced preset uses qint8 - but Klein 9B has no qint8 variant")
-
-        let highQuality = Flux2QuantizationConfig.highQuality
-        XCTAssertEqual(highQuality.transformer, .bf16,
-                       "High quality uses bf16 - required for Klein 9B inference")
+    func testKlein9BQuantizationOnTheFly() {
+        // Klein 9B has no pre-quantized variant — uses on-the-fly quantization
+        // All quantization levels should map to the bf16 download variant
+        XCTAssertEqual(
+            ModelRegistry.TransformerVariant.variant(for: .klein9B, quantization: .bf16),
+            .klein9B_bf16
+        )
+        XCTAssertEqual(
+            ModelRegistry.TransformerVariant.variant(for: .klein9B, quantization: .qint8),
+            .klein9B_bf16,
+            "Klein 9B qint8 should load bf16 and quantize on-the-fly"
+        )
+        XCTAssertEqual(
+            ModelRegistry.TransformerVariant.variant(for: .klein9B, quantization: .int4),
+            .klein9B_bf16,
+            "Klein 9B int4 should load bf16 and quantize on-the-fly"
+        )
     }
 
     func testKlein9BTransformerConfigMatchesDistilled() {
@@ -1375,5 +1567,93 @@ final class ValidationQuantizationTests: XCTestCase {
         XCTAssertGreaterThan(config.numLayers, klein4B.numLayers)
         XCTAssertGreaterThan(config.numSingleLayers, klein4B.numSingleLayers)
         XCTAssertLessThanOrEqual(config.numLayers, dev.numLayers)
+    }
+}
+
+// MARK: - Weight Conversion Tests
+
+final class WeightConversionTests: XCTestCase {
+
+    /// Validate that bf16→f16 direct conversion produces identical results to bf16→f32→f16
+    /// This is critical for the BFL weight loading optimization (item 2.1)
+    func testBF16ToF16DirectMatchesViaF32() {
+        // Create realistic weight-like values in float32, then convert to bf16
+        // Test various ranges: small, normal, large (within f16 range)
+        let testValues: [Float] = [
+            0.0, 1.0, -1.0,
+            0.001, -0.001,           // Small weights
+            0.01, -0.05, 0.1,       // Typical weight magnitudes
+            0.5, -0.5, 1.5, -2.0,   // Normal range
+            100.0, -100.0,           // Larger values
+            65504.0, -65504.0,       // f16 max representable
+            0.000061035,             // f16 min positive normal (~6.1e-5)
+        ]
+        let f32Array = MLXArray(testValues)
+        let bf16Array = f32Array.asType(.bfloat16)
+
+        // Path A: bf16 → f16 direct (new optimized path)
+        let directF16 = bf16Array.asType(.float16)
+
+        // Path B: bf16 → f32 → f16 (old path)
+        let viaF32 = bf16Array.asType(.float32).asType(.float16)
+
+        // Both should produce identical results
+        eval(directF16, viaF32)
+
+        let directValues = directF16.asType(.float32)
+        let viaF32Values = viaF32.asType(.float32)
+
+        // Compare element by element
+        for i in 0..<testValues.count {
+            let d = directValues[i].item(Float.self)
+            let v = viaF32Values[i].item(Float.self)
+            XCTAssertEqual(d, v, "Mismatch at index \(i) for input \(testValues[i]): direct=\(d), viaF32=\(v)")
+        }
+    }
+
+    /// Test bf16→f16 with large random arrays (simulating real weight tensors)
+    func testBF16ToF16DirectLargeArray() {
+        // Simulate a realistic weight matrix (e.g., 3072x3072 linear layer)
+        let weights = MLXRandom.normal([3072, 3072]).asType(.bfloat16)
+
+        let directF16 = weights.asType(.float16)
+        let viaF32 = weights.asType(.float32).asType(.float16)
+
+        eval(directF16, viaF32)
+
+        // Check that all values match exactly (bitwise identical)
+        let diff = MLX.abs(directF16.asType(.float32) - viaF32.asType(.float32))
+        let maxDiff = MLX.max(diff).item(Float.self)
+        XCTAssertEqual(maxDiff, 0.0, "Max difference between direct and viaF32 conversion: \(maxDiff)")
+
+        // Also verify no NaN or inf introduced
+        let hasNaN = any(isNaN(directF16)).item(Bool.self)
+        let hasInf = any(MLX.abs(directF16.asType(.float32)) .> 1e30).item(Bool.self)
+        XCTAssertFalse(hasNaN, "Direct bf16→f16 conversion should not introduce NaN")
+        XCTAssertFalse(hasInf, "Normal weight values should not overflow to inf")
+    }
+
+    /// Test that values outside f16 range are handled consistently
+    func testBF16ToF16OverflowConsistency() {
+        // bf16 can represent values up to ~3.4e38, but f16 max is ~65504
+        // Both conversion paths should handle overflow identically
+        let largeValues = MLXArray([Float(70000.0), Float(-70000.0), Float(100000.0)])
+            .asType(.bfloat16)
+
+        let directF16 = largeValues.asType(.float16)
+        let viaF32 = largeValues.asType(.float32).asType(.float16)
+
+        eval(directF16, viaF32)
+
+        // Both should produce the same result (likely inf)
+        let directF32 = directF16.asType(.float32)
+        let viaF32F32 = viaF32.asType(.float32)
+
+        for i in 0..<3 {
+            let d = directF32[i].item(Float.self)
+            let v = viaF32F32[i].item(Float.self)
+            // Both should be inf or the same clamped value
+            XCTAssertEqual(d, v, "Overflow handling mismatch at index \(i): direct=\(d), viaF32=\(v)")
+        }
     }
 }

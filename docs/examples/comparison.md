@@ -10,7 +10,7 @@ A side-by-side comparison of all Flux.2 model variants.
 | **Text Encoder** | Mistral Small 3.2 | Qwen3-4B | Qwen3-8B |
 | **Default Steps** | 50 | 4 (distilled) | 4 (distilled) |
 | **Default Guidance** | 4.0 | 1.0 | 1.0 |
-| **VRAM Usage** | ~60GB | ~5-8GB | ~20GB |
+| **VRAM Usage (qint8)** | ~33GB | ~4GB | ~9GB |
 | **License** | Non-commercial | Apache 2.0 | Non-commercial |
 | **1024x1024 Time** | ~35 min | ~26s | ~56s |
 
@@ -22,7 +22,7 @@ A side-by-side comparison of all Flux.2 model variants.
 - **Maximum quality** is required
 - Generating images for **professional** or **artistic** purposes
 - You need **fine-grained control** over the generation process
-- Memory is not a constraint (~64GB+ RAM recommended)
+- Memory is not a constraint (~33GB+ RAM recommended with qint8, ~17GB+ with int4)
 - You can wait for longer generation times
 
 ### Choose Flux.2 Klein 4B when:
@@ -42,13 +42,13 @@ A side-by-side comparison of all Flux.2 model variants.
 
 ## Performance Comparison
 
-| Metric | Flux.2 Dev (qint8) | Flux.2 Dev (bf16) | Klein 4B (bf16) | Klein 9B (bf16) |
+| Metric | Flux.2 Dev (qint8) | Flux.2 Dev (bf16) | Klein 4B (qint8) | Klein 9B (qint8) |
 |--------|-------------------|-------------------|-----------------|-----------------|
-| **Total Time (1024x1024)** | ~30 min | ~30 min | ~26s | ~56s |
-| **Steps** | 28-50 | 28-50 | 4 | 4 |
-| **Per-Step Time** | ~1 min | ~1 min | ~5.0s | ~12.1s |
-| **Memory Usage** | ~60GB | ~90GB | ~5.6GB | ~20GB |
-| **Speedup vs Dev** | 1x | 1x | **~70x** | **~32x** |
+| **Total Time (1024x1024)** | ~30 min | ~30 min | ~28s | ~60s |
+| **Steps** | 28 | 28 | 4 | 4 |
+| **Per-Step Time** | ~1 min | ~1 min | ~5.5s | ~13s |
+| **Transformer Memory** | ~33GB | ~62GB | ~3.9GB | ~9.2GB |
+| **Speedup vs Dev** | 1x | 1x | **~64x** | **~30x** |
 
 ---
 
@@ -110,27 +110,31 @@ All images generated at 1024×1024 with seed=42 for direct comparison.
 
 ## Quantization Options
 
-### Flux.2 Dev
+### Flux.2 Dev (Transformer memory)
 
 | Quantization | Memory | Quality |
 |--------------|--------|---------|
-| bf16 | ~64GB | Best (requires 96GB+ RAM) |
-| qint8 | ~32GB | Excellent (recommended) |
+| bf16 | ~61.5GB | Best (requires 96GB+ RAM) |
+| qint8 | ~32.7GB | Excellent (recommended) |
+| int4 | ~17.3GB | Very Good (32GB+ Macs) |
 
-### Flux.2 Klein 4B
+### Flux.2 Klein 4B (Transformer memory)
 
-| Quantization | Memory | Speed | Quality |
-|--------------|--------|-------|---------|
-| bf16 | ~5.6GB | ~26s | Best |
-| qint8 | ~3.8GB | ~27s | Excellent |
+| Quantization | Memory | Speed (4 steps) | Quality |
+|--------------|--------|-----------------|---------|
+| bf16 | ~7.4GB | ~26s | Best |
+| qint8 | ~3.9GB | ~28s | Excellent |
+| int4 | ~2.1GB | ~30s | Very Good |
 
-### Flux.2 Klein 9B
+### Flux.2 Klein 9B (Transformer memory)
 
-| Quantization | Memory | Speed | Quality |
-|--------------|--------|-------|---------|
-| bf16 | ~20GB | ~56s | Best |
+| Quantization | Memory | Speed (4 steps) | Quality |
+|--------------|--------|-----------------|---------|
+| bf16 | ~17.3GB | ~55s | Best |
+| qint8 | ~9.2GB | ~60s | Excellent |
+| int4 | ~4.9GB | ~65s | Very Good |
 
-> **Note:** Klein 9B only has bf16 available. No quantized variants exist yet.
+> All models support on-the-fly quantization. See [benchmark results](quantization-benchmark/) for detailed measurements.
 
 ---
 
@@ -146,7 +150,7 @@ flux2 t2i "a beaver building a dam" \
   --model dev \
   --steps 28 \
   -o beaver_dev.png
-# Time: ~20-35 min, Memory: ~60GB
+# Time: ~30 min, Transformer: ~33GB (qint8)
 ```
 
 #### Klein 4B
@@ -191,11 +195,11 @@ All models support I2I with VAE-encoded reference images and unique T-coordinate
 
 ### Reference Image Limits
 
-| Model | VRAM | Max Images | Max Tokens |
-|-------|------|------------|------------|
-| Klein 4B | ~8GB | 2-3 | ~16k |
-| Klein 9B | ~20GB | 3-5 | ~25k |
-| Dev | ~60GB | 5-10 | ~45k |
+| Model | Transformer (qint8) | Max Images | Max Tokens |
+|-------|---------------------|------------|------------|
+| Klein 4B | ~3.9GB | 2-3 | ~16k |
+| Klein 9B | ~9.2GB | 3-5 | ~25k |
+| Dev | ~32.7GB | 5-10 | ~45k |
 
 Each 1024×1024 reference image consumes ~4,096 tokens.
 

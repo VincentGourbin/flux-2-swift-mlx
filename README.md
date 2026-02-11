@@ -20,7 +20,7 @@ A native Swift implementation of [Flux.2](https://blackforestlabs.ai/) image gen
 - **Native Swift**: Pure Swift implementation, no Python dependencies at runtime
 - **MLX Acceleration**: Optimized for Apple Silicon (M1/M2/M3/M4) using MLX
 - **Multiple Models**: Dev (32B), Klein 4B, and Klein 9B variants
-- **Quantized Models**: Support for 8-bit quantized transformer (~32GB VRAM for Dev)
+- **Quantized Models**: On-the-fly quantization (qint8/int4) for all models — Dev fits in ~17GB at int4
 - **Text-to-Image**: Generate images from text prompts
 - **Image-to-Image**: Transform images with text prompts and configurable strength
 - **Multi-Image Conditioning**: Combine elements from up to 3 reference images
@@ -87,12 +87,12 @@ The models are downloaded automatically from HuggingFace on first run.
 
 **For Dev (32B):**
 - Text Encoder: Mistral Small 3.2 (~25GB 8-bit)
-- Transformer: Flux.2 Dev qint8 (~32GB)
+- Transformer: Flux.2 Dev (~33GB qint8, ~17GB int4)
 - VAE: Flux.2 VAE (~3GB)
 
 **For Klein 4B/9B:**
 - Text Encoder: Qwen3-4B or Qwen3-8B (~4-8GB 8-bit)
-- Transformer: Klein 4B (~8GB) or Klein 9B (~18GB)
+- Transformer: Klein 4B (~4-7GB) or Klein 9B (~5-17GB depending on quantization)
 - VAE: Flux.2 VAE (~3GB)
 
 Models are cached in `~/Library/Caches/models/`.

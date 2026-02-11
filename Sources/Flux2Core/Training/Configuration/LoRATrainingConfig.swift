@@ -302,6 +302,9 @@ public struct LoRATrainingConfig: Codable, Sendable {
     /// Offload text encoder to CPU after encoding
     public var cpuOffloadTextEncoder: Bool
     
+    /// Use MLX compile() to fuse GPU kernels (experimental, incompatible with checkpointing/DOP)
+    public var compileTraining: Bool
+
     /// Mixed precision training
     public var mixedPrecision: Bool
     
@@ -478,6 +481,7 @@ public struct LoRATrainingConfig: Codable, Sendable {
         cacheLatents: Bool = true,
         cacheTextEmbeddings: Bool = true,
         cpuOffloadTextEncoder: Bool = false,
+        compileTraining: Bool = false,
         mixedPrecision: Bool = true,
         // Output
         outputPath: URL,
@@ -554,6 +558,7 @@ public struct LoRATrainingConfig: Codable, Sendable {
         self.cacheLatents = cacheLatents
         self.cacheTextEmbeddings = cacheTextEmbeddings
         self.cpuOffloadTextEncoder = cpuOffloadTextEncoder
+        self.compileTraining = compileTraining
         self.mixedPrecision = mixedPrecision
         self.outputPath = outputPath
         self.saveEveryNSteps = saveEveryNSteps

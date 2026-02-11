@@ -297,22 +297,24 @@ public class Flux2Pipeline: @unchecked Sendable {
         memoryManager.fullCleanup()
         Flux2Debug.log("Raw weights released from memory")
 
-        // Quantize transformer to native MLX QuantizedLinear if qint8
-        // The quanto weights were dequantized to float16 during mapping (mapDiffusersTransformerWeights).
-        // Now we requantize into MLX's native QuantizedLinear format which:
-        // 1. Halves memory usage (~32GB instead of ~60GB for Dev)
-        // 2. Uses optimized quantizedMM() for faster inference on Apple Silicon
-        // 3. Enables efficient dequant→merge→requant for LoRA weight merging
-        // Note: This is a double quantization (quanto→float16→MLX qint8) but the
-        // precision loss is negligible for inference (<1% error typical for int8).
-        if quantization.transformer == .qint8 {
-            Flux2Debug.log("Quantizing transformer to native MLX QuantizedLinear (8-bit, groupSize=64)...")
+        // Quantize transformer to native MLX QuantizedLinear if requested
+        // This handles both:
+        // 1. Pre-quantized weights (quanto→float16→MLX qint8): negligible precision loss
+        // 2. On-the-fly quantization from bf16 (e.g. Klein 9B qint8, any model int4)
+        // The quantization uses MLX's native QuantizedLinear format which:
+        // - Reduces memory usage proportionally to bit width (8-bit: ~50%, 4-bit: ~75%)
+        // - Uses optimized quantizedMM() for faster inference on Apple Silicon
+        // - Enables efficient dequant→merge→requant for LoRA weight merging
+        if quantization.transformer != .bf16 {
+            let bits = quantization.transformer.bits
+            let groupSize = quantization.transformer.groupSize
+            Flux2Debug.log("Quantizing transformer on-the-fly to \(bits)-bit (groupSize=\(groupSize))...")
             memoryManager.logMemoryState()
-            quantize(model: transformer!, groupSize: 64, bits: 8)
+            quantize(model: transformer!, groupSize: groupSize, bits: bits)
             eval(transformer!.parameters())
             memoryManager.fullCleanup()
             memoryManager.logMemoryState()
-            Flux2Debug.log("Transformer quantized to QuantizedLinear — memory reduced ~2x")
+            Flux2Debug.log("Transformer quantized to QuantizedLinear (\(bits)-bit)")
         }
 
         // Merge LoRA weights if any are loaded

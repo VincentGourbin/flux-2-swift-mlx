@@ -591,6 +591,7 @@ struct TrainLoRA: AsyncParsableCommand {
         print("  Cache latents: \(config.cacheLatents ? "enabled" : "disabled")")
         print("  Cache text embeddings: \(config.cacheTextEmbeddings ? "enabled" : "disabled")")
         print("  CPU offload: \(config.cpuOffloadTextEncoder ? "enabled" : "disabled")")
+        print("  Compile training: \(config.compileTraining ? "enabled (experimental)" : "disabled")")
         print()
         print("Output: \(config.outputPath.path)")
         if config.saveEveryNSteps > 0 {
@@ -724,6 +725,7 @@ struct TrainLoRA: AsyncParsableCommand {
         }
         simpleConfig.gradientAccumulationSteps = config.gradientAccumulationSteps
         simpleConfig.gradientCheckpointing = config.gradientCheckpointing
+        simpleConfig.compileTraining = config.compileTraining
 
         // Learning curve visualization
         simpleConfig.generateLearningCurve = config.generateLearningCurve

@@ -2,23 +2,29 @@
   "url": "https://context7.com/vincentgourbin/flux-2-swift-mlx",
   "public_key": "pk_xdHpXwg2kiRkOGXCsa6V7",
   "projectTitle": "Flux.2 Swift MLX",
-  "description": "Native Swift implementation of Flux.2 image generation models (Dev 32B, Klein 4B/9B) running locally on Apple Silicon using MLX. Supports Text-to-Image, Image-to-Image with multi-image conditioning, prompt upsampling, and LoRA adapters.",
+  "description": "Native Swift implementation of Flux.2 image generation models (Dev 32B, Klein 4B/9B) running locally on Apple Silicon using MLX. Supports Text-to-Image, Image-to-Image with multi-image conditioning, prompt upsampling, LoRA adapter loading and training, on-the-fly quantization (bf16/qint8/int4), and VLM image interpretation.",
   "excludeFolders": [
     ".build",
     ".build-xcode",
     ".swiftpm",
     ".github",
-    "DerivedData"
+    "DerivedData",
+    "docs/plans"
   ],
   "excludeFiles": [
     "CHANGELOG.md",
     "Package.resolved"
   ],
   "rules": [
-    "Use Klein 4B model for fast generation (~26s) with 4 steps and guidance 1.0",
-    "Use Dev model for maximum quality with 28 steps and guidance 4.0 (requires 64GB+ RAM)",
-    "Always load models with Flux2Pipeline - it handles two-phase memory management automatically",
-    "For I2I generation, provide 1-3 reference images with strength 0.0-1.0",
-    "Use generateWithResult() to get both the image and the upsampled prompt"
+    "Use Klein 4B model for fast generation (~28s at qint8) with 4 steps and guidance 1.0 — only model with Apache 2.0 commercial license",
+    "Use Klein 9B for better quality (~60s at qint8) with 4 steps and guidance 1.0",
+    "Use Dev model for maximum quality with 28 steps and guidance 4.0 (requires 64GB+ RAM at qint8)",
+    "Always initialize with Flux2Pipeline(model:quantization:) and call loadModels() before generation",
+    "Use on-the-fly quantization to reduce transformer memory: .qint8 (-47%) or .int4 (-72%) vs bf16",
+    "For I2I generation, provide 1-6 reference images with strength 0.0-1.0",
+    "Use generateTextToImageWithResult() to get both the image and the upsampled prompt",
+    "Load LoRA adapters with LoRAConfig(filePath:scale:) — scale typically 0.5-1.5",
+    "For LoRA training, enable gradient_checkpointing: true to halve activation memory",
+    "Build with Xcode (not swift build) for Metal GPU support"
   ]
 }

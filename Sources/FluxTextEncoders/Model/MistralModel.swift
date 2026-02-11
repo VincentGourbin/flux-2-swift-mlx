@@ -117,6 +117,10 @@ public class MistralModel: Module {
         // Pass through layers
         for (i, layer) in layers.enumerated() {
             if outputHiddenStates {
+                // CRITICAL: Evaluate before storing to prevent computation graph retention
+                // Without this, each lazy hiddenStates retains the full computation graph,
+                // accumulating N graphs in memory (N = number of layers)
+                eval(hiddenStates)
                 allHiddenStates?.append(hiddenStates)
             }
 
@@ -136,6 +140,7 @@ public class MistralModel: Module {
         hiddenStates = norm(hiddenStates)
 
         if outputHiddenStates {
+            eval(hiddenStates)  // Evaluate before storing
             allHiddenStates?.append(hiddenStates)
         }
 

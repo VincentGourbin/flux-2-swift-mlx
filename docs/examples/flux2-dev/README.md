@@ -10,7 +10,7 @@ Examples generated with **Flux.2 Dev** (32B parameters) on Mac with MLX.
 | Default Steps | 50 |
 | Default Guidance | 4.0 |
 | Text Encoder | Mistral Small 3.2 |
-| VRAM Usage | ~60GB |
+| Transformer (qint8) | ~33GB |
 | License | Non-commercial |
 | 1024×1024 Time | ~35 min |
 
@@ -305,4 +305,4 @@ flux2 i2i "Modify the cat on image 1 to wear the hat from image 2 and the jacket
 - **Chip:** Apple M3 Max
 - **RAM:** 96 GB Unified Memory
 - **macOS:** Tahoe 26.2
-- **Quantization:** 8-bit text encoder + qint8 transformer (~60GB peak)
+- **Quantization:** 8-bit text encoder + qint8 transformer (~33GB transformer, ~57GB peak)

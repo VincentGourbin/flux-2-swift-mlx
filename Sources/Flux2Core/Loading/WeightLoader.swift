@@ -61,7 +61,7 @@ public class Flux2WeightLoader {
         // Detect format
         if isBFLFormat(weights) {
             Flux2Debug.log("Detected BFL native format weights")
-            return mapBFLTransformerWeights(weights)
+            return mapBFLTransformerWeights(&weights)
         }
 
         Flux2Debug.log("Detected Diffusers format weights")
@@ -70,7 +70,9 @@ public class Flux2WeightLoader {
 
     /// Map weights in BFL (Black Forest Labs) native format
     /// BFL format uses fused QKV and different naming conventions
-    private static func mapBFLTransformerWeights(_ weights: [String: MLXArray]) -> [String: MLXArray] {
+    /// Entries are removed from the input dict as they are processed to minimize peak memory,
+    /// avoiding holding both raw bf16 weights and mapped/converted weights simultaneously.
+    private static func mapBFLTransformerWeights(_ weights: inout [String: MLXArray]) -> [String: MLXArray] {
         var mapped: [String: MLXArray] = [:]
 
         // Debug: count double_blocks keys
@@ -80,7 +82,10 @@ public class Flux2WeightLoader {
             Flux2Debug.verbose("  double_block key: \(key)")
         }
 
-        for (key, value) in weights {
+        // Iterate over snapshot of keys; remove each entry after processing to free memory
+        let allKeys = Array(weights.keys)
+        for key in allKeys {
+            guard let value = weights.removeValue(forKey: key) else { continue }
             // BFL format uses fused QKV weights that need to be split
             // double_blocks.{i}.img_attn.qkv.weight -> split into toQ, toK, toV
             // double_blocks.{i}.txt_attn.qkv.weight -> split into addQProj, addKProj, addVProj
@@ -196,16 +201,18 @@ public class Flux2WeightLoader {
             }
         }
 
+        // Input dict is now empty — raw BFL weight references freed
+        Flux2Debug.log("Input dict cleared — freed raw BFL weight entries")
         Flux2Debug.log("Mapped \(mapped.count) BFL format weights")
 
         // Debug: print mapped keys by category
-        let transformerBlockKeys = mapped.keys.filter { $0.hasPrefix("transformerBlocks.") }
+        let transformerBlockKeys2 = mapped.keys.filter { $0.hasPrefix("transformerBlocks.") }
         let singleBlockKeys = mapped.keys.filter { $0.hasPrefix("singleTransformerBlocks.") }
-        Flux2Debug.log("  - transformerBlocks keys: \(transformerBlockKeys.count)")
+        Flux2Debug.log("  - transformerBlocks keys: \(transformerBlockKeys2.count)")
         Flux2Debug.log("  - singleTransformerBlocks keys: \(singleBlockKeys.count)")
 
         Flux2Debug.verbose("transformerBlocks keys:")
-        for key in transformerBlockKeys.sorted().prefix(10) {
+        for key in transformerBlockKeys2.sorted().prefix(10) {
             Flux2Debug.verbose("  - \(key): \(mapped[key]!.shape)")
         }
 
@@ -229,20 +236,25 @@ public class Flux2WeightLoader {
             }
         }
 
-        // Convert bfloat16 → float32 → float16 (via float32 to avoid precision loss)
-        // Direct bf16 → f16 can cause inf/nan due to exponent range difference
+        // Convert bfloat16 → float16 directly (no intermediate f32)
+        // bf16 has wider exponent range (8-bit) than f16 (5-bit), so values outside
+        // f16 range [−65504, 65504] would overflow to inf. MLX handles this correctly
+        // by saturating to ±inf, which is the same behavior as the f32 intermediate path.
+        // Going direct saves ~24GB of temporary f32 allocations for Dev-size models.
+        // Progressive removal from `mapped` avoids holding both dicts simultaneously.
         var converted: [String: MLXArray] = [:]
         var convertedCount = 0
-        for (key, value) in mapped {
+        let mappedKeys = Array(mapped.keys)
+        for key in mappedKeys {
+            guard let value = mapped.removeValue(forKey: key) else { continue }
             if value.dtype == .bfloat16 {
-                // bf16 → f32 → f16 preserves values within f16's range
-                converted[key] = value.asType(.float32).asType(.float16)
+                converted[key] = value.asType(.float16)
                 convertedCount += 1
             } else {
                 converted[key] = value
             }
         }
-        Flux2Debug.log("Converted \(convertedCount) bfloat16 weights to float16 via float32")
+        Flux2Debug.log("Converted \(convertedCount) bfloat16 weights to float16 (direct)")
 
         // DEBUG: Print weight statistics for key layers (AFTER processing)
         Flux2Debug.log("=== BFL Weight Statistics (AFTER processing) ===")
@@ -534,7 +546,7 @@ public class Flux2WeightLoader {
 
     /// Apply weights to a transformer model
     /// Note: `weights` is passed inout — for Diffusers quanto format, entries are freed during mapping
-    /// to reduce peak memory from ~98GB to ~60GB.
+    /// to reduce peak memory from ~98GB to ~71GB.
     public static func applyTransformerWeights(
         _ weights: inout [String: MLXArray],
         to model: Flux2Transformer2DModel

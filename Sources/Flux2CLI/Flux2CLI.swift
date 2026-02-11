@@ -61,7 +61,7 @@ struct TextToImage: AsyncParsableCommand {
     @Option(name: .long, help: "Text encoder quantization: bf16, 8bit, 6bit, 4bit")
     var textQuant: String = "8bit"
 
-    @Option(name: .long, help: "Transformer quantization: bf16, qint8")
+    @Option(name: .long, help: "Transformer quantization: bf16, qint8, int4")
     var transformerQuant: String = "qint8"
 
     @Flag(name: .long, help: "Enable debug logs (verbose output)")
@@ -170,7 +170,7 @@ struct TextToImage: AsyncParsableCommand {
         }
 
         guard let transformerQuantization = TransformerQuantization(rawValue: transformerQuant) else {
-            throw ValidationError("Invalid transformer quantization: \(transformerQuant). Use bf16 or qint8")
+            throw ValidationError("Invalid transformer quantization: \(transformerQuant). Use bf16, qint8, or int4")
         }
 
         let quantConfig = Flux2QuantizationConfig(
@@ -397,7 +397,7 @@ struct ImageToImage: AsyncParsableCommand {
     @Option(name: .long, help: "Text encoder quantization: bf16, 8bit, 6bit, 4bit")
     var textQuant: String = "8bit"
 
-    @Option(name: .long, help: "Transformer quantization: bf16, qint8")
+    @Option(name: .long, help: "Transformer quantization: bf16, qint8, int4")
     var transformerQuant: String = "qint8"
 
     @Option(name: .long, help: "LoRA adapter file (.safetensors) for style or capability adaptation")
@@ -536,7 +536,7 @@ struct ImageToImage: AsyncParsableCommand {
         }
 
         guard let transformerQuantization = TransformerQuantization(rawValue: transformerQuant) else {
-            throw ValidationError("Invalid transformer quantization: \(transformerQuant). Use: bf16 or qint8")
+            throw ValidationError("Invalid transformer quantization: \(transformerQuant). Use: bf16, qint8, or int4")
         }
 
         let quantConfig = Flux2QuantizationConfig(
@@ -675,7 +675,7 @@ struct Download: AsyncParsableCommand {
     @Option(name: .long, help: "Model to download: dev, klein-4b, klein-9b")
     var model: String = "dev"
 
-    @Option(name: .long, help: "Transformer quantization: bf16, qint8")
+    @Option(name: .long, help: "Transformer quantization: bf16, qint8, int4")
     var transformerQuant: String = "qint8"
 
     @Flag(name: .long, help: "Download all model variants")
@@ -728,8 +728,9 @@ struct Download: AsyncParsableCommand {
             switch transformerQuant {
             case "bf16": quant = .bf16
             case "qint8", "8bit": quant = .qint8
+            case "int4", "4bit": quant = .int4
             default:
-                throw ValidationError("Invalid transformer quantization: \(transformerQuant). Use bf16 or qint8")
+                throw ValidationError("Invalid transformer quantization: \(transformerQuant). Use bf16, qint8, or int4")
             }
 
             let variant = ModelRegistry.TransformerVariant.variant(for: modelVariant, quantization: quant)
@@ -792,9 +793,10 @@ struct Info: ParsableCommand {
 
         print("Available Quantization Presets:")
         print("  High Quality (~90GB): bf16 text + bf16 transformer")
-        print("  Balanced (~60GB): 8bit text + qint8 transformer")
-        print("  Memory Efficient (~50GB): 4bit text + qint8 transformer")
-        print("  Minimal (~40GB): 4bit text + qint8 transformer")
+        print("  Balanced (~57GB): 8bit text + qint8 transformer")
+        print("  Memory Efficient (~47GB): 4bit text + qint8 transformer")
+        print("  Minimal (~47GB): 4bit text + qint8 transformer")
+        print("  Ultra-Minimal (~30GB): 4bit text + int4 transformer")
         print()
 
         print("Model Status:")

@@ -188,17 +188,22 @@ public enum ModelRegistry {
         }
 
         /// Get the appropriate variant for a model type and quantization
+        ///
+        /// For quantization levels without a pre-quantized variant (e.g. Klein 9B qint8, any model int4),
+        /// this returns the bf16 variant. The pipeline will then quantize on-the-fly after loading.
         public static func variant(for model: Flux2Model, quantization: TransformerQuantization) -> TransformerVariant {
             switch (model, quantization) {
             case (.dev, .bf16): return .bf16
             case (.dev, .qint8): return .qint8
+            case (.dev, .int4): return .bf16  // Load bf16, quantize on-the-fly
             case (.klein4B, .bf16): return .klein4B_bf16
             case (.klein4B, .qint8): return .klein4B_8bit
+            case (.klein4B, .int4): return .klein4B_bf16  // Load bf16, quantize on-the-fly
             // Base models only available in bf16
             case (.klein4BBase, _): return .klein4B_base_bf16
             case (.klein9BBase, _): return .klein9B_base_bf16
-            // Klein 9B only has bf16 available - fallback to bf16 for any quantization request
-            case (.klein9B, .bf16), (.klein9B, .qint8): return .klein9B_bf16
+            // Klein 9B only has bf16 — quantize on-the-fly for qint8/int4
+            case (.klein9B, _): return .klein9B_bf16
             }
         }
 
@@ -441,7 +446,9 @@ extension ModelRegistry {
     /// Recommended configuration for given RAM amount
     public static func recommendedConfig(forRAMGB ram: Int) -> Flux2QuantizationConfig {
         switch ram {
-        case 0..<48:
+        case 0..<32:
+            return .ultraMinimal  // ~30GB (4-bit transformer)
+        case 32..<48:
             return .minimal       // ~35GB
         case 48..<64:
             return .memoryEfficient  // ~50GB

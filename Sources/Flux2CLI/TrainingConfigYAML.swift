@@ -138,6 +138,7 @@ struct MemoryConfig: Codable {
     var cacheLatents: Bool?
     var cacheTextEmbeddings: Bool?
     var cpuOffload: Bool?
+    var compileTraining: Bool?
     var bucketing: BucketingConfig?
 
     enum CodingKeys: String, CodingKey {
@@ -145,6 +146,7 @@ struct MemoryConfig: Codable {
         case cacheLatents = "cache_latents"
         case cacheTextEmbeddings = "cache_text_embeddings"
         case cpuOffload = "cpu_offload"
+        case compileTraining = "compile_training"
         case bucketing
     }
 }
@@ -367,6 +369,7 @@ struct YAMLConfigParser {
         let cacheLatents = yaml.memory?.cacheLatents ?? false
         let cacheTextEmbeddings = yaml.memory?.cacheTextEmbeddings ?? false
         let cpuOffload = yaml.memory?.cpuOffload ?? false
+        let compileTraining = yaml.memory?.compileTraining ?? false
 
         // Bucketing
         let enableBucketing = yaml.memory?.bucketing?.enabled ?? false
@@ -485,6 +488,7 @@ struct YAMLConfigParser {
             cacheLatents: cacheLatents,
             cacheTextEmbeddings: cacheTextEmbeddings,
             cpuOffloadTextEncoder: cpuOffload,
+            compileTraining: compileTraining,
             mixedPrecision: true,
             // Output
             outputPath: outputURL,

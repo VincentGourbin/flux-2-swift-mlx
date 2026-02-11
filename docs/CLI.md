@@ -119,16 +119,17 @@ flux2 t2i "a futuristic city with flying cars and neon lights" \
   -o city.png
 ```
 
-> **Note:** Klein 4B uses ~13GB VRAM (vs ~60GB for Dev) and generates images in ~33s at 1024×1024 (vs ~35min for Dev).
+> **Note:** Klein 4B uses ~8GB VRAM in bf16 (vs ~62GB for Dev) and generates images in ~26s at 1024×1024 (vs ~30min for Dev).
 
 ### Klein 4B Quantization Options
 
 Klein 4B supports both full precision (bf16) and quantized (qint8) modes:
 
-| Quantization | Memory | Speed (4 steps) | Quality |
-|--------------|--------|-----------------|---------|
-| `bf16` | ~8GB | ~26s | Best |
-| `qint8` | ~5GB | ~27s | Excellent |
+| Quantization | Transformer Memory | Speed (4 steps) | Quality |
+|--------------|-------------------|-----------------|---------|
+| `bf16` | ~7.4GB | ~26s | Best |
+| `qint8` | ~3.9GB | ~28s | Excellent |
+| `int4` | ~2.1GB | ~30s | Very Good |
 
 **Full precision (bf16):**
 ```bash
@@ -164,13 +165,13 @@ flux2 t2i "a beaver building a dam" --model klein-9b
 - Non-commercial projects where quality matters
 - When you have ~32GB+ RAM available
 
-| Model | Time (1024x1024) | Memory | Quality |
-|-------|------------------|--------|---------|
-| Klein 4B | ~26s | ~5-8GB | Good |
-| **Klein 9B** | **~56s** | **~20GB** | **Better** |
-| Dev | ~35min | ~60GB | Best |
+| Model | Time (1024x1024) | Transformer Memory (qint8) | Quality |
+|-------|------------------|---------------------------|---------|
+| Klein 4B | ~28s | ~3.9GB | Good |
+| **Klein 9B** | **~60s** | **~9.2GB** | **Better** |
+| Dev | ~30min | ~32.7GB | Best |
 
-> **Note:** Klein 9B only has bf16 available. No quantized (qint8) variant exists yet. The text encoder uses Qwen3-8B (8bit) which provides excellent quality.
+> **Note:** Klein 9B supports on-the-fly quantization to qint8 and int4 (no pre-quantized variant needed). The text encoder uses Qwen3-8B (8bit).
 
 ---
 
@@ -456,9 +457,10 @@ System Information:
 
 Available Quantization Presets:
   High Quality (~90GB): bf16 text + bf16 transformer
-  Balanced (~60GB): 8bit text + qint8 transformer
-  Memory Efficient (~50GB): 4bit text + qint8 transformer
-  Minimal (~40GB): 4bit text + qint8 transformer
+  Balanced (~57GB): 8bit text + qint8 transformer
+  Memory Efficient (~47GB): 4bit text + qint8 transformer
+  Minimal (~47GB): 4bit text + qint8 transformer
+  Ultra-Minimal (~30GB): 4bit text + int4 transformer
 
 Model Status:
   [✓] Flux.2 Transformer (qint8)
@@ -480,21 +482,23 @@ Model Status:
 | `6bit` | ~19GB | Very Good |
 | `4bit` | ~14GB | Good |
 
-### Transformer
+### Transformer (Dev 32B)
 
-| Option | Memory | Quality |
-|--------|--------|---------|
-| `bf16` | ~64GB | Best (requires 96GB+ RAM) |
-| `qint8` | ~32GB | Excellent (recommended) |
+| Option | Transformer Memory | Quality |
+|--------|-------------------|---------|
+| `bf16` | ~61.5GB | Best (requires 96GB+ RAM) |
+| `qint8` | ~32.7GB | Excellent (recommended) |
+| `int4` | ~17.3GB | Very Good (32GB+ Macs) |
 
 ### Recommended Configurations
 
-| Config | Text | Transformer | Total Memory | Use Case |
-|--------|------|-------------|--------------|----------|
+| Config | Text | Transformer | Estimated Memory | Use Case |
+|--------|------|-------------|-----------------|----------|
 | High Quality | bf16 | bf16 | ~90GB | Maximum quality (96GB+ RAM) |
-| **Balanced** | 8bit | qint8 | ~60GB | **Recommended** |
-| Memory Efficient | 4bit | qint8 | ~50GB | 64GB Macs |
-| Minimal | 4bit | qint8 | ~40GB | 48GB Macs |
+| **Balanced** | 8bit | qint8 | ~57GB | **Recommended** |
+| Memory Efficient | 4bit | qint8 | ~47GB | 64GB Macs |
+| Minimal | 4bit | qint8 | ~47GB | 48GB Macs |
+| Ultra-Minimal | 4bit | int4 | ~30GB | 32GB Macs |
 
 ---
 
