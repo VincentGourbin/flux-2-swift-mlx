@@ -8,7 +8,7 @@ A side-by-side comparison of all Flux.2 model variants.
 |---------|------------|----------|----------|
 | **Parameters** | 32B | 4B | 9B |
 | **Text Encoder** | Mistral Small 3.2 | Qwen3-4B | Qwen3-8B |
-| **Default Steps** | 50 | 4 (distilled) | 4 (distilled) |
+| **Default Steps** | 28 | 4 (distilled) | 4 (distilled) |
 | **Default Guidance** | 4.0 | 1.0 | 1.0 |
 | **VRAM Usage (qint8)** | ~33GB | ~4GB | ~9GB |
 | **License** | Non-commercial | Apache 2.0 | Non-commercial |

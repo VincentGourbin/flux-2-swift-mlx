@@ -45,12 +45,13 @@ A native Swift implementation of [Flux.2](https://blackforestlabs.ai/) image gen
 - Apple Silicon Mac (M1/M2/M3/M4)
 - Xcode 15.0 or later
 
-**Memory requirements by model:**
-| Model | Minimum RAM | Recommended |
-|-------|-------------|-------------|
-| Klein 4B | 16GB | 32GB+ |
-| Klein 9B | 32GB | 48GB+ |
-| Dev (32B) | 64GB | 96GB+ |
+**Memory requirements by model (with on-the-fly quantization):**
+
+| Model | int4 | qint8 | bf16 |
+|-------|------|-------|------|
+| Klein 4B | 16 GB | 16 GB | 24 GB |
+| Klein 9B | 16 GB | 24 GB | 32 GB |
+| Dev (32B) | 32 GB | 96 GB | 96 GB |
 
 ## Installation
 
@@ -169,36 +170,61 @@ Flux.2 Dev is a ~32B parameter rectified flow transformer:
 
 Text encoding uses [Mistral Small 3.2](https://github.com/VincentGourbin/mistral-small-3.2-swift-mlx) to generate 15360-dim embeddings.
 
-## Current Limitations
+## On-the-fly Quantization
 
-- **Dev Performance**: Generation takes ~35 min for 1024x1024 images (use Klein for faster results)
-- **Dev Memory**: Requires 64GB+ unified memory (Klein 4B works with 16GB)
-- **Klein 9B**: Only bf16 available (no quantized variants yet)
-- **LoRA Training**: Supported on Klein 4B, Klein 9B, and Dev. Enable `gradient_checkpointing: true` for larger models to reduce memory usage.
+All models support on-the-fly quantization to reduce transformer memory. No need to download separate variants — one bf16 model file serves all levels.
 
-## Roadmap
+| Model | bf16 | qint8 (-47%) | int4 (-72%) |
+|-------|------|-------------|-------------|
+| Klein 4B | 7.4 GB | 3.9 GB | 2.1 GB |
+| Klein 9B | 17.3 GB | 9.2 GB | 4.9 GB |
+| Dev (32B) | 61.5 GB | 32.7 GB | 17.3 GB |
 
-See [GitHub Issues](https://github.com/VincentGourbin/flux-2-swift-mlx/issues) for planned features:
+```bash
+# Klein 9B with qint8 (fits in 24 GB)
+flux2 t2i "a cat" --model klein-9b --transformer-quant qint8
 
-- [x] Text-to-Image generation
-- [x] Image-to-Image support (single image with strength)
-- [x] Multi-image conditioning (up to 3 reference images)
-- [x] Prompt upsampling
-- [x] Flux.2 Klein 4B (4B, ~26s, Apache 2.0)
-- [x] Flux.2 Klein 9B (9B, ~62s, non-commercial)
-- [x] LoRA adapter support
-- [x] LoRA training (Klein 4B, [see guide](docs/examples/TRAINING_GUIDE.md))
-- [x] Demo SwiftUI application (`Flux2App`)
-- [ ] Gradient checkpointing for larger model training ([#38](https://github.com/VincentGourbin/flux-2-swift-mlx/issues/38))
-- [ ] Performance optimizations
+# Dev with int4 (fits in 32 GB)
+flux2 t2i "a cat" --model dev --transformer-quant int4
+```
+
+See [Quantization Benchmark](docs/examples/quantization-benchmark/) for detailed measurements and visual comparison.
 
 ## Documentation
 
-- [CLI Documentation](docs/CLI.md) - Command-line interface usage
-- [LoRA Guide](docs/LoRA.md) - LoRA adapter configuration and usage
-- [LoRA Training Guide](docs/examples/TRAINING_GUIDE.md) - Train your own LoRAs
-- [Text Encoders](docs/TextEncoders.md) - FluxTextEncoders library API and CLI
-- [Flux2App Guide](docs/Flux2App.md) - Demo macOS application
+### Guides
+
+| Guide | Description |
+|-------|-------------|
+| [CLI Documentation](docs/CLI.md) | Command-line interface — all commands and options |
+| [LoRA Guide](docs/LoRA.md) | Loading and using LoRA adapters |
+| [LoRA Training Guide](docs/examples/TRAINING_GUIDE.md) | Training parameters, DOP, gradient checkpointing, YAML config |
+| [Text Encoders](docs/TextEncoders.md) | FluxTextEncoders library API and CLI |
+| [Flux2App Guide](docs/Flux2App.md) | Demo macOS application |
+
+### Examples and Benchmarks
+
+| Example | Description |
+|---------|-------------|
+| [Examples Gallery](docs/examples/) | Overview of all examples with sample outputs |
+| [Model Comparison](docs/examples/comparison.md) | Dev vs Klein 4B vs Klein 9B — performance, quality, when to use each |
+| [Quantization Benchmark](docs/examples/quantization-benchmark/) | Measured memory, speed, and visual quality for bf16/qint8/int4 |
+| [Flux.2 Dev Examples](docs/examples/flux2-dev/) | T2I, I2I, multi-image conditioning, VLM image interpretation |
+| [Flux.2 Klein 4B Examples](docs/examples/flux2-klein-4b/) | Fast T2I, multiple resolutions, quantization comparison |
+| [Flux.2 Klein 9B Examples](docs/examples/flux2-klein-9b/) | T2I, multiple resolutions, prompt upsampling |
+
+### LoRA Training Examples
+
+| Example | Model | Description |
+|---------|-------|-------------|
+| [Cat Toy (Subject LoRA)](examples/cat-toy/) | Klein 4B | Subject injection with DOP, trigger word `sks` |
+| [Tarot Style (Style LoRA)](docs/examples/tarot-style-lora/) | Klein 4B | Style transfer, trigger word `rwaite`, 32 training images |
+
+## Current Limitations
+
+- **Dev Performance**: Generation takes ~30 min for 1024x1024 images (use Klein for faster results)
+- **Dev Memory**: Requires 32GB+ with int4, 64GB+ with qint8 (Klein 4B works with 16GB)
+- **LoRA Training**: Supported on Klein 4B, Klein 9B, and Dev. Enable `gradient_checkpointing: true` for larger models to reduce memory by ~50%.
 
 ## Acknowledgments
 

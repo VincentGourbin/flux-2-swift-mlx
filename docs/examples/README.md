@@ -16,7 +16,7 @@ This directory contains example images and documentation for the Flux.2 Swift ML
 |---------|------------|----------|----------|
 | Parameters | 32B | 4B | 9B |
 | Text Encoder | Mistral Small 3.2 | Qwen3-4B | Qwen3-8B |
-| Default Steps | 50 | 4 (distilled) | 4 (distilled) |
+| Default Steps | 28 | 4 (distilled) | 4 (distilled) |
 | Transformer (qint8) | ~33GB | ~4GB | ~9GB |
 | 1024x1024 Time | ~35 min | ~26s | ~56s |
 | License | Non-commercial | **Apache 2.0** | Non-commercial |
