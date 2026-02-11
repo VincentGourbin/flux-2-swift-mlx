@@ -46,7 +46,7 @@ struct TextToImage: AsyncParsableCommand {
     @Option(name: .shortAndLong, help: "Image height")
     var height: Int = 1024
 
-    @Option(name: .shortAndLong, help: "Number of inference steps (default: 50 for Dev, 4 for Klein)")
+    @Option(name: .shortAndLong, help: "Number of inference steps (default: 28 for Dev, 4 for Klein)")
     var steps: Int?
 
     @Option(name: .shortAndLong, help: "Guidance scale (default: 4.0 for Dev, 1.0 for Klein)")
@@ -154,15 +154,9 @@ struct TextToImage: AsyncParsableCommand {
         // Check if LoRA has scheduler overrides
         let loraOverrides = loraConfig?.schedulerOverrides
 
-        switch modelVariant {
-        case .dev:
-            // Priority: CLI flag > LoRA override > model default
-            actualSteps = steps ?? loraOverrides?.numSteps ?? 50
-            actualGuidance = guidance ?? loraOverrides?.guidance ?? 4.0
-        case .klein4B, .klein4BBase, .klein9B, .klein9BBase:
-            actualSteps = steps ?? loraOverrides?.numSteps ?? 4
-            actualGuidance = guidance ?? loraOverrides?.guidance ?? 1.0
-        }
+        // Priority: CLI flag > LoRA override > model default
+        actualSteps = steps ?? loraOverrides?.numSteps ?? modelVariant.defaultSteps
+        actualGuidance = guidance ?? loraOverrides?.guidance ?? modelVariant.defaultGuidance
 
         // Parse quantization settings
         guard let textQuantization = MistralQuantization(rawValue: textQuant) else {
@@ -464,14 +458,9 @@ struct ImageToImage: AsyncParsableCommand {
         let actualGuidance: Float
         let loraOverrides = loraConfig?.schedulerOverrides
 
-        switch modelVariant {
-        case .dev:
-            actualSteps = steps ?? loraOverrides?.numSteps ?? 28
-            actualGuidance = guidance ?? loraOverrides?.guidance ?? 4.0
-        case .klein4B, .klein4BBase, .klein9B, .klein9BBase:
-            actualSteps = steps ?? loraOverrides?.numSteps ?? 4
-            actualGuidance = guidance ?? loraOverrides?.guidance ?? 1.0
-        }
+        // Priority: CLI flag > LoRA override > model default
+        actualSteps = steps ?? loraOverrides?.numSteps ?? modelVariant.defaultSteps
+        actualGuidance = guidance ?? loraOverrides?.guidance ?? modelVariant.defaultGuidance
 
         // Validate image count (model-specific limit)
         let maxImages = modelVariant.maxReferenceImages
