@@ -40,5 +40,9 @@ loras/
 .serena/
 
 # Local dev files (user-specific configs and scripts)
-groot_training_*.yaml
+groot_training*.yaml
 scripts/train_all_models.sh
+*.safetensors
+
+# Obsolete plans directory
+docs/plans/
