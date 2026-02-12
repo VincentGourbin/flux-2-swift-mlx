@@ -194,6 +194,16 @@ public struct LoRATrainingConfig: Codable, Sendable {
     /// Caption dropout rate for generalization (0.0-1.0, 0 = disabled)
     /// When triggered, replaces caption with empty string to help model generalize
     public var captionDropoutRate: Float
+
+    /// Path to control/source images for Image-to-Image training (nil = Text-to-Image mode)
+    /// Images must have matching filenames with the target dataset
+    public var controlPath: URL?
+
+    /// Probability of dropping control image during training (0.0-1.0, for T2I robustness)
+    public var controlDropout: Float
+
+    /// Whether this is an Image-to-Image training configuration
+    public var isImageToImage: Bool { controlPath != nil }
     
     // MARK: - LoRA Configuration
     
@@ -338,13 +348,15 @@ public struct LoRATrainingConfig: Codable, Sendable {
         public var is1024: Bool
         public var applyTrigger: Bool
         public var seed: UInt64?  // Optional per-prompt seed
+        public var referenceImage: URL?  // Reference image for I2I validation (nil = T2I)
 
-        public init(prompt: String, is512: Bool = true, is1024: Bool = false, applyTrigger: Bool = true, seed: UInt64? = nil) {
+        public init(prompt: String, is512: Bool = true, is1024: Bool = false, applyTrigger: Bool = true, seed: UInt64? = nil, referenceImage: URL? = nil) {
             self.prompt = prompt
             self.is512 = is512
             self.is1024 = is1024
             self.applyTrigger = applyTrigger
             self.seed = seed
+            self.referenceImage = referenceImage
         }
 
         enum CodingKeys: String, CodingKey {
@@ -353,6 +365,7 @@ public struct LoRATrainingConfig: Codable, Sendable {
             case is1024 = "is_1024"
             case applyTrigger = "apply_trigger"
             case seed
+            case referenceImage = "reference_image"
         }
     }
 
@@ -445,6 +458,9 @@ public struct LoRATrainingConfig: Codable, Sendable {
         bucketResolutions: [Int] = [512, 768, 1024],
         shuffleDataset: Bool = true,
         captionDropoutRate: Float = 0.0,
+        // Image-to-Image
+        controlPath: URL? = nil,
+        controlDropout: Float = 0.0,
         // LoRA
         rank: Int = 16,
         alpha: Float = 16.0,
@@ -528,6 +544,8 @@ public struct LoRATrainingConfig: Codable, Sendable {
         self.bucketResolutions = bucketResolutions
         self.shuffleDataset = shuffleDataset
         self.captionDropoutRate = captionDropoutRate
+        self.controlPath = controlPath
+        self.controlDropout = controlDropout
         self.rank = rank
         self.alpha = alpha
         self.dropout = dropout
@@ -715,6 +733,13 @@ public struct LoRATrainingConfig: Codable, Sendable {
             throw LoRATrainingConfigError.invalidImageSize(imageSize)
         }
         
+        // Check control path exists if specified (I2I mode)
+        if let controlPath = controlPath {
+            guard FileManager.default.fileExists(atPath: controlPath.path) else {
+                throw LoRATrainingConfigError.controlPathNotFound(controlPath)
+            }
+        }
+
         // Create output directory if it doesn't exist
         if !FileManager.default.fileExists(atPath: outputPath.path) {
             try FileManager.default.createDirectory(at: outputPath, withIntermediateDirectories: true)
@@ -750,7 +775,8 @@ public enum LoRATrainingConfigError: Error, LocalizedError {
     case invalidEpochs(Int)
     case invalidImageSize(Int)
     case outputDirectoryNotFound(URL)
-    
+    case controlPathNotFound(URL)
+
     public var errorDescription: String? {
         switch self {
         case .datasetNotFound(let url):
@@ -769,6 +795,8 @@ public enum LoRATrainingConfigError: Error, LocalizedError {
             return "Invalid image size \(size). Must be between 256 and 2048."
         case .outputDirectoryNotFound(let url):
             return "Output directory not found: \(url.path)"
+        case .controlPathNotFound(let url):
+            return "Control images directory not found: \(url.path)"
         }
     }
 }

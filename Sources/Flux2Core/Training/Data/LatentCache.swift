@@ -4,6 +4,9 @@
 import Foundation
 import MLX
 import MLXNN
+import CoreGraphics
+import ImageIO
+import AppKit
 
 /// Cached latent entry
 public struct CachedLatent: @unchecked Sendable {
@@ -352,6 +355,168 @@ public final class LatentCache: @unchecked Sendable {
         return result
     }
     
+    // MARK: - Control Image Pre-encoding (I2I)
+
+    /// Pre-encode control/source images for Image-to-Image training
+    /// Control images are matched by filename with target images and encoded with the same
+    /// Ostris normalization to ensure consistency in the forward pass.
+    /// - Parameters:
+    ///   - controlPath: Directory containing control images (filenames must match targets)
+    ///   - targetDataset: Training dataset (for filename matching and target dimensions)
+    ///   - vae: VAE encoder
+    ///   - progressCallback: Called with (current, total) progress
+    /// - Returns: Dictionary mapping filename to control latent
+    @discardableResult
+    public func preEncodeControlImages(
+        controlPath: URL,
+        targetDataset: TrainingDataset,
+        vae: AutoencoderKLFlux2,
+        progressCallback: ((Int, Int) -> Void)? = nil
+    ) async throws -> [String: MLXArray] {
+        // Create separate cache directory for control latents
+        let controlCacheDir = cacheDirectory.deletingLastPathComponent()
+            .appendingPathComponent(".control_latent_cache")
+        try FileManager.default.createDirectory(at: controlCacheDir, withIntermediateDirectories: true)
+
+        // Find matching control images by filename
+        let fm = FileManager.default
+        let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "webp", "bmp", "tiff"]
+
+        // Build index of control images by base filename
+        guard let controlFiles = try? fm.contentsOfDirectory(at: controlPath, includingPropertiesForKeys: nil) else {
+            Flux2Debug.log("[LatentCache] No files found in control path: \(controlPath.path)")
+            return [:]
+        }
+
+        var controlImagesByName: [String: URL] = [:]
+        for file in controlFiles {
+            let ext = file.pathExtension.lowercased()
+            if imageExtensions.contains(ext) {
+                let baseName = file.deletingPathExtension().lastPathComponent
+                controlImagesByName[baseName] = file
+            }
+        }
+
+        Flux2Debug.log("[LatentCache] Found \(controlImagesByName.count) control images in \(controlPath.path)")
+
+        // Match with target dataset and encode
+        var controlLatents: [String: MLXArray] = [:]
+        var matched = 0
+        var alreadyCached = 0
+
+        for sample in targetDataset.sampleMetadata {
+            let baseName = (sample.filename as NSString).deletingPathExtension
+            let targetDims = targetDataset.getTargetDimensions(for: sample.filename)
+
+            guard let controlImageURL = controlImagesByName[baseName] else {
+                continue
+            }
+            matched += 1
+
+            // Check cache first
+            let cacheFile = controlCacheDir.appendingPathComponent("\(baseName)_\(targetDims.width)x\(targetDims.height)_control.safetensors")
+            if fm.fileExists(atPath: cacheFile.path) {
+                let weights = try loadArrays(url: cacheFile)
+                if let latent = weights["latent"] {
+                    controlLatents[sample.filename] = latent
+                    alreadyCached += 1
+                    progressCallback?(matched, controlImagesByName.count)
+                    continue
+                }
+            }
+
+            // Load and resize control image to match target dimensions
+            guard let imageSource = CGImageSourceCreateWithURL(controlImageURL as CFURL, nil),
+                  let cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
+                Flux2Debug.log("[LatentCache] Failed to load control image: \(controlImageURL.lastPathComponent)")
+                continue
+            }
+
+            // Resize to target dimensions
+            let resizedImage = resizeImage(cgImage, width: targetDims.width, height: targetDims.height)
+
+            // Convert to MLXArray [H, W, C] in [0, 1]
+            let imageArray = imageToMLXArray(resizedImage, width: targetDims.width, height: targetDims.height)
+
+            // Normalize to [-1, 1] and encode
+            let normalizedImage = imageArray * 2.0 - 1.0
+            let batchedImage = normalizedImage.expandedDimensions(axis: 0)
+            let nchwImage = batchedImage.transposed(0, 3, 1, 2)  // NHWC -> NCHW
+
+            var latent = vae.encode(nchwImage)
+
+            // Apply Ostris normalization (same as targets for consistency)
+            latent = LatentUtils.normalizeFlux2Latents(latent)
+
+            let squeezedLatent = latent.squeezed(axis: 0)
+            eval(squeezedLatent)
+
+            // Cache to disk
+            try save(arrays: ["latent": squeezedLatent], url: cacheFile)
+
+            controlLatents[sample.filename] = squeezedLatent
+            progressCallback?(matched, controlImagesByName.count)
+
+            // Clear GPU memory
+            MLX.Memory.clearCache()
+        }
+
+        Flux2Debug.log("[LatentCache] Pre-encoded \(controlLatents.count) control latents (\(alreadyCached) from cache, \(matched - alreadyCached) new)")
+
+        if matched < targetDataset.count {
+            Flux2Debug.log("[LatentCache] Warning: Only \(matched)/\(targetDataset.count) targets have matching control images")
+        }
+
+        return controlLatents
+    }
+
+    /// Resize a CGImage to target dimensions
+    private func resizeImage(_ image: CGImage, width: Int, height: Int) -> CGImage {
+        let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()!
+    }
+
+    /// Convert CGImage to MLXArray [H, W, 3] in [0, 1]
+    private func imageToMLXArray(_ image: CGImage, width: Int, height: Int) -> MLXArray {
+        let bytesPerRow = width * 4
+        var pixelData = [UInt8](repeating: 0, count: height * bytesPerRow)
+
+        let context = CGContext(
+            data: &pixelData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        // Extract RGB (skip alpha), normalize to [0, 1]
+        var floatData = [Float](repeating: 0, count: height * width * 3)
+        for y in 0..<height {
+            for x in 0..<width {
+                let offset = y * bytesPerRow + x * 4
+                let outOffset = y * width * 3 + x * 3
+                floatData[outOffset + 0] = Float(pixelData[offset + 0]) / 255.0
+                floatData[outOffset + 1] = Float(pixelData[offset + 1]) / 255.0
+                floatData[outOffset + 2] = Float(pixelData[offset + 2]) / 255.0
+            }
+        }
+
+        return MLXArray(floatData).reshaped([height, width, 3])
+    }
+
     // MARK: - Statistics
     
     /// Get cache statistics

@@ -62,6 +62,8 @@ struct DatasetConfig: Codable {
     var triggerWord: String?
     var captionFormat: String?  // txt, jsonl
     var imageSize: Int?
+    var controlPath: String?        // Path to control/source images for I2I training
+    var controlDropout: Float?      // Probability of dropping control image (0.0-1.0)
 
     enum CodingKeys: String, CodingKey {
         case path
@@ -69,6 +71,8 @@ struct DatasetConfig: Codable {
         case triggerWord = "trigger_word"
         case captionFormat = "caption_format"
         case imageSize = "image_size"
+        case controlPath = "control_path"
+        case controlDropout = "control_dropout"
     }
 }
 
@@ -214,12 +218,16 @@ struct YAMLValidationPrompt: Codable {
     /// Optional seed for this specific prompt (overrides global seed)
     var seed: UInt64?
 
+    /// Reference image path for I2I validation (nil = T2I validation)
+    var referenceImage: String?
+
     enum CodingKeys: String, CodingKey {
         case prompt
         case is512 = "is_512"
         case is1024 = "is_1024"
         case applyTrigger = "apply_trigger"
         case seed
+        case referenceImage = "reference_image"
     }
 }
 
@@ -325,6 +333,10 @@ struct YAMLConfigParser {
         let validationDatasetURL = (cliOverrides.validationDataset ?? yaml.dataset?.validationPath)
             .map { URL(fileURLWithPath: $0) }
 
+        // Image-to-Image (control images)
+        let controlPathURL = yaml.dataset?.controlPath.map { URL(fileURLWithPath: $0) }
+        let controlDropout = yaml.dataset?.controlDropout ?? 0.0
+
         // LoRA
         let rank = cliOverrides.rank ?? yaml.lora?.rank ?? 16
         let alpha = cliOverrides.alpha ?? yaml.lora?.alpha ?? Float(rank)
@@ -404,7 +416,8 @@ struct YAMLConfigParser {
                     is512: yamlPrompt.is512 ?? true,
                     is1024: yamlPrompt.is1024 ?? false,
                     applyTrigger: yamlPrompt.applyTrigger ?? true,
-                    seed: yamlPrompt.seed
+                    seed: yamlPrompt.seed,
+                    referenceImage: yamlPrompt.referenceImage.map { URL(fileURLWithPath: $0) }
                 )
                 validationPrompts.append(promptConfig)
             }
@@ -452,6 +465,9 @@ struct YAMLConfigParser {
             bucketResolutions: bucketResolutions,
             shuffleDataset: true,
             captionDropoutRate: captionDropout,
+            // Image-to-Image
+            controlPath: controlPathURL,
+            controlDropout: controlDropout,
             // LoRA
             rank: rank,
             alpha: alpha,

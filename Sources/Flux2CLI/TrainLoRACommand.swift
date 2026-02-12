@@ -425,8 +425,20 @@ struct TrainLoRA: AsyncParsableCommand {
     // MARK: - Model Loading
 
     private func loadVAE() async throws -> AutoencoderKLFlux2 {
-        guard let modelPath = Flux2ModelDownloader.findModelPath(for: .vae(.standard)) else {
-            throw ValidationError("VAE not found. Run: flux2 download --vae")
+        let component = ModelRegistry.ModelComponent.vae(.standard)
+        var modelPath = Flux2ModelDownloader.findModelPath(for: component)
+
+        if modelPath == nil {
+            print("  VAE not found locally, downloading from HuggingFace...")
+            let hfToken = ProcessInfo.processInfo.environment["HF_TOKEN"]
+            let downloader = Flux2ModelDownloader(hfToken: hfToken)
+            modelPath = try await downloader.download(component) { progress, message in
+                print("  Download: \(Int(progress * 100))% - \(message)")
+            }
+        }
+
+        guard let modelPath = modelPath else {
+            throw ValidationError("Failed to download VAE")
         }
 
         let vaePath = modelPath.appendingPathComponent("vae")
@@ -544,6 +556,12 @@ struct TrainLoRA: AsyncParsableCommand {
             print("  Dropout: \(config.dropout)")
         }
         print()
+        if config.isImageToImage {
+            print("Mode: Image-to-Image")
+            print("  Control path: \(config.controlPath!.path)")
+            print("  Control dropout: \(Int(config.controlDropout * 100))%")
+            print()
+        }
         print("Image Processing:")
         if config.enableBucketing {
             print("  Bucketing: enabled (resolutions: \(config.bucketResolutions.map { String($0) }.joined(separator: ", ")))")
@@ -704,7 +722,8 @@ struct TrainLoRA: AsyncParsableCommand {
                 is512: loraPrompt.is512,
                 is1024: loraPrompt.is1024,
                 applyTrigger: loraPrompt.applyTrigger,
-                seed: loraPrompt.seed
+                seed: loraPrompt.seed,
+                referenceImage: loraPrompt.referenceImage
             )
         }
         simpleConfig.validationEveryNSteps = config.validationEveryNSteps
@@ -726,6 +745,9 @@ struct TrainLoRA: AsyncParsableCommand {
         simpleConfig.gradientAccumulationSteps = config.gradientAccumulationSteps
         simpleConfig.gradientCheckpointing = config.gradientCheckpointing
         simpleConfig.compileTraining = config.compileTraining
+
+        // Image-to-Image settings
+        simpleConfig.controlDropout = config.controlDropout
 
         // Learning curve visualization
         simpleConfig.generateLearningCurve = config.generateLearningCurve
@@ -775,20 +797,44 @@ struct TrainLoRA: AsyncParsableCommand {
             print("  Encoding: \(progress)/\(total)")
         }
 
-        // Collect cached latents
+        // Pre-cache control latents for I2I mode
+        var controlLatentsByFilename: [String: MLXArray] = [:]
+        if let controlPath = config.controlPath {
+            print()
+            print("Pre-caching control latents (I2I mode)...")
+            controlLatentsByFilename = try await latentCache.preEncodeControlImages(
+                controlPath: controlPath,
+                targetDataset: dataset,
+                vae: vae
+            ) { progress, total in
+                print("  Encoding controls: \(progress)/\(total)")
+            }
+            print("  Cached \(controlLatentsByFilename.count) control latents ✓")
+        }
+
+        // Collect cached latents (with control latents attached for I2I)
         var cachedLatents: [CachedLatentEntry] = []
         for sample in dataset.sampleMetadata {
             let dims = dataset.getTargetDimensions(for: sample.filename)
             if let latent = try latentCache.getLatent(for: sample.filename, width: dims.width, height: dims.height) {
+                let controlLatent = controlLatentsByFilename[sample.filename]
                 cachedLatents.append(CachedLatentEntry(
                     filename: sample.filename,
                     latent: latent,
                     width: dims.width,
-                    height: dims.height
+                    height: dims.height,
+                    controlLatent: controlLatent
                 ))
             }
         }
         print("  Cached \(cachedLatents.count) latents ✓")
+        if config.isImageToImage {
+            let i2iCount = cachedLatents.filter { $0.controlLatent != nil }.count
+            print("  I2I samples: \(i2iCount)/\(cachedLatents.count)")
+            if config.controlDropout > 0 {
+                print("  Control dropout: \(Int(config.controlDropout * 100))%")
+            }
+        }
 
         // Pre-cache text embeddings
         print()

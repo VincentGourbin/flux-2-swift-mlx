@@ -4,13 +4,13 @@ A native Swift implementation of [Flux.2](https://blackforestlabs.ai/) image gen
 
 ## Downloads
 
-**[📦 Latest Release (v1.0.1)](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/tag/v1.0.1)** — Universal binaries for Apple Silicon and Intel
+**[📦 Latest Release (v2.1.0)](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/tag/v2.1.0)** — Universal binaries for Apple Silicon
 
 | Download | Description |
 |----------|-------------|
-| [Flux2App](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/download/v1.0.1/Flux2App-v1.0.1-macOS.zip) | Demo macOS app with T2I, I2I, chat ([guide](docs/Flux2App.md)) |
-| [Flux2CLI](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/download/v1.0.1/Flux2CLI-v1.0.1-macOS.zip) | Image generation CLI ([guide](docs/CLI.md)) |
-| [FluxEncodersCLI](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/download/v1.0.1/FluxEncodersCLI-v1.0.1-macOS.zip) | Text encoders CLI ([guide](docs/TextEncoders.md)) |
+| [Flux2App](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/download/v2.1.0/Flux2App-v2.1.0-macOS.zip) | Demo macOS app with T2I, I2I, chat ([guide](docs/Flux2App.md)) |
+| [Flux2CLI](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/download/v2.1.0/Flux2CLI-v2.1.0-macOS.zip) | Image generation CLI ([guide](docs/CLI.md)) |
+| [FluxEncodersCLI](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/download/v2.1.0/FluxEncodersCLI-v2.1.0-macOS.zip) | Text encoders CLI ([guide](docs/TextEncoders.md)) |
 
 > **Note**: On first launch, macOS may block unsigned apps. Right-click → Open to bypass Gatekeeper.
 
@@ -27,6 +27,7 @@ A native Swift implementation of [Flux.2](https://blackforestlabs.ai/) image gen
 - **Prompt Upsampling**: Enhance prompts with Mistral/Qwen3 before generation
 - **LoRA Support**: Load and apply LoRA adapters for style transfer
 - **LoRA Training**: Train your own LoRAs on Apple Silicon ([guide](docs/examples/TRAINING_GUIDE.md))
+- **Image-to-Image Training**: Train paired I2I LoRAs (e.g. watermark removal, style transfer)
 - **CLI Tool**: Full-featured command-line interface (`Flux2CLI`)
 - **macOS App**: Demo SwiftUI application (`Flux2App`) with T2I, I2I, and chat
 
@@ -41,9 +42,9 @@ A native Swift implementation of [Flux.2](https://blackforestlabs.ai/) image gen
 
 ## Requirements
 
-- macOS 14.0 (Sonoma) or later
+- macOS 15.0 (Sequoia) or later (built on macOS 26 Tahoe)
 - Apple Silicon Mac (M1/M2/M3/M4)
-- Xcode 15.0 or later
+- Xcode 16.0 or later
 
 **Memory requirements by model (with on-the-fly quantization):**
 
@@ -61,11 +62,11 @@ Download from the [Releases page](https://github.com/VincentGourbin/flux-2-swift
 
 ```bash
 # CLI
-unzip Flux2CLI-v1.0.1-macOS.zip
+unzip Flux2CLI-v2.1.0-macOS.zip
 ./Flux2CLI t2i "a cat" --model klein-4b
 
 # App
-unzip Flux2App-v1.0.1-macOS.zip
+unzip Flux2App-v2.1.0-macOS.zip
 open Flux2App.app
 ```
 
@@ -224,7 +225,7 @@ See [Quantization Benchmark](docs/examples/quantization-benchmark/) for detailed
 
 - **Dev Performance**: Generation takes ~30 min for 1024x1024 images (use Klein for faster results)
 - **Dev Memory**: Requires 32GB+ with int4, 64GB+ with qint8 (Klein 4B works with 16GB)
-- **LoRA Training**: Supported on Klein 4B, Klein 9B, and Dev. Enable `gradient_checkpointing: true` for larger models to reduce memory by ~50%.
+- **LoRA Training**: Supported on Klein 4B, Klein 9B, and Dev. Enable `gradient_checkpointing: true` for larger models to reduce memory by ~50%. Image-to-Image training doubles sequence length — gradient checkpointing is recommended.
 
 ## Acknowledgments
 
