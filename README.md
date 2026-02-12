@@ -27,7 +27,7 @@ A native Swift implementation of [Flux.2](https://blackforestlabs.ai/) image gen
 - **Prompt Upsampling**: Enhance prompts with Mistral/Qwen3 before generation
 - **LoRA Support**: Load and apply LoRA adapters for style transfer
 - **LoRA Training**: Train your own LoRAs on Apple Silicon ([guide](docs/examples/TRAINING_GUIDE.md))
-- **Image-to-Image Training**: Train paired I2I LoRAs (e.g. watermark removal, style transfer)
+- **Image-to-Image Training**: Train paired I2I LoRAs (e.g. style transfer, image restoration)
 - **CLI Tool**: Full-featured command-line interface (`Flux2CLI`)
 - **macOS App**: Demo SwiftUI application (`Flux2App`) with T2I, I2I, and chat
 
