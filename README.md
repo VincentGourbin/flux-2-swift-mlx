@@ -201,6 +201,7 @@ See [Quantization Benchmark](docs/examples/quantization-benchmark/) for detailed
 | [LoRA Guide](docs/LoRA.md) | Loading and using LoRA adapters |
 | [LoRA Training Guide](docs/examples/TRAINING_GUIDE.md) | Training parameters, DOP, gradient checkpointing, YAML config |
 | [Text Encoders](docs/TextEncoders.md) | FluxTextEncoders library API and CLI |
+| [Custom Model Integration](docs/CustomModelIntegration.md) | Integrating custom MLX-compatible models into the framework |
 | [Flux2App Guide](docs/Flux2App.md) | Demo macOS application |
 
 ### Examples and Benchmarks
