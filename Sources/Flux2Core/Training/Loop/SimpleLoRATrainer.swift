@@ -38,6 +38,9 @@ public struct SimpleLoRAConfig: Sendable {
     // Gradient accumulation (simulate larger batch size)
     public var gradientAccumulationSteps: Int = 1  // 1 = no accumulation, 2+ = accumulate
 
+    // Image-to-Image
+    public var controlDropout: Float = 0.0  // Probability of dropping control image (for T2I robustness)
+
     // Memory optimization
     public var gradientCheckpointing: Bool = false  // Wrap forward pass with checkpoint() to save memory
 
@@ -78,12 +81,16 @@ public struct SimpleLoRAConfig: Sendable {
         /// Optional seed for this specific prompt (nil = use global seed)
         public var seed: UInt64?
 
-        public init(prompt: String, is512: Bool = true, is1024: Bool = false, applyTrigger: Bool = true, seed: UInt64? = nil) {
+        /// Reference image path for I2I validation (nil = T2I validation)
+        public var referenceImage: URL?
+
+        public init(prompt: String, is512: Bool = true, is1024: Bool = false, applyTrigger: Bool = true, seed: UInt64? = nil, referenceImage: URL? = nil) {
             self.prompt = prompt
             self.is512 = is512
             self.is1024 = is1024
             self.applyTrigger = applyTrigger
             self.seed = seed
+            self.referenceImage = referenceImage
         }
     }
     
@@ -110,12 +117,14 @@ public struct CachedLatentEntry {
     public let latent: MLXArray
     public let width: Int
     public let height: Int
-    
-    public init(filename: String, latent: MLXArray, width: Int, height: Int) {
+    public let controlLatent: MLXArray?  // Control/source image latent for I2I (nil = T2I)
+
+    public init(filename: String, latent: MLXArray, width: Int, height: Int, controlLatent: MLXArray? = nil) {
         self.filename = filename
         self.latent = latent
         self.width = width
         self.height = height
+        self.controlLatent = controlLatent
     }
 }
 
@@ -167,8 +176,8 @@ public final class SimpleLoRATrainer {
     private var preservationEmbeddings: [String: CachedEmbeddingEntry] = [:]  // caption -> preservation embedding
     private var captionToPreservationCaption: [String: String] = [:]  // original caption -> preservation caption
 
-    // Position ID cache per resolution
-    private var positionIdCache: [String: (txtIds: MLXArray, imgIds: MLXArray)] = [:]
+    // Position ID cache per resolution: (txtIds, imgIds, refImgIds for I2I)
+    private var positionIdCache: [String: (txtIds: MLXArray, imgIds: MLXArray, refImgIds: MLXArray?)] = [:]
 
     // Loss history for learning curve (step, loss)
     private var lossHistory: [(step: Int, loss: Float)] = []
@@ -273,10 +282,16 @@ public final class SimpleLoRATrainer {
         print("Dataset:")
         print("  Latents: \(cachedLatents.count)")
         print("  Unique captions: \(cachedEmbeddings.count)")
+        let i2iSamples = cachedLatents.filter { $0.controlLatent != nil }.count
+        if i2iSamples > 0 {
+            print("  I2I samples: \(i2iSamples)/\(cachedLatents.count)")
+            print("  Control dropout: \(Int(config.controlDropout * 100))%")
+        }
         print()
         
         // Pre-cache position IDs for all resolutions
         print("Pre-caching position IDs...")
+        let hasI2ISamples = cachedLatents.contains { $0.controlLatent != nil }
         let uniqueResolutions = Set(cachedLatents.map { "\($0.width)x\($0.height)" })
         for res in uniqueResolutions {
             let parts = res.split(separator: "x")
@@ -288,9 +303,22 @@ public final class SimpleLoRATrainer {
                 height: height,
                 width: width
             )
-            positionIdCache[res] = (txtIds: txtIds, imgIds: imgIds)
+
+            // Generate reference image position IDs for I2I mode
+            // Control images have the same dimensions as targets (resized during pre-encoding)
+            var refImgIds: MLXArray? = nil
+            if hasI2ISamples {
+                let latentH = height / 16  // H/8 (VAE) / 2 (patchify)
+                let latentW = width / 16
+                refImgIds = LatentUtils.generateSingleReferenceImagePositionIDs(
+                    latentHeight: latentH,
+                    latentWidth: latentW,
+                    imageIndex: 0  // First (and only) reference image, T=10
+                )
+            }
+            positionIdCache[res] = (txtIds: txtIds, imgIds: imgIds, refImgIds: refImgIds)
         }
-        print("  Cached \(uniqueResolutions.count) resolutions")
+        print("  Cached \(uniqueResolutions.count) resolutions\(hasI2ISamples ? " (with I2I reference IDs)" : "")")
         print()
 
         // Generate baseline images (WITHOUT LoRA) for comparison
@@ -372,7 +400,7 @@ public final class SimpleLoRATrainer {
         }
 
         func lossFunction(model: Flux2Transformer2DModel, arrays: [MLXArray]) -> [MLXArray] {
-            // Input arrays: [packedLatents, hidden, timesteps, imgIds, txtIds, velocityTarget, guidance]
+            // Input arrays: [packedLatents, hidden, timesteps, imgIds, txtIds, velocityTarget, guidance, outputSeqLen]
             let packedLatentsIn = arrays[0]
             let hiddenIn = arrays[1]
             let timestepsIn = arrays[2]
@@ -380,8 +408,9 @@ public final class SimpleLoRATrainer {
             let txtIdsIn = arrays[4]
             let velocityTargetIn = arrays[5]
             let guidanceIn: MLXArray? = usesGuidance ? arrays[6] : nil
+            let outputSeqLen = arrays[7]  // Int32 scalar: >0 for I2I (extract output portion), 0 for T2I
 
-            let modelOutput = model(
+            var modelOutput = model(
                 hiddenStates: packedLatentsIn,
                 encoderHiddenStates: hiddenIn,
                 timestep: timestepsIn,
@@ -389,35 +418,42 @@ public final class SimpleLoRATrainer {
                 imgIds: imgIdsIn,
                 txtIds: txtIdsIn
             )
-            
+
+            // I2I mode: extract only the output portion of the prediction
+            // The model output contains [output_tokens | control_tokens], we only want the output part
+            let seqLenValue = outputSeqLen.item(Int32.self)
+            if seqLenValue > 0 {
+                modelOutput = modelOutput[0..., 0..<Int(seqLenValue), 0...]
+            }
+
             // Compute loss with optional weighting
             let loss: MLXArray
             switch lossWeightingMode {
             case .none:
                 loss = mseLoss(predictions: modelOutput, targets: velocityTargetIn, reduction: .mean)
-                
+
             case .bellShaped:
                 // Ostris "weighted" mode - bell curve centered at t=500
                 // weight(t) = exp(-2 * ((t - 500) / 1000)^2)
                 // Peak at t=500 (weight=1.0), tapers at extremes (weight≈0.61 at t=0 and t=1000)
-                
+
                 // timestepsIn are in [0, 1] range (sigmas), convert to [0, 1000] for weighting
                 let tScaled = timestepsIn * 1000.0  // [0, 1] -> [0, 1000]
                 let centered = (tScaled - 500.0) / 1000.0  // Center at 500
                 let weights = MLX.exp(-2.0 * centered * centered)  // Bell curve
-                
+
                 // Compute element-wise squared error
                 let sqError = (modelOutput - velocityTargetIn) * (modelOutput - velocityTargetIn)
-                
+
                 // Reshape weights for broadcasting: [B] -> [B, 1, 1] to match [B, SeqLen, Channels]
                 let weightsExpanded = weights.reshaped([weights.shape[0], 1, 1])
-                
+
                 // Weighted MSE: sum(weights * sqError) / sum(weights)
                 // This normalizes by sum of weights (Ostris convention)
                 let weightedError = weightsExpanded * sqError
                 loss = MLX.sum(weightedError) / (MLX.sum(weightsExpanded) * Float(sqError.shape[1] * sqError.shape[2]))
             }
-            
+
             return [loss]
         }
         
@@ -466,7 +502,7 @@ public final class SimpleLoRATrainer {
             // Create DOP loss function
             // DOP loss = MSE(LoRA output, Base output) for preservation embeddings
             func dopLossFunction(model: Flux2Transformer2DModel, arrays: [MLXArray]) -> [MLXArray] {
-                // arrays: [packedLatents, preservationEmbedding, timesteps, imgIds, txtIds, baseOutput, guidance]
+                // arrays: [packedLatents, preservationEmbedding, timesteps, imgIds, txtIds, baseOutput, guidance, outputSeqLen]
                 let packedLatentsIn = arrays[0]
                 let preservationEmbeddingIn = arrays[1]
                 let timestepsIn = arrays[2]
@@ -474,9 +510,10 @@ public final class SimpleLoRATrainer {
                 let txtIdsIn = arrays[4]
                 let baseOutputIn = arrays[5]  // Pre-computed base model output
                 let guidanceIn: MLXArray? = usesGuidance ? arrays[6] : nil
+                let outputSeqLen = arrays[7]
 
                 // Forward pass with LoRA enabled
-                let loraOutput = model(
+                var loraOutput = model(
                     hiddenStates: packedLatentsIn,
                     encoderHiddenStates: preservationEmbeddingIn,
                     timestep: timestepsIn,
@@ -484,6 +521,12 @@ public final class SimpleLoRATrainer {
                     imgIds: imgIdsIn,
                     txtIds: txtIdsIn
                 )
+
+                // I2I mode: extract only the output portion
+                let seqLenValue = outputSeqLen.item(Int32.self)
+                if seqLenValue > 0 {
+                    loraOutput = loraOutput[0..., 0..<Int(seqLenValue), 0...]
+                }
 
                 // DOP loss: LoRA should match base when trigger is not present
                 let dopLoss = mseLoss(predictions: loraOutput, targets: baseOutputIn, reduction: .mean)
@@ -504,6 +547,7 @@ public final class SimpleLoRATrainer {
         print("Preparing memory for training...")
         eval(transformer.trainableParameters())  // Materialize all LoRA parameters
         eval(cachedLatents.map { $0.latent })    // Materialize all latents
+        eval(cachedLatents.compactMap { $0.controlLatent })  // Materialize control latents
         eval(cachedEmbeddings.values.map { $0.embedding })  // Materialize all embeddings
         MLX.Memory.clearCache()
         Flux2Debug.log("[SimpleLoRATrainer] Memory prepared, cache cleared")
@@ -515,6 +559,7 @@ public final class SimpleLoRATrainer {
         let canCompile = config.compileTraining
             && !useGradientCheckpointing
             && !dopEnabled
+            && !hasI2ISamples
             && config.gradientAccumulationSteps == 1
         if canCompile {
             let lossAndGradRef = cachedLossAndGrad!
@@ -540,7 +585,7 @@ public final class SimpleLoRATrainer {
             }
             print("  Compiled training step: ENABLED (experimental, ~5-15% speedup)")
         } else if config.compileTraining {
-            print("  Compiled training step: DISABLED (incompatible with gradient checkpointing, DOP, or accumulation)")
+            print("  Compiled training step: DISABLED (incompatible with gradient checkpointing, DOP, I2I, or accumulation)")
         }
 
         print("Starting training...")
@@ -617,6 +662,7 @@ public final class SimpleLoRATrainer {
                 latent: latentEntry.latent,
                 embedding: embeddingEntry.embedding,
                 preservationEmbedding: preservationEmb,
+                controlLatent: latentEntry.controlLatent,
                 width: latentEntry.width,
                 height: latentEntry.height,
                 transformer: transformer,
@@ -723,6 +769,7 @@ public final class SimpleLoRATrainer {
         latent: MLXArray,
         embedding: MLXArray,
         preservationEmbedding: MLXArray?,  // DOP: preservation class embedding (trigger → class)
+        controlLatent: MLXArray?,  // I2I: clean control image latent (nil = T2I)
         width: Int,
         height: Int,
         transformer: Flux2Transformer2DModel,
@@ -735,7 +782,7 @@ public final class SimpleLoRATrainer {
         guard let posIds = positionIdCache[resKey] else {
             throw SimpleLoRATrainerError.noPositionIds(resKey)
         }
-        
+
         // Ensure batch dimension - latent comes as [C, H, W] from cache
         var batchedLatent = latent
         if batchedLatent.shape.count == 3 {
@@ -745,44 +792,78 @@ public final class SimpleLoRATrainer {
         if batchedEmbedding.shape.count == 2 {
             batchedEmbedding = batchedEmbedding.expandedDimensions(axis: 0)
         }
-        
+
         let batchSize = batchedLatent.shape[0]
-        
+
         // Sample timestep (balanced = 50/50 content/style)
         let timesteps = sampleTimesteps(batchSize: batchSize)
         let sigmas = timesteps.asType(.float32) / 1000.0
-        
+
         // Create noisy latent (flow matching interpolation)
         let noise = MLXRandom.normal(batchedLatent.shape)
         let sigmasExpanded = sigmas.reshaped([batchSize, 1, 1, 1])
         let noisyLatent = (1 - sigmasExpanded) * batchedLatent + sigmasExpanded * noise
-        
+
         // Pack for transformer
         let packedLatent = packLatentsForTransformer(noisyLatent, patchSize: 2)
-        
+        let outputSeqLen = packedLatent.shape[1]  // Sequence length of output tokens
+
         // Velocity target: v = noise - latent (CRITICAL for flow matching!)
         let velocityTarget = noise - batchedLatent
         let packedVelocityTarget = packLatentsForTransformer(velocityTarget, patchSize: 2)
-        
+
+        // I2I mode: concatenate control latent along sequence dimension
+        // Control latent is clean (no noise), packed and concatenated with noisy output latent
+        var combinedLatent = packedLatent
+        var combinedImgIds = posIds.imgIds.asType(.int32)
+        var outputSeqLenValue: Int32 = 0  // 0 = T2I (use full output), >0 = I2I (slice output)
+
+        // Determine if we should use control for this step (control dropout)
+        let useControl = controlLatent != nil
+            && Float.random(in: 0..<1) >= config.controlDropout
+
+        if useControl, let ctrlLatent = controlLatent {
+            // Ensure batch dimension for control latent
+            var batchedCtrl = ctrlLatent
+            if batchedCtrl.shape.count == 3 {
+                batchedCtrl = batchedCtrl.expandedDimensions(axis: 0)  // [1, C, H, W]
+            }
+
+            // Pack control latent (clean, NO noise added)
+            let packedCtrl = packLatentsForTransformer(batchedCtrl, patchSize: 2)
+
+            // Concatenate: [output_tokens | control_tokens] along sequence dimension
+            combinedLatent = MLX.concatenated([packedLatent, packedCtrl], axis: 1)
+
+            // Concatenate position IDs: [imgIds | refImgIds]
+            if let refImgIds = posIds.refImgIds {
+                combinedImgIds = MLX.concatenated([posIds.imgIds.asType(.int32), refImgIds.asType(.int32)], axis: 0)
+            }
+
+            // Mark output sequence length for loss extraction
+            outputSeqLenValue = Int32(outputSeqLen)
+        }
+
         // Guidance embedding (Dev model uses guidance, Klein models do NOT)
         // IMPORTANT: For training, use guidance_scale=1.0 (not 4.0 used in inference)
         // This is because Dev is guidance-distilled - training at scale=1.0 keeps the LoRA
         // from interfering with the baked-in guidance behavior (ref: Ostris ai-toolkit)
         let guidance: MLXArray? = modelType.usesGuidanceEmbeds ?
             MLXArray.full([batchSize], values: MLXArray(Float(1.0))) : nil
-        
+
         // Prepare input arrays
         // CRITICAL: Pass sigmas (in [0, 1] range), NOT timesteps (in [0, 1000] range)!
         // The transformer internally scales timesteps by 1000, so we need [0, 1] input.
         var inputArrays: [MLXArray] = [
-            packedLatent,
+            combinedLatent,
             batchedEmbedding,
             sigmas,  // Pass sigma [0, 1], NOT timesteps [0, 1000]!
-            posIds.imgIds.asType(.int32),
+            combinedImgIds,
             posIds.txtIds.asType(.int32),
             packedVelocityTarget
         ]
         inputArrays.append(guidance ?? MLXArray(0.0))
+        inputArrays.append(MLXArray(outputSeqLenValue))  // outputSeqLen for I2I slicing
         
         // === Compiled training path ===
         // When compile() is active, the entire forward + backward + clip + optimizer update
@@ -858,31 +939,38 @@ public final class SimpleLoRATrainer {
 
             // 1. Get base model output (LoRA disabled)
             // OPTIMIZATION: Use stopGradient to prevent unnecessary gradient tracking
+            // DOP uses the same combined latents as the main loss (I2I or T2I)
             transformer.disableLoRA()  // Disable LoRA (sets all scales to 0)
             let baseOutputRaw = transformer(
-                hiddenStates: packedLatent,
+                hiddenStates: combinedLatent,
                 encoderHiddenStates: batchedPreservationEmb,
                 timestep: sigmas,
                 guidance: guidance,
-                imgIds: posIds.imgIds.asType(.int32),
+                imgIds: combinedImgIds,
                 txtIds: posIds.txtIds.asType(.int32)
             )
+            // I2I mode: extract only the output portion from base output
+            var baseOutputSliced = baseOutputRaw
+            if outputSeqLenValue > 0 {
+                baseOutputSliced = baseOutputRaw[0..., 0..<Int(outputSeqLenValue), 0...]
+            }
             // Stop gradient tracking - base output is just a target, no backprop needed
-            let baseOutput = stopGradient(baseOutputRaw)
+            let baseOutput = stopGradient(baseOutputSliced)
             eval(baseOutput)
             transformer.restoreLoRAScales()  // Re-enable LoRA
             let dopT1 = CFAbsoluteTimeGetCurrent()
 
             // 2. Compute DOP loss and gradients
             var dopInputArrays: [MLXArray] = [
-                packedLatent,
+                combinedLatent,
                 batchedPreservationEmb,
                 sigmas,
-                posIds.imgIds.asType(.int32),
+                combinedImgIds,
                 posIds.txtIds.asType(.int32),
                 baseOutput
             ]
             dopInputArrays.append(guidance ?? MLXArray(0.0))
+            dopInputArrays.append(MLXArray(outputSeqLenValue))  // outputSeqLen for I2I slicing
 
             let (dopLosses, dopGrads) = dopLossAndGrad(transformer, dopInputArrays)
             let dopLoss = dopLosses[0]
@@ -1552,39 +1640,76 @@ public final class SimpleLoRATrainer {
             }
 
             let triggerSuffix = promptConfig.applyTrigger ? "_trigger" : "_notrigger"
+            let i2iSuffix = promptConfig.referenceImage != nil ? "_i2i" : ""
             // Use per-prompt seed if available, otherwise global seed
             let seed = promptConfig.seed ?? config.validationSeed
 
+            // Load reference image for I2I validation if specified
+            let referenceImages: [CGImage]?
+            if let refPath = promptConfig.referenceImage,
+               let imageSource = CGImageSourceCreateWithURL(refPath as CFURL, nil),
+               let cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) {
+                referenceImages = [cgImage]
+            } else {
+                referenceImages = nil
+            }
+
             // Generate 512x512 if requested
             if promptConfig.is512 {
-                print("  [\(index + 1)/\(config.validationPrompts.count)] 512x512\(triggerSuffix): \(promptConfig.prompt.prefix(40))...")
+                print("  [\(index + 1)/\(config.validationPrompts.count)] 512x512\(triggerSuffix)\(i2iSuffix): \(promptConfig.prompt.prefix(40))...")
                 fflush(stdout)
-                let result = try await pipeline.generateTextToImageWithResult(
-                    prompt: prompt,
-                    height: 512,
-                    width: 512,
-                    steps: config.validationSteps,
-                    guidance: 1.0,
-                    seed: seed
-                )
-                let imagePath = baselineDir.appendingPathComponent("prompt_\(index)\(triggerSuffix)_512x512.png")
+                let result: Flux2GenerationResult
+                if let refImages = referenceImages {
+                    result = try await pipeline.generateImageToImageWithResult(
+                        prompt: prompt,
+                        images: refImages,
+                        height: 512,
+                        width: 512,
+                        steps: config.validationSteps,
+                        guidance: 1.0,
+                        seed: seed
+                    )
+                } else {
+                    result = try await pipeline.generateTextToImageWithResult(
+                        prompt: prompt,
+                        height: 512,
+                        width: 512,
+                        steps: config.validationSteps,
+                        guidance: 1.0,
+                        seed: seed
+                    )
+                }
+                let imagePath = baselineDir.appendingPathComponent("prompt_\(index)\(triggerSuffix)\(i2iSuffix)_512x512.png")
                 try saveImage(result.image, to: imagePath)
                 print("    Saved: baseline/\(imagePath.lastPathComponent)")
             }
 
             // Generate 1024x1024 if requested
             if promptConfig.is1024 {
-                print("  [\(index + 1)/\(config.validationPrompts.count)] 1024x1024\(triggerSuffix): \(promptConfig.prompt.prefix(40))...")
+                print("  [\(index + 1)/\(config.validationPrompts.count)] 1024x1024\(triggerSuffix)\(i2iSuffix): \(promptConfig.prompt.prefix(40))...")
                 fflush(stdout)
-                let result = try await pipeline.generateTextToImageWithResult(
-                    prompt: prompt,
-                    height: 1024,
-                    width: 1024,
-                    steps: config.validationSteps,
-                    guidance: 1.0,
-                    seed: seed
-                )
-                let imagePath = baselineDir.appendingPathComponent("prompt_\(index)\(triggerSuffix)_1024x1024.png")
+                let result: Flux2GenerationResult
+                if let refImages = referenceImages {
+                    result = try await pipeline.generateImageToImageWithResult(
+                        prompt: prompt,
+                        images: refImages,
+                        height: 1024,
+                        width: 1024,
+                        steps: config.validationSteps,
+                        guidance: 1.0,
+                        seed: seed
+                    )
+                } else {
+                    result = try await pipeline.generateTextToImageWithResult(
+                        prompt: prompt,
+                        height: 1024,
+                        width: 1024,
+                        steps: config.validationSteps,
+                        guidance: 1.0,
+                        seed: seed
+                    )
+                }
+                let imagePath = baselineDir.appendingPathComponent("prompt_\(index)\(triggerSuffix)\(i2iSuffix)_1024x1024.png")
                 try saveImage(result.image, to: imagePath)
                 print("    Saved: baseline/\(imagePath.lastPathComponent)")
             }
@@ -1635,41 +1760,78 @@ public final class SimpleLoRATrainer {
             }
 
             let triggerSuffix = promptConfig.applyTrigger ? "_trigger" : "_notrigger"
+            let i2iSuffix = promptConfig.referenceImage != nil ? "_i2i" : ""
             // Use per-prompt seed if available, otherwise global seed
             let seed = promptConfig.seed ?? config.validationSeed
 
+            // Load reference image for I2I validation if specified
+            let referenceImages: [CGImage]?
+            if let refPath = promptConfig.referenceImage,
+               let imageSource = CGImageSourceCreateWithURL(refPath as CFURL, nil),
+               let cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) {
+                referenceImages = [cgImage]
+            } else {
+                referenceImages = nil
+            }
+
             // Generate 512x512 if requested
             if promptConfig.is512 {
-                print("    [\(index + 1)/\(config.validationPrompts.count)] 512x512\(triggerSuffix)...")
+                print("    [\(index + 1)/\(config.validationPrompts.count)] 512x512\(triggerSuffix)\(i2iSuffix)...")
                 fflush(stdout)
-                let result = try await pipeline!.generateTextToImageWithResult(
-                    prompt: prompt,
-                    height: 512,
-                    width: 512,
-                    steps: config.validationSteps,
-                    guidance: 1.0,
-                    seed: seed
-                )
+                let result: Flux2GenerationResult
+                if let refImages = referenceImages {
+                    result = try await pipeline!.generateImageToImageWithResult(
+                        prompt: prompt,
+                        images: refImages,
+                        height: 512,
+                        width: 512,
+                        steps: config.validationSteps,
+                        guidance: 1.0,
+                        seed: seed
+                    )
+                } else {
+                    result = try await pipeline!.generateTextToImageWithResult(
+                        prompt: prompt,
+                        height: 512,
+                        width: 512,
+                        steps: config.validationSteps,
+                        guidance: 1.0,
+                        seed: seed
+                    )
+                }
                 // Save to checkpoint subdirectory
-                let imagePath = checkpointDir.appendingPathComponent("prompt_\(index)\(triggerSuffix)_512x512.png")
+                let imagePath = checkpointDir.appendingPathComponent("prompt_\(index)\(triggerSuffix)\(i2iSuffix)_512x512.png")
                 try saveImage(result.image, to: imagePath)
                 print("      Saved: \(imagePath.lastPathComponent)")
             }
 
             // Generate 1024x1024 if requested
             if promptConfig.is1024 {
-                print("    [\(index + 1)/\(config.validationPrompts.count)] 1024x1024\(triggerSuffix)...")
+                print("    [\(index + 1)/\(config.validationPrompts.count)] 1024x1024\(triggerSuffix)\(i2iSuffix)...")
                 fflush(stdout)
-                let result = try await pipeline!.generateTextToImageWithResult(
-                    prompt: prompt,
-                    height: 1024,
-                    width: 1024,
-                    steps: config.validationSteps,
-                    guidance: 1.0,
-                    seed: seed
-                )
+                let result: Flux2GenerationResult
+                if let refImages = referenceImages {
+                    result = try await pipeline!.generateImageToImageWithResult(
+                        prompt: prompt,
+                        images: refImages,
+                        height: 1024,
+                        width: 1024,
+                        steps: config.validationSteps,
+                        guidance: 1.0,
+                        seed: seed
+                    )
+                } else {
+                    result = try await pipeline!.generateTextToImageWithResult(
+                        prompt: prompt,
+                        height: 1024,
+                        width: 1024,
+                        steps: config.validationSteps,
+                        guidance: 1.0,
+                        seed: seed
+                    )
+                }
                 // Save to checkpoint subdirectory
-                let imagePath = checkpointDir.appendingPathComponent("prompt_\(index)\(triggerSuffix)_1024x1024.png")
+                let imagePath = checkpointDir.appendingPathComponent("prompt_\(index)\(triggerSuffix)\(i2iSuffix)_1024x1024.png")
                 try saveImage(result.image, to: imagePath)
                 print("      Saved: \(imagePath.lastPathComponent)")
             }

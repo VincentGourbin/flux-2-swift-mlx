@@ -42,6 +42,7 @@ loras/
 # Local dev files (user-specific configs and scripts)
 groot_training*.yaml
 scripts/train_all_models.sh
+scripts/*.py
 *.safetensors
 
 # Obsolete plans directory
