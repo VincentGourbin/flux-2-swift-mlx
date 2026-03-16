@@ -270,7 +270,7 @@ public class Flux2ParallelSelfAttention: Module, @unchecked Sendable {
 
     /// Build attention mask for single-stream KV extraction
     /// Reference queries should not attend to output keys
-    private func buildSingleStreamKVExtractionMask(
+    func buildSingleStreamKVExtractionMask(
         textLen: Int, refLen: Int, outputLen: Int, totalSeq: Int
     ) -> MLXArray {
         var maskData = [Float](repeating: 0.0, count: totalSeq * totalSeq)

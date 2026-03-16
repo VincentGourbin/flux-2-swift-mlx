@@ -2349,4 +2349,465 @@ final class TransformerKVCacheTests: XCTestCase {
         // referenceTokenCount is preserved after clear
         XCTAssertEqual(cache.referenceTokenCount, 128)
     }
+
+    func testKVCacheMultipleLayersCount() {
+        var cache = TransformerKVCache(referenceTokenCount: 64)
+        let entry = LayerKVCacheEntry(
+            keys: MLXRandom.normal([1, 4, 64, 32]),
+            values: MLXRandom.normal([1, 4, 64, 32])
+        )
+
+        // Fill 8 double + 24 single (Klein 9B architecture)
+        for i in 0..<8 { cache.setDoubleStream(blockIndex: i, entry: entry) }
+        for i in 0..<24 { cache.setSingleStream(blockIndex: i, entry: entry) }
+
+        XCTAssertEqual(cache.layerCount, 32)
+        XCTAssertEqual(cache.doubleStreamEntries.count, 8)
+        XCTAssertEqual(cache.singleStreamEntries.count, 24)
+
+        // Overwrite an existing entry
+        cache.setDoubleStream(blockIndex: 0, entry: entry)
+        XCTAssertEqual(cache.doubleStreamEntries.count, 8, "Overwrite should not increase count")
+    }
+
+    func testLayerKVCacheEntryShapes() {
+        let keys = MLXRandom.normal([1, 32, 1024, 128])
+        let values = MLXRandom.normal([1, 32, 1024, 128])
+        let entry = LayerKVCacheEntry(keys: keys, values: values)
+
+        XCTAssertEqual(entry.keys.shape, [1, 32, 1024, 128])
+        XCTAssertEqual(entry.values.shape, [1, 32, 1024, 128])
+    }
+}
+
+// MARK: - KV Extraction Attention Mask Tests
+
+final class KVExtractionMaskTests: XCTestCase {
+
+    /// Test double-stream attention mask pattern:
+    /// Joint sequence order: [txt, ref, output]
+    /// - txt queries: attend to ALL (txt, ref, output)
+    /// - ref queries: attend to txt + ref ONLY (blocked from output)
+    /// - output queries: attend to ALL
+    func testDoubleStreamMaskPattern() {
+        let attn = Flux2Attention(dim: 128, numHeads: 4, headDim: 32)
+        let textLen = 3
+        let refLen = 2
+        let outputLen = 4
+        let totalSeq = textLen + refLen + outputLen  // 9
+
+        let mask = attn.buildKVExtractionMask(
+            textLen: textLen, refLen: refLen, outputLen: outputLen, totalSeq: totalSeq
+        )
+
+        XCTAssertEqual(mask.shape, [1, 1, totalSeq, totalSeq])
+
+        // Materialize mask values
+        eval(mask)
+        let flat = mask.reshaped([totalSeq, totalSeq])
+
+        // Helper to read mask value at (q, k)
+        func maskVal(_ q: Int, _ k: Int) -> Float {
+            flat[q, k].item(Float.self)
+        }
+
+        // txt queries (rows 0-2) should attend to everything → all 0.0
+        for q in 0..<textLen {
+            for k in 0..<totalSeq {
+                XCTAssertEqual(maskVal(q, k), 0.0, "txt query \(q) should attend to key \(k)")
+            }
+        }
+
+        // ref queries (rows 3-4) should attend to txt+ref (0-4) but NOT output (5-8)
+        for q in textLen..<(textLen + refLen) {
+            // Can attend to txt and ref
+            for k in 0..<(textLen + refLen) {
+                XCTAssertEqual(maskVal(q, k), 0.0, "ref query \(q) should attend to key \(k)")
+            }
+            // Blocked from output
+            for k in (textLen + refLen)..<totalSeq {
+                XCTAssertEqual(maskVal(q, k), -Float.infinity, "ref query \(q) should be blocked from output key \(k)")
+            }
+        }
+
+        // output queries (rows 5-8) should attend to everything → all 0.0
+        for q in (textLen + refLen)..<totalSeq {
+            for k in 0..<totalSeq {
+                XCTAssertEqual(maskVal(q, k), 0.0, "output query \(q) should attend to key \(k)")
+            }
+        }
+    }
+
+    /// Test single-stream attention mask pattern:
+    /// Single sequence order: [txt, ref, output]
+    /// Same blocking rule: ref queries blocked from output keys
+    func testSingleStreamMaskPattern() {
+        let attn = Flux2ParallelSelfAttention(dim: 128, numHeads: 4, headDim: 32)
+        let textLen = 3
+        let refLen = 2
+        let outputLen = 4
+        let totalSeq = textLen + refLen + outputLen
+
+        let mask = attn.buildSingleStreamKVExtractionMask(
+            textLen: textLen, refLen: refLen, outputLen: outputLen, totalSeq: totalSeq
+        )
+
+        XCTAssertEqual(mask.shape, [1, 1, totalSeq, totalSeq])
+
+        eval(mask)
+        let flat = mask.reshaped([totalSeq, totalSeq])
+
+        func maskVal(_ q: Int, _ k: Int) -> Float {
+            flat[q, k].item(Float.self)
+        }
+
+        // Ref queries blocked from output
+        for q in textLen..<(textLen + refLen) {
+            for k in (textLen + refLen)..<totalSeq {
+                XCTAssertEqual(maskVal(q, k), -Float.infinity)
+            }
+        }
+
+        // Everything else is 0.0
+        for q in 0..<textLen {
+            for k in 0..<totalSeq {
+                XCTAssertEqual(maskVal(q, k), 0.0)
+            }
+        }
+        for q in (textLen + refLen)..<totalSeq {
+            for k in 0..<totalSeq {
+                XCTAssertEqual(maskVal(q, k), 0.0)
+            }
+        }
+    }
+
+    /// Edge case: 0 reference tokens → no blocking at all (all 0.0)
+    func testMaskWithZeroReferenceTokens() {
+        let attn = Flux2Attention(dim: 128, numHeads: 4, headDim: 32)
+        let mask = attn.buildKVExtractionMask(textLen: 5, refLen: 0, outputLen: 10, totalSeq: 15)
+
+        eval(mask)
+        let flat = mask.reshaped([15 * 15])
+
+        // All values should be 0.0 (no blocking)
+        let sum = MLX.abs(flat).sum()
+        eval(sum)
+        XCTAssertEqual(sum.item(Float.self), 0.0, "No ref tokens → no blocking")
+    }
+}
+
+// MARK: - Flux2Attention KV Methods Tests
+
+final class Flux2AttentionKVTests: XCTestCase {
+
+    let batchSize = 1
+    let numHeads = 4
+    let headDim = 32
+    let dim = 128  // 4 × 32
+    let seqLenTxt = 8
+    let seqLenRef = 6
+    let seqLenImg = 10
+
+    func makeAttention() -> Flux2Attention {
+        Flux2Attention(dim: dim, numHeads: numHeads, headDim: headDim)
+    }
+
+    func makeRoPE(seqLen: Int) -> (cos: MLXArray, sin: MLXArray) {
+        // Fake RoPE embeddings
+        (cos: MLXRandom.normal([seqLen, headDim]),
+         sin: MLXRandom.normal([seqLen, headDim]))
+    }
+
+    func testCallWithKVExtractionOutputShapes() {
+        let attn = makeAttention()
+        // hiddenStates contains [ref + img] tokens
+        let imgPlusRef = MLXRandom.normal([batchSize, seqLenRef + seqLenImg, dim])
+        let txt = MLXRandom.normal([batchSize, seqLenTxt, dim])
+        let rope = makeRoPE(seqLen: seqLenTxt + seqLenRef + seqLenImg)
+
+        let (hsOut, ehsOut, cache) = attn.callWithKVExtraction(
+            hiddenStates: imgPlusRef,
+            encoderHiddenStates: txt,
+            rotaryEmb: rope,
+            referenceTokenCount: seqLenRef
+        )
+        eval(hsOut, ehsOut, cache.keys, cache.values)
+
+        // Output shapes match input
+        XCTAssertEqual(hsOut.shape, [batchSize, seqLenRef + seqLenImg, dim])
+        XCTAssertEqual(ehsOut.shape, [batchSize, seqLenTxt, dim])
+
+        // Cache contains reference K/V with correct shape [B, H, S_ref, D]
+        XCTAssertEqual(cache.keys.shape, [batchSize, numHeads, seqLenRef, headDim])
+        XCTAssertEqual(cache.values.shape, [batchSize, numHeads, seqLenRef, headDim])
+    }
+
+    func testCallWithKVCachedOutputShapes() {
+        let attn = makeAttention()
+        // Only output tokens (no ref)
+        let img = MLXRandom.normal([batchSize, seqLenImg, dim])
+        let txt = MLXRandom.normal([batchSize, seqLenTxt, dim])
+        let rope = makeRoPE(seqLen: seqLenTxt + seqLenImg)
+
+        // Fake cached KV
+        let cachedKV = LayerKVCacheEntry(
+            keys: MLXRandom.normal([batchSize, numHeads, seqLenRef, headDim]),
+            values: MLXRandom.normal([batchSize, numHeads, seqLenRef, headDim])
+        )
+
+        let (hsOut, ehsOut) = attn.callWithKVCached(
+            hiddenStates: img,
+            encoderHiddenStates: txt,
+            rotaryEmb: rope,
+            cachedKV: cachedKV
+        )
+        eval(hsOut, ehsOut)
+
+        XCTAssertEqual(hsOut.shape, [batchSize, seqLenImg, dim])
+        XCTAssertEqual(ehsOut.shape, [batchSize, seqLenTxt, dim])
+    }
+
+    /// Standard callAsFunction and callWithKVCached with 0 ref tokens
+    /// should produce outputs of the same shape
+    func testStandardAndCachedConsistentShapes() {
+        let attn = makeAttention()
+        let img = MLXRandom.normal([batchSize, seqLenImg, dim])
+        let txt = MLXRandom.normal([batchSize, seqLenTxt, dim])
+        let rope = makeRoPE(seqLen: seqLenTxt + seqLenImg)
+
+        let (stdHs, stdEhs) = attn.callAsFunction(
+            hiddenStates: img, encoderHiddenStates: txt, rotaryEmb: rope
+        )
+
+        // Empty cache (0 ref tokens)
+        let emptyCache = LayerKVCacheEntry(
+            keys: MLXRandom.normal([batchSize, numHeads, 0, headDim]),
+            values: MLXRandom.normal([batchSize, numHeads, 0, headDim])
+        )
+        let (cachedHs, cachedEhs) = attn.callWithKVCached(
+            hiddenStates: img, encoderHiddenStates: txt,
+            rotaryEmb: rope, cachedKV: emptyCache
+        )
+        eval(stdHs, stdEhs, cachedHs, cachedEhs)
+
+        XCTAssertEqual(stdHs.shape, cachedHs.shape)
+        XCTAssertEqual(stdEhs.shape, cachedEhs.shape)
+    }
+}
+
+// MARK: - Flux2ParallelSelfAttention KV Methods Tests
+
+final class Flux2ParallelAttentionKVTests: XCTestCase {
+
+    let batchSize = 1
+    let numHeads = 4
+    let headDim = 32
+    let dim = 128
+    let textLen = 8
+    let refLen = 6
+    let imgLen = 10
+
+    func makeAttention() -> Flux2ParallelSelfAttention {
+        Flux2ParallelSelfAttention(dim: dim, numHeads: numHeads, headDim: headDim)
+    }
+
+    func testCallWithKVExtractionOutputShapes() {
+        let attn = makeAttention()
+        let totalSeq = textLen + refLen + imgLen
+        let combined = MLXRandom.normal([batchSize, totalSeq, dim])
+        let rope = (cos: MLXRandom.normal([totalSeq, headDim]),
+                    sin: MLXRandom.normal([totalSeq, headDim]))
+
+        let (output, cache) = attn.callWithKVExtraction(
+            hiddenStates: combined,
+            rotaryEmb: rope,
+            textLen: textLen,
+            referenceTokenCount: refLen
+        )
+        eval(output, cache.keys, cache.values)
+
+        // Output has same shape as input
+        XCTAssertEqual(output.shape, [batchSize, totalSeq, dim])
+
+        // Cache contains reference K/V: [B, H, refLen, D]
+        XCTAssertEqual(cache.keys.shape, [batchSize, numHeads, refLen, headDim])
+        XCTAssertEqual(cache.values.shape, [batchSize, numHeads, refLen, headDim])
+    }
+
+    func testCallWithKVCachedOutputShapes() {
+        let attn = makeAttention()
+        let seqLen = textLen + imgLen  // no ref tokens
+        let combined = MLXRandom.normal([batchSize, seqLen, dim])
+        let rope = (cos: MLXRandom.normal([seqLen, headDim]),
+                    sin: MLXRandom.normal([seqLen, headDim]))
+
+        let cachedKV = LayerKVCacheEntry(
+            keys: MLXRandom.normal([batchSize, numHeads, refLen, headDim]),
+            values: MLXRandom.normal([batchSize, numHeads, refLen, headDim])
+        )
+
+        let output = attn.callWithKVCached(
+            hiddenStates: combined,
+            rotaryEmb: rope,
+            cachedKV: cachedKV,
+            textLen: textLen
+        )
+        eval(output)
+
+        // Output has same shape as input (txt + img, no ref added)
+        XCTAssertEqual(output.shape, [batchSize, seqLen, dim])
+    }
+}
+
+// MARK: - Transformer Block KV Forwarding Tests
+
+final class TransformerBlockKVTests: XCTestCase {
+
+    let batchSize = 1
+    let numHeads = 4
+    let headDim = 32
+    let dim = 128
+    let seqLenTxt = 8
+    let seqLenRef = 4
+    let seqLenImg = 10
+
+    func testDoubleStreamBlockKVExtraction() {
+        let block = Flux2TransformerBlock(dim: dim, numHeads: numHeads, headDim: headDim)
+        let imgPlusRef = MLXRandom.normal([batchSize, seqLenRef + seqLenImg, dim])
+        let txt = MLXRandom.normal([batchSize, seqLenTxt, dim])
+        let temb = MLXRandom.normal([batchSize, dim])
+        let totalRope = seqLenTxt + seqLenRef + seqLenImg
+        let rope = (cos: MLXRandom.normal([totalRope, headDim]),
+                    sin: MLXRandom.normal([totalRope, headDim]))
+
+        let (ehsOut, hsOut, cache) = block.callWithKVExtraction(
+            hiddenStates: imgPlusRef,
+            encoderHiddenStates: txt,
+            temb: temb,
+            rotaryEmb: rope,
+            imgModParams: nil,
+            txtModParams: nil,
+            referenceTokenCount: seqLenRef
+        )
+        eval(ehsOut, hsOut, cache.keys, cache.values)
+
+        XCTAssertEqual(hsOut.shape, [batchSize, seqLenRef + seqLenImg, dim])
+        XCTAssertEqual(ehsOut.shape, [batchSize, seqLenTxt, dim])
+        XCTAssertEqual(cache.keys.shape, [batchSize, numHeads, seqLenRef, headDim])
+    }
+
+    func testDoubleStreamBlockKVCached() {
+        let block = Flux2TransformerBlock(dim: dim, numHeads: numHeads, headDim: headDim)
+        let img = MLXRandom.normal([batchSize, seqLenImg, dim])
+        let txt = MLXRandom.normal([batchSize, seqLenTxt, dim])
+        let temb = MLXRandom.normal([batchSize, dim])
+        let rope = (cos: MLXRandom.normal([seqLenTxt + seqLenImg, headDim]),
+                    sin: MLXRandom.normal([seqLenTxt + seqLenImg, headDim]))
+        let cachedKV = LayerKVCacheEntry(
+            keys: MLXRandom.normal([batchSize, numHeads, seqLenRef, headDim]),
+            values: MLXRandom.normal([batchSize, numHeads, seqLenRef, headDim])
+        )
+
+        let (ehsOut, hsOut) = block.callWithKVCached(
+            hiddenStates: img,
+            encoderHiddenStates: txt,
+            temb: temb,
+            rotaryEmb: rope,
+            imgModParams: nil,
+            txtModParams: nil,
+            cachedKV: cachedKV
+        )
+        eval(ehsOut, hsOut)
+
+        XCTAssertEqual(hsOut.shape, [batchSize, seqLenImg, dim])
+        XCTAssertEqual(ehsOut.shape, [batchSize, seqLenTxt, dim])
+    }
+
+    func testSingleStreamBlockKVExtraction() {
+        let block = Flux2SingleTransformerBlock(dim: dim, numHeads: numHeads, headDim: headDim)
+        let totalSeq = seqLenTxt + seqLenRef + seqLenImg
+        let combined = MLXRandom.normal([batchSize, totalSeq, dim])
+        let temb = MLXRandom.normal([batchSize, dim])
+        let rope = (cos: MLXRandom.normal([totalSeq, headDim]),
+                    sin: MLXRandom.normal([totalSeq, headDim]))
+
+        let (output, cache) = block.callWithKVExtraction(
+            hiddenStates: combined,
+            temb: temb,
+            rotaryEmb: rope,
+            modParams: nil,
+            textLen: seqLenTxt,
+            referenceTokenCount: seqLenRef
+        )
+        eval(output, cache.keys, cache.values)
+
+        XCTAssertEqual(output.shape, [batchSize, totalSeq, dim])
+        XCTAssertEqual(cache.keys.shape, [batchSize, numHeads, seqLenRef, headDim])
+    }
+
+    func testSingleStreamBlockKVCached() {
+        let block = Flux2SingleTransformerBlock(dim: dim, numHeads: numHeads, headDim: headDim)
+        let seqLen = seqLenTxt + seqLenImg  // no ref
+        let combined = MLXRandom.normal([batchSize, seqLen, dim])
+        let temb = MLXRandom.normal([batchSize, dim])
+        let rope = (cos: MLXRandom.normal([seqLen, headDim]),
+                    sin: MLXRandom.normal([seqLen, headDim]))
+        let cachedKV = LayerKVCacheEntry(
+            keys: MLXRandom.normal([batchSize, numHeads, seqLenRef, headDim]),
+            values: MLXRandom.normal([batchSize, numHeads, seqLenRef, headDim])
+        )
+
+        let output = block.callWithKVCached(
+            hiddenStates: combined,
+            temb: temb,
+            rotaryEmb: rope,
+            modParams: nil,
+            cachedKV: cachedKV,
+            textLen: seqLenTxt
+        )
+        eval(output)
+
+        XCTAssertEqual(output.shape, [batchSize, seqLen, dim])
+    }
+}
+
+// MARK: - Klein 9B KV Enum Exhaustiveness Tests
+
+final class Klein9BKVEnumTests: XCTestCase {
+
+    func testFlux2ModelAllCasesIncludesKlein9BKV() {
+        let allRawValues = Flux2Model.allCases.map { $0.rawValue }
+        XCTAssertTrue(allRawValues.contains("klein-9b-kv"))
+    }
+
+    func testTransformerVariantAllCasesIncludesKlein9BKV() {
+        let allRawValues = ModelRegistry.TransformerVariant.allCases.map { $0.rawValue }
+        XCTAssertTrue(allRawValues.contains("klein9b-kv-bf16"))
+    }
+
+    func testFlux2ModelCaseCount() {
+        // dev, klein-4b, klein-4b-base, klein-9b, klein-9b-base, klein-9b-kv = 6
+        XCTAssertEqual(Flux2Model.allCases.count, 6)
+    }
+
+    func testTransformerVariantCaseCount() {
+        // bf16, qint8, klein4b-bf16, klein4b-8bit, klein4b-base-bf16,
+        // klein9b-bf16, klein9b-base-bf16, klein9b-kv-bf16 = 8
+        XCTAssertEqual(ModelRegistry.TransformerVariant.allCases.count, 8)
+    }
+
+    func testKlein9BKVMemoryConfigDoesNotCrash() {
+        // Verify MemoryConfig handles the new model in all code paths
+        let limit = MemoryConfig.cacheLimitForResolution(width: 512, height: 512, model: .klein9BKV)
+        XCTAssertGreaterThan(limit, 0)
+
+        let phaseLimits = MemoryConfig.PhaseLimits.forModel(.klein9BKV, profile: .auto)
+        XCTAssertGreaterThan(phaseLimits.denoising, 0)
+        XCTAssertGreaterThan(phaseLimits.textEncoding, 0)
+        XCTAssertGreaterThan(phaseLimits.vaeDecoding, 0)
+
+        // Manual profiles fallback to dynamic
+        let conservativeLimits = MemoryConfig.PhaseLimits.forModel(.klein9BKV, profile: .conservative)
+        XCTAssertGreaterThan(conservativeLimits.denoising, 0)
+    }
 }

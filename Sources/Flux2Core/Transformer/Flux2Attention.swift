@@ -419,7 +419,7 @@ public class Flux2Attention: Module, @unchecked Sendable {
     ///
     /// Joint attention sequence order: [txt, ref, output]
     /// Returns additive mask: 0.0 for allowed, -inf for blocked
-    private func buildKVExtractionMask(textLen: Int, refLen: Int, outputLen: Int, totalSeq: Int) -> MLXArray {
+    func buildKVExtractionMask(textLen: Int, refLen: Int, outputLen: Int, totalSeq: Int) -> MLXArray {
         // Create mask filled with 0 (all allowed)
         var maskData = [Float](repeating: 0.0, count: totalSeq * totalSeq)
 
