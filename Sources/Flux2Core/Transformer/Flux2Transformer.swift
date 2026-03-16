@@ -326,6 +326,225 @@ public class Flux2Transformer2DModel: Module, @unchecked Sendable {
         return output
     }
 
+    // MARK: - KV-Cached Forward Passes (for klein-9b-kv)
+
+    /// KV extraction forward pass (step 0 of KV-cached denoising)
+    ///
+    /// Processes [ref + output] image tokens and text tokens, extracting KV cache
+    /// for reference tokens at each layer. Reference tokens only self-attend.
+    ///
+    /// - Parameters:
+    ///   - hiddenStates: Output image latents [B, S_img, 128]
+    ///   - referenceHiddenStates: Reference image latents [B, S_ref, 128]
+    ///   - encoderHiddenStates: Text embeddings [B, S_txt, jointAttentionDim]
+    ///   - timestep: Diffusion timestep [B]
+    ///   - guidance: Guidance scale [B] (optional)
+    ///   - imgIds: Output image position IDs [S_img, 4]
+    ///   - txtIds: Text position IDs [S_txt, 4]
+    ///   - refIds: Reference image position IDs [S_ref, 4]
+    /// - Returns: (noisePred [B, S_img, 128], kvCache with all layers)
+    public func forwardKVExtract(
+        hiddenStates: MLXArray,
+        referenceHiddenStates: MLXArray,
+        encoderHiddenStates: MLXArray,
+        timestep: MLXArray,
+        guidance: MLXArray? = nil,
+        imgIds: MLXArray,
+        txtIds: MLXArray,
+        refIds: MLXArray
+    ) -> (MLXArray, TransformerKVCache) {
+        let referenceTokenCount = referenceHiddenStates.shape[1]
+
+        // Project inputs
+        let imgHS = xEmbedder(hiddenStates)
+        let refHS = xEmbedder(referenceHiddenStates)
+        var txtHS = contextEmbedder(encoderHiddenStates)
+
+        // Combine ref + output for the image stream
+        var combinedImgHS = concatenated([refHS, imgHS], axis: 1)
+
+        // Timestep/guidance embeddings
+        let scaledTimestep = timestep * 1000
+        let scaledGuidance = guidance.map { $0 * 1000 }
+        let temb = timeGuidanceEmbed(timestep: scaledTimestep, guidance: scaledGuidance)
+
+        // RoPE for [txt, ref, img] combined IDs
+        let combinedIds = concatenated([txtIds, refIds, imgIds], axis: 0)
+        let ropeEmb = posEmbed(combinedIds)
+
+        // Modulation
+        let imgMod = doubleStreamModulationImg(temb)
+        let txtMod = doubleStreamModulationTxt(temb)
+
+        // Initialize KV cache
+        var kvCache = TransformerKVCache(referenceTokenCount: referenceTokenCount)
+
+        // --- Double-Stream Blocks with KV extraction ---
+        for (blockIdx, block) in transformerBlocks.enumerated() {
+            let (newTxt, newImg, cacheEntry) = block.callWithKVExtraction(
+                hiddenStates: combinedImgHS,
+                encoderHiddenStates: txtHS,
+                temb: temb,
+                rotaryEmb: ropeEmb,
+                imgModParams: imgMod,
+                txtModParams: txtMod,
+                referenceTokenCount: referenceTokenCount
+            )
+
+            combinedImgHS = newImg
+            txtHS = newTxt
+            kvCache.setDoubleStream(blockIndex: blockIdx, entry: cacheEntry)
+
+            // Memory optimization
+            if memoryOptimization.evalFrequency > 0 &&
+                (blockIdx + 1) % memoryOptimization.evalFrequency == 0 {
+                eval(combinedImgHS, txtHS)
+            }
+        }
+
+        if memoryOptimization.evalBetweenPhases {
+            eval(combinedImgHS, txtHS)
+        }
+
+        // --- Single-Stream Blocks with KV extraction ---
+        let textSeqLen = txtHS.shape[1]
+        var singleHS = concatenated([txtHS, combinedImgHS], axis: 1)
+
+        let singleMod = singleStreamModulation(temb)
+
+        for (blockIdx, block) in singleTransformerBlocks.enumerated() {
+            let (result, cacheEntry) = block.callWithKVExtraction(
+                hiddenStates: singleHS,
+                temb: temb,
+                rotaryEmb: ropeEmb,
+                modParams: singleMod,
+                textLen: textSeqLen,
+                referenceTokenCount: referenceTokenCount
+            )
+
+            singleHS = result
+            kvCache.setSingleStream(blockIndex: blockIdx, entry: cacheEntry)
+
+            if memoryOptimization.evalFrequency > 0 &&
+                (blockIdx + 1) % memoryOptimization.evalFrequency == 0 {
+                eval(singleHS)
+            }
+        }
+
+        // Extract output portion (skip txt and ref tokens)
+        let outputStart = textSeqLen + referenceTokenCount
+        let outputHS = singleHS[0..., outputStart..., 0...]
+
+        // Final norm and projection on output only
+        let finalHS = normOut(outputHS, conditioning: temb)
+        let noisePred = projOut(finalHS)
+
+        return (noisePred, kvCache)
+    }
+
+    /// KV-cached forward pass (steps 1+ of KV-cached denoising)
+    ///
+    /// Processes only [output] image tokens and text tokens, using cached reference K/V.
+    /// No reference tokens in the input sequence.
+    ///
+    /// - Parameters:
+    ///   - hiddenStates: Output image latents [B, S_img, 128]
+    ///   - encoderHiddenStates: Text embeddings [B, S_txt, jointAttentionDim]
+    ///   - timestep: Diffusion timestep [B]
+    ///   - guidance: Guidance scale [B] (optional)
+    ///   - imgIds: Output image position IDs [S_img, 4]
+    ///   - txtIds: Text position IDs [S_txt, 4]
+    ///   - kvCache: Cached reference K/V from step 0
+    /// - Returns: Predicted noise [B, S_img, 128]
+    public func forwardKVCached(
+        hiddenStates: MLXArray,
+        encoderHiddenStates: MLXArray,
+        timestep: MLXArray,
+        guidance: MLXArray? = nil,
+        imgIds: MLXArray,
+        txtIds: MLXArray,
+        kvCache: TransformerKVCache
+    ) -> MLXArray {
+        // Project inputs (no reference tokens)
+        var imgHS = xEmbedder(hiddenStates)
+        var txtHS = contextEmbedder(encoderHiddenStates)
+
+        // Timestep/guidance embeddings
+        let scaledTimestep = timestep * 1000
+        let scaledGuidance = guidance.map { $0 * 1000 }
+        let temb = timeGuidanceEmbed(timestep: scaledTimestep, guidance: scaledGuidance)
+
+        // RoPE for [txt, img] only (no ref)
+        let combinedIds = concatenated([txtIds, imgIds], axis: 0)
+        let ropeEmb = posEmbed(combinedIds)
+
+        // Modulation
+        let imgMod = doubleStreamModulationImg(temb)
+        let txtMod = doubleStreamModulationTxt(temb)
+
+        // --- Double-Stream Blocks with cached KV ---
+        for (blockIdx, block) in transformerBlocks.enumerated() {
+            guard let cache = kvCache.doubleStreamEntry(at: blockIdx) else {
+                fatalError("Missing KV cache for double-stream block \(blockIdx)")
+            }
+
+            let (newTxt, newImg) = block.callWithKVCached(
+                hiddenStates: imgHS,
+                encoderHiddenStates: txtHS,
+                temb: temb,
+                rotaryEmb: ropeEmb,
+                imgModParams: imgMod,
+                txtModParams: txtMod,
+                cachedKV: cache
+            )
+
+            imgHS = newImg
+            txtHS = newTxt
+
+            if memoryOptimization.evalFrequency > 0 &&
+                (blockIdx + 1) % memoryOptimization.evalFrequency == 0 {
+                eval(imgHS, txtHS)
+            }
+        }
+
+        if memoryOptimization.evalBetweenPhases {
+            eval(imgHS, txtHS)
+        }
+
+        // --- Single-Stream Blocks with cached KV ---
+        let textSeqLen = txtHS.shape[1]
+        var combinedHS = concatenated([txtHS, imgHS], axis: 1)
+
+        let singleMod = singleStreamModulation(temb)
+
+        for (blockIdx, block) in singleTransformerBlocks.enumerated() {
+            guard let cache = kvCache.singleStreamEntry(at: blockIdx) else {
+                fatalError("Missing KV cache for single-stream block \(blockIdx)")
+            }
+
+            combinedHS = block.callWithKVCached(
+                hiddenStates: combinedHS,
+                temb: temb,
+                rotaryEmb: ropeEmb,
+                modParams: singleMod,
+                cachedKV: cache,
+                textLen: textSeqLen
+            )
+
+            if memoryOptimization.evalFrequency > 0 &&
+                (blockIdx + 1) % memoryOptimization.evalFrequency == 0 {
+                eval(combinedHS)
+            }
+        }
+
+        // Extract output portion (skip text tokens, no ref tokens)
+        imgHS = combinedHS[0..., textSeqLen..., 0...]
+
+        // Final norm and projection
+        imgHS = normOut(imgHS, conditioning: temb)
+        return projOut(imgHS)
+    }
+
     /// Convenience method with automatic position ID generation
     public func forward(
         latents: MLXArray,

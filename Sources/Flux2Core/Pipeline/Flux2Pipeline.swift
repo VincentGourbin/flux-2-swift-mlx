@@ -179,7 +179,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         switch model {
         case .dev:
             guard textEncoder == nil else { return }
-        case .klein4B, .klein4BBase, .klein9B, .klein9BBase:
+        case .klein4B, .klein4BBase, .klein9B, .klein9BBase, .klein9BKV:
             guard kleinEncoder == nil else { return }
         }
 
@@ -208,7 +208,7 @@ public class Flux2Pipeline: @unchecked Sendable {
             kleinEncoder = KleinTextEncoder(variant: .klein4B, quantization: mistralQuant)
             try await kleinEncoder!.load()
 
-        case .klein9B, .klein9BBase:
+        case .klein9B, .klein9BBase, .klein9BKV:
             kleinEncoder = KleinTextEncoder(variant: .klein9B, quantization: mistralQuant)
             try await kleinEncoder!.load()
         }
@@ -225,7 +225,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         case .dev:
             textEncoder?.unload()
             textEncoder = nil
-        case .klein4B, .klein4BBase, .klein9B, .klein9BBase:
+        case .klein4B, .klein4BBase, .klein9B, .klein9BBase, .klein9BKV:
             kleinEncoder?.unload()
             kleinEncoder = nil
         }
@@ -273,6 +273,8 @@ public class Flux2Pipeline: @unchecked Sendable {
                 downloadCmd = "flux2 download --model klein-4b"
             case .klein9B, .klein9BBase:
                 downloadCmd = "flux2 download --model klein-9b"
+            case .klein9BKV:
+                downloadCmd = "flux2 download --model klein-9b-kv"
             }
             throw Flux2Error.modelNotLoaded("\(model.displayName) transformer weights not found. Run: \(downloadCmd)")
         }
@@ -373,7 +375,7 @@ public class Flux2Pipeline: @unchecked Sendable {
             switch model {
             case .dev: expectedModel = .dev
             case .klein4B, .klein4BBase: expectedModel = .klein4B
-            case .klein9B, .klein9BBase: expectedModel = .klein9B
+            case .klein9B, .klein9BBase, .klein9BKV: expectedModel = .klein9B
             }
 
             if info.targetModel != expectedModel {
@@ -815,7 +817,7 @@ public class Flux2Pipeline: @unchecked Sendable {
 
                 profiler.end("1b. VLM Interpretation")
 
-            case .klein4B, .klein4BBase, .klein9B, .klein9BBase:
+            case .klein4B, .klein4BBase, .klein9B, .klein9BBase, .klein9BKV:
                 // Klein + --interpret: load Mistral VLM temporarily to analyze images
                 Flux2Debug.log("Klein with --interpret: loading Mistral VLM temporarily to analyze images...")
                 profiler.start("1b. VLM Interpretation")
@@ -885,7 +887,7 @@ public class Flux2Pipeline: @unchecked Sendable {
                 wasPromptUpsampled = upsamplePrompt && (usedPrompt != enrichedPrompt)
             }
 
-        case .klein4B, .klein4BBase, .klein9B, .klein9BBase:
+        case .klein4B, .klein4BBase, .klein9B, .klein9BBase, .klein9BKV:
             // Klein I2I with upsampling: load Mistral VLM temporarily to see reference images
             // This matches the official flux2 implementation which loads Mistral for Klein I2I upsampling
             if upsamplePrompt, case .imageToImage(let images) = mode {
@@ -1037,6 +1039,108 @@ public class Flux2Pipeline: @unchecked Sendable {
 
             profiler.start("6. Denoising Loop")
 
+            if model.supportsKVCache {
+                // === KV-CACHED DENOISING PATH (klein-9b-kv) ===
+                // Step 0: Extract KV cache from reference tokens
+                // Steps 1+: Reuse cached KV (no reference re-processing, ~2.66x speedup)
+                Flux2Debug.log("Using KV-cached denoising (\(effectiveSteps) steps, ~2.66x speedup)")
+
+                guard let transformer = transformer else {
+                    throw Flux2Error.generationCancelled
+                }
+
+                // Step 0: KV extraction pass
+                let step0Start = Date()
+                let sigma0 = scheduler.sigmas[0]
+                let t0 = MLXArray([sigma0])
+
+                let (noisePred0, kvCache) = transformer.forwardKVExtract(
+                    hiddenStates: packedOutputLatents,
+                    referenceHiddenStates: referenceLatents,
+                    encoderHiddenStates: textEmbeddings,
+                    timestep: t0,
+                    guidance: guidanceTensor,
+                    imgIds: outputImageIds,
+                    txtIds: textIds,
+                    refIds: referencePositionIds
+                )
+
+                packedOutputLatents = scheduler.step(
+                    modelOutput: noisePred0,
+                    timestep: sigma0,
+                    sample: packedOutputLatents
+                )
+                eval(packedOutputLatents)
+
+                let step0Duration = Date().timeIntervalSince(step0Start)
+                profiler.recordStep(duration: step0Duration)
+                onProgress?(1, effectiveSteps)
+                Flux2Debug.log("Step 0 (KV extraction): \(String(format: "%.1f", step0Duration))s, cached \(kvCache.layerCount) layers")
+
+                // Steps 1+: Cached denoising (no reference tokens in input)
+                for stepIdx in 1..<(scheduler.sigmas.count - 1) {
+                    let stepStart = Date()
+                    let sigma = scheduler.sigmas[stepIdx]
+                    let t = MLXArray([sigma])
+
+                    let noisePred = transformer.forwardKVCached(
+                        hiddenStates: packedOutputLatents,
+                        encoderHiddenStates: textEmbeddings,
+                        timestep: t,
+                        guidance: guidanceTensor,
+                        imgIds: outputImageIds,
+                        txtIds: textIds,
+                        kvCache: kvCache
+                    )
+
+                    packedOutputLatents = scheduler.step(
+                        modelOutput: noisePred,
+                        timestep: sigma,
+                        sample: packedOutputLatents
+                    )
+                    eval(packedOutputLatents)
+
+                    if clearCacheEveryNSteps > 0 && (stepIdx + 1) % clearCacheEveryNSteps == 0 {
+                        MemoryConfig.clearCache()
+                    }
+
+                    let stepDuration = Date().timeIntervalSince(stepStart)
+                    profiler.recordStep(duration: stepDuration)
+                    onProgress?(stepIdx + 1, effectiveSteps)
+                    Flux2Debug.verbose("Step \(stepIdx + 1)/\(effectiveSteps) (cached)")
+
+                    // Checkpoint
+                    if let interval = checkpointInterval,
+                       let checkpointCallback = onCheckpoint,
+                       (stepIdx + 1) % interval == 0 {
+                        var checkpointPatchified = LatentUtils.unpackSequenceToPatchified(
+                            packedOutputLatents,
+                            height: validHeight,
+                            width: validWidth
+                        )
+                        checkpointPatchified = LatentUtils.denormalizeLatentsWithBatchNorm(
+                            checkpointPatchified,
+                            runningMean: vae!.batchNormRunningMean,
+                            runningVar: vae!.batchNormRunningVar
+                        )
+                        let checkpointLatents = LatentUtils.unpatchifyLatents(checkpointPatchified)
+                        eval(checkpointLatents)
+
+                        let checkpointDecoded = vae!.decode(checkpointLatents)
+                        eval(checkpointDecoded)
+
+                        if let checkpointImage = postprocessVAEOutput(checkpointDecoded) {
+                            checkpointCallback(stepIdx + 1, checkpointImage)
+                        }
+                    }
+                }
+
+                // KV cache is freed when it goes out of scope
+                Flux2Debug.log("KV-cached denoising complete")
+
+            } else {
+            // === STANDARD I2I DENOISING PATH ===
+
             for stepIdx in 0..<(scheduler.sigmas.count - 1) {
                 let stepStart = Date()
 
@@ -1113,6 +1217,8 @@ public class Flux2Pipeline: @unchecked Sendable {
                     memoryManager.clearCache()
                 }
             }
+
+            } // end else (standard I2I path)
 
             profiler.end("6. Denoising Loop")
 

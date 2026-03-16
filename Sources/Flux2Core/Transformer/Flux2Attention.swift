@@ -228,6 +228,216 @@ public class Flux2Attention: Module, @unchecked Sendable {
         return (qOut, kOut)
     }
 
+    // MARK: - KV Cache Methods (for klein-9b-kv)
+
+    /// Forward pass with KV extraction for reference tokens (step 0 of KV-cached denoising)
+    ///
+    /// In this mode, the image stream contains [ref + output] tokens.
+    /// An attention mask ensures reference tokens only self-attend (no cross-attend with output).
+    /// After attention, the reference K/V are extracted and returned for caching.
+    ///
+    /// - Parameters:
+    ///   - hiddenStates: Image hidden states [B, S_ref+S_img, dim] (ref tokens + output tokens)
+    ///   - encoderHiddenStates: Text encoder hidden states [B, S_txt, dim]
+    ///   - rotaryEmb: RoPE embeddings for combined sequence [txtIds, refIds, imgIds]
+    ///   - referenceTokenCount: Number of reference tokens at the start of hiddenStates
+    /// - Returns: (hiddenStates, encoderHiddenStates, LayerKVCacheEntry with ref K/V)
+    public func callWithKVExtraction(
+        hiddenStates: MLXArray,
+        encoderHiddenStates: MLXArray,
+        rotaryEmb: (cos: MLXArray, sin: MLXArray),
+        referenceTokenCount: Int
+    ) -> (hiddenStates: MLXArray, encoderHiddenStates: MLXArray, cache: LayerKVCacheEntry) {
+        let batchSize = hiddenStates.shape[0]
+        let seqLenImg = hiddenStates.shape[1]  // ref + output tokens
+        let seqLenTxt = encoderHiddenStates.shape[1]
+
+        // Project image (ref + output) to Q, K, V
+        var q = toQ(hiddenStates)
+        var k = toK(hiddenStates)
+        let v = toV(hiddenStates)
+
+        // Project text to Q, K, V
+        var addedQ = addQProj(encoderHiddenStates)
+        var addedK = addKProj(encoderHiddenStates)
+        let addedV = addVProj(encoderHiddenStates)
+
+        // Reshape for multi-head attention
+        q = reshapeForAttention(q, batchSize: batchSize, seqLen: seqLenImg)
+        k = reshapeForAttention(k, batchSize: batchSize, seqLen: seqLenImg)
+        let vReshaped = reshapeForAttention(v, batchSize: batchSize, seqLen: seqLenImg)
+
+        addedQ = reshapeForAttention(addedQ, batchSize: batchSize, seqLen: seqLenTxt)
+        addedK = reshapeForAttention(addedK, batchSize: batchSize, seqLen: seqLenTxt)
+        let addedVReshaped = reshapeForAttention(addedV, batchSize: batchSize, seqLen: seqLenTxt)
+
+        // Apply QK normalization
+        q = normQ(q)
+        k = normK(k)
+        addedQ = normAddedQ(addedQ)
+        addedK = normAddedK(addedK)
+
+        // Apply RoPE
+        // RoPE order: [txt, ref, img] matching position IDs
+        let txtCos = rotaryEmb.cos[0..<seqLenTxt]
+        let txtSin = rotaryEmb.sin[0..<seqLenTxt]
+        let imgCos = rotaryEmb.cos[seqLenTxt..<(seqLenTxt + seqLenImg)]
+        let imgSin = rotaryEmb.sin[seqLenTxt..<(seqLenTxt + seqLenImg)]
+
+        (q, k) = applyRoPE(q: q, k: k, cos: imgCos, sin: imgSin)
+        (addedQ, addedK) = applyRoPE(q: addedQ, k: addedK, cos: txtCos, sin: txtSin)
+
+        // Extract reference K/V AFTER RoPE (so cached keys are post-RoPE)
+        // Image K/V layout: [B, H, S_ref+S_img, D] -> ref portion is first referenceTokenCount
+        let refK = k[0..., 0..., 0..<referenceTokenCount, 0...]
+        let refV = vReshaped[0..., 0..., 0..<referenceTokenCount, 0...]
+        let cacheEntry = LayerKVCacheEntry(keys: refK, values: refV)
+
+        // Build attention mask for KV extraction mode:
+        // - Reference queries only attend to text + reference (not output)
+        // - Text and output queries attend to everything
+        // Sequence order in joint attention: [txt, ref+img]
+        let totalSeq = seqLenTxt + seqLenImg
+        let mask = buildKVExtractionMask(
+            textLen: seqLenTxt,
+            refLen: referenceTokenCount,
+            outputLen: seqLenImg - referenceTokenCount,
+            totalSeq: totalSeq
+        )
+
+        // Concatenate for joint attention: [txt, ref+img]
+        let concatQ = concatenated([addedQ, q], axis: 2)
+        let concatK = concatenated([addedK, k], axis: 2)
+        let concatV = concatenated([addedVReshaped, vReshaped], axis: 2)
+
+        // Compute masked attention
+        let attnOutput = MLXFast.scaledDotProductAttention(
+            queries: concatQ,
+            keys: concatK,
+            values: concatV,
+            scale: Float(1.0 / sqrt(Float(headDim))),
+            mask: mask
+        )
+
+        // Split back into text and image portions
+        let txtAttnOutput = attnOutput[0..., 0..., 0..<seqLenTxt, 0...]
+        let imgAttnOutput = attnOutput[0..., 0..., seqLenTxt..., 0...]
+
+        // Reshape and project
+        let imgOut = reshapeFromAttention(imgAttnOutput, batchSize: batchSize, seqLen: seqLenImg)
+        let txtOut = reshapeFromAttention(txtAttnOutput, batchSize: batchSize, seqLen: seqLenTxt)
+
+        let hiddenStatesOut = toOut(imgOut)
+        let encoderHiddenStatesOut = toAddOut(txtOut)
+
+        return (hiddenStates: hiddenStatesOut, encoderHiddenStates: encoderHiddenStatesOut, cache: cacheEntry)
+    }
+
+    /// Forward pass with cached KV for reference tokens (steps 1+ of KV-cached denoising)
+    ///
+    /// In this mode, only [output] tokens are in the image stream (no reference tokens).
+    /// Cached reference K/V from step 0 are concatenated with current K/V.
+    ///
+    /// - Parameters:
+    ///   - hiddenStates: Image hidden states [B, S_img, dim] (output tokens only)
+    ///   - encoderHiddenStates: Text encoder hidden states [B, S_txt, dim]
+    ///   - rotaryEmb: RoPE embeddings for [txtIds, imgIds] (no refIds)
+    ///   - cachedKV: Cached reference K/V from step 0 (post-RoPE)
+    /// - Returns: (hiddenStates, encoderHiddenStates)
+    public func callWithKVCached(
+        hiddenStates: MLXArray,
+        encoderHiddenStates: MLXArray,
+        rotaryEmb: (cos: MLXArray, sin: MLXArray),
+        cachedKV: LayerKVCacheEntry
+    ) -> (hiddenStates: MLXArray, encoderHiddenStates: MLXArray) {
+        let batchSize = hiddenStates.shape[0]
+        let seqLenImg = hiddenStates.shape[1]
+        let seqLenTxt = encoderHiddenStates.shape[1]
+
+        // Project current tokens
+        var q = toQ(hiddenStates)
+        var k = toK(hiddenStates)
+        let v = toV(hiddenStates)
+
+        var addedQ = addQProj(encoderHiddenStates)
+        var addedK = addKProj(encoderHiddenStates)
+        let addedV = addVProj(encoderHiddenStates)
+
+        // Reshape
+        q = reshapeForAttention(q, batchSize: batchSize, seqLen: seqLenImg)
+        k = reshapeForAttention(k, batchSize: batchSize, seqLen: seqLenImg)
+        let vReshaped = reshapeForAttention(v, batchSize: batchSize, seqLen: seqLenImg)
+
+        addedQ = reshapeForAttention(addedQ, batchSize: batchSize, seqLen: seqLenTxt)
+        addedK = reshapeForAttention(addedK, batchSize: batchSize, seqLen: seqLenTxt)
+        let addedVReshaped = reshapeForAttention(addedV, batchSize: batchSize, seqLen: seqLenTxt)
+
+        // QK norm
+        q = normQ(q)
+        k = normK(k)
+        addedQ = normAddedQ(addedQ)
+        addedK = normAddedK(addedK)
+
+        // Apply RoPE to current tokens only
+        let txtCos = rotaryEmb.cos[0..<seqLenTxt]
+        let txtSin = rotaryEmb.sin[0..<seqLenTxt]
+        let imgCos = rotaryEmb.cos[seqLenTxt..<(seqLenTxt + seqLenImg)]
+        let imgSin = rotaryEmb.sin[seqLenTxt..<(seqLenTxt + seqLenImg)]
+
+        (q, k) = applyRoPE(q: q, k: k, cos: imgCos, sin: imgSin)
+        (addedQ, addedK) = applyRoPE(q: addedQ, k: addedK, cos: txtCos, sin: txtSin)
+
+        // Concatenate K/V with cached reference K/V
+        // Order: [txt_K, cached_ref_K, img_K] for keys
+        // Cached ref K is already post-RoPE — do NOT re-apply
+        let concatQ = concatenated([addedQ, q], axis: 2)
+        let concatK = concatenated([addedK, cachedKV.keys, k], axis: 2)
+        let concatV = concatenated([addedVReshaped, cachedKV.values, vReshaped], axis: 2)
+
+        // No mask needed: all positions can attend to all (including cached ref)
+        let attnOutput = MLXFast.scaledDotProductAttention(
+            queries: concatQ,
+            keys: concatK,
+            values: concatV,
+            scale: Float(1.0 / sqrt(Float(headDim))),
+            mask: nil
+        )
+
+        // Split back
+        let txtAttnOutput = attnOutput[0..., 0..., 0..<seqLenTxt, 0...]
+        let imgAttnOutput = attnOutput[0..., 0..., seqLenTxt..., 0...]
+
+        let imgOut = reshapeFromAttention(imgAttnOutput, batchSize: batchSize, seqLen: seqLenImg)
+        let txtOut = reshapeFromAttention(txtAttnOutput, batchSize: batchSize, seqLen: seqLenTxt)
+
+        return (hiddenStates: toOut(imgOut), encoderHiddenStates: toAddOut(txtOut))
+    }
+
+    /// Build attention mask for KV extraction step
+    /// Reference queries should only attend to text + reference tokens (not output)
+    /// Text and output queries attend to everything
+    ///
+    /// Joint attention sequence order: [txt, ref, output]
+    /// Returns additive mask: 0.0 for allowed, -inf for blocked
+    private func buildKVExtractionMask(textLen: Int, refLen: Int, outputLen: Int, totalSeq: Int) -> MLXArray {
+        // Create mask filled with 0 (all allowed)
+        var maskData = [Float](repeating: 0.0, count: totalSeq * totalSeq)
+
+        // Block reference queries from attending to output keys
+        // Reference query indices: textLen ..< (textLen + refLen)
+        // Output key indices: (textLen + refLen) ..< totalSeq
+        for qIdx in textLen..<(textLen + refLen) {
+            for kIdx in (textLen + refLen)..<totalSeq {
+                maskData[qIdx * totalSeq + kIdx] = -Float.infinity
+            }
+        }
+
+        // Shape: [1, 1, totalSeq, totalSeq] for broadcasting over batch and heads
+        return MLXArray(maskData).reshaped([1, 1, totalSeq, totalSeq])
+    }
+
+    // MARK: - Helper Functions
+
     /// Rotate features for RoPE (diffusers-style: treat consecutive pairs as real/imag)
     private func rotateHalf(_ x: MLXArray) -> MLXArray {
         // x shape: [B, H, S, D]

@@ -105,7 +105,7 @@ public struct MemoryConfig {
         let modelFactor: Double
         switch model {
         case .dev: modelFactor = 1.5      // Dev is larger
-        case .klein9B, .klein9BBase: modelFactor = 1.2  // Klein 9B is medium
+        case .klein9B, .klein9BBase, .klein9BKV: modelFactor = 1.2  // Klein 9B is medium
         case .klein4B, .klein4BBase: modelFactor = 1.0  // Klein 4B is base
         }
 
@@ -230,7 +230,7 @@ public struct MemoryConfig {
                 textRatio = 0.4
                 denoiseRatio = 1.0
                 vaeRatio = 0.5
-            case .klein9B, .klein9BBase:
+            case .klein9B, .klein9BBase, .klein9BKV:
                 textRatio = 0.3
                 denoiseRatio = 0.8
                 vaeRatio = 0.4

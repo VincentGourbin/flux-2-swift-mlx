@@ -65,7 +65,7 @@ struct TextToImage: AsyncParsableCommand {
     @Option(name: .long, help: "Random seed")
     var seed: UInt64?
 
-    @Option(name: .long, help: "Model variant: dev (32B), klein-4b (4B, Apache 2.0), klein-9b (9B)")
+    @Option(name: .long, help: "Model variant: dev (32B), klein-4b (4B, Apache 2.0), klein-9b (9B), klein-9b-kv (9B, KV-cached I2I)")
     var model: String = "dev"
 
     @Option(name: .long, help: "Text encoder quantization: bf16, 8bit, 6bit, 4bit")
@@ -131,7 +131,7 @@ struct TextToImage: AsyncParsableCommand {
         // Gated: dev, klein-9b (both base and distilled)
         // Non-gated: klein-4b
         let token = hfToken ?? ProcessInfo.processInfo.environment["HF_TOKEN"]
-        let isGatedModel = modelVariant == .dev || modelVariant == .klein9B
+        let isGatedModel = modelVariant == .dev || modelVariant == .klein9B || modelVariant == .klein9BKV
 
         if token == nil && isGatedModel {
             print("⚠️  No HuggingFace token provided.")
@@ -395,7 +395,7 @@ struct ImageToImage: AsyncParsableCommand {
     @Flag(name: .long, help: "Show detailed performance profiling")
     var profile: Bool = false
 
-    @Option(name: .long, help: "Model variant: dev (32B), klein-4b (4B, Apache 2.0), klein-9b (9B)")
+    @Option(name: .long, help: "Model variant: dev (32B), klein-4b (4B, Apache 2.0), klein-9b (9B), klein-9b-kv (9B, KV-cached I2I)")
     var model: String = "dev"
 
     @Option(name: .long, help: "Text encoder quantization: bf16, 8bit, 6bit, 4bit")
@@ -437,7 +437,7 @@ struct ImageToImage: AsyncParsableCommand {
         // Gated: dev, klein-9b (both base and distilled)
         // Non-gated: klein-4b
         let token = hfToken ?? ProcessInfo.processInfo.environment["HF_TOKEN"]
-        let isGatedModel = modelVariant == .dev || modelVariant == .klein9B
+        let isGatedModel = modelVariant == .dev || modelVariant == .klein9B || modelVariant == .klein9BKV
 
         if token == nil && isGatedModel {
             print("⚠️  No HuggingFace token provided.")
@@ -701,7 +701,7 @@ struct Download: AsyncParsableCommand {
         // Check if model requires authentication (gated models)
         // Gated: dev, klein-9b (both base and distilled)
         // Non-gated: klein-4b
-        let isGatedModel = modelVariant == .dev || modelVariant == .klein9B
+        let isGatedModel = modelVariant == .dev || modelVariant == .klein9B || modelVariant == .klein9BKV
 
         if token == nil && isGatedModel {
             print("⚠️  No HuggingFace token provided.")
@@ -757,7 +757,7 @@ struct Download: AsyncParsableCommand {
         switch modelVariant {
         case .dev:
             print("   Note: Text encoder (Mistral) will be auto-downloaded on first run")
-        case .klein4B, .klein4BBase, .klein9B, .klein9BBase:
+        case .klein4B, .klein4BBase, .klein9B, .klein9BBase, .klein9BKV:
             print("   Note: Text encoder (Qwen3) will be auto-downloaded on first run")
         }
     }

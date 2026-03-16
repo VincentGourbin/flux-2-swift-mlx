@@ -95,7 +95,7 @@ class ImageGenerationViewModel: ObservableObject {
             // Qwen3-4B is smaller
             textEncoderMem = 5  // Qwen3-4B 8bit
             transformerMem = transformerQuantization == .bf16 ? 8 : 4
-        case .klein9B, .klein9BBase:
+        case .klein9B, .klein9BBase, .klein9BKV:
             textEncoderMem = 10  // Qwen3-8B 8bit
             transformerMem = 18  // Only bf16 available
         }
@@ -382,7 +382,7 @@ class ImageGenerationViewModel: ObservableObject {
             guidance = 1.0
             checkpointInterval = 1
 
-        case .klein9B, .klein9BBase:
+        case .klein9B, .klein9BBase, .klein9BKV:
             // Flux.2 Klein 9B - https://huggingface.co/black-forest-labs/FLUX.2-klein-9B
             // 4 steps, guidance 1.0, sub-second generation
             transformerQuantization = .bf16  // Only bf16 available

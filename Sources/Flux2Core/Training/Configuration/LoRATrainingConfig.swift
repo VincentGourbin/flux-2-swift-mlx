@@ -817,7 +817,7 @@ extension LoRATrainingConfig {
             case .int8: baseMemory = 6
             case .int4, .nf4: baseMemory = 4
             }
-        case .klein9B, .klein9BBase:
+        case .klein9B, .klein9BBase, .klein9BKV:
             switch quantization {
             case .bf16: baseMemory = 15
             case .int8: baseMemory = 10

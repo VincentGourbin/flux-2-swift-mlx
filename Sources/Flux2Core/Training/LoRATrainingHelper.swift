@@ -635,7 +635,7 @@ extension LoRATrainingHelper {
         switch modelType {
         case .klein4B, .klein4BBase:
             transformerGB = 10.0  // bf16
-        case .klein9B, .klein9BBase:
+        case .klein9B, .klein9BBase, .klein9BKV:
             transformerGB = 20.0  // bf16
         case .dev:
             transformerGB = 24.0  // bf16

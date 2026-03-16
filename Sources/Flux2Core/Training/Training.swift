@@ -76,6 +76,7 @@ public enum Training {
         case (.klein9B, .int8): return 16
         case (.klein9B, .bf16): return 24
         case (.klein9BBase, _): return 24  // Base only exists in bf16
+        case (.klein9BKV, _): return 24  // Same architecture as klein-9b
         case (.dev, .nf4): return 18
         case (.dev, .int4): return 18
         case (.dev, .int8): return 24

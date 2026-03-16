@@ -480,7 +480,7 @@ struct TrainLoRA: AsyncParsableCommand {
             try await encoder.load()
             return encoder
 
-        case .klein9B, .klein9BBase:
+        case .klein9B, .klein9BBase, .klein9BKV:
             // Klein 9B uses Qwen3-8B
             let encoder = KleinTextEncoder(variant: .klein9B, quantization: mistralQuant)
             try await encoder.load()

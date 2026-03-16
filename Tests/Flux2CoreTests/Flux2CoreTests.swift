@@ -2180,3 +2180,173 @@ final class CGImageSourcePipelineTests: XCTestCase {
         XCTAssertEqual(mismatch, 0, "PNG roundtrip via CGImageSource should be pixel-exact")
     }
 }
+
+// MARK: - Klein 9B KV Configuration Tests
+
+final class Klein9BKVConfigTests: XCTestCase {
+
+    func testKlein9BKVModelProperties() {
+        let model = Flux2Model.klein9BKV
+
+        XCTAssertEqual(model.rawValue, "klein-9b-kv")
+        XCTAssertEqual(model.displayName, "Flux.2 Klein 9B KV")
+        XCTAssertTrue(model.isForInference)
+        XCTAssertFalse(model.isForTraining)
+        XCTAssertFalse(model.isBaseModel)
+        XCTAssertTrue(model.supportsKVCache)
+        XCTAssertEqual(model.defaultSteps, 4)
+        XCTAssertEqual(model.defaultGuidance, 1.0)
+        XCTAssertEqual(model.jointAttentionDim, 12288)
+        XCTAssertFalse(model.usesGuidanceEmbeds)
+        XCTAssertFalse(model.isCommercialUseAllowed)
+        XCTAssertEqual(model.license, "Non-Commercial")
+        XCTAssertEqual(model.maxReferenceImages, 4)
+    }
+
+    func testKlein9BKVTransformerConfig() {
+        let config = Flux2Model.klein9BKV.transformerConfig
+        // Same architecture as klein-9b
+        XCTAssertEqual(config.numLayers, 8)
+        XCTAssertEqual(config.numSingleLayers, 24)
+        XCTAssertEqual(config.numAttentionHeads, 32)
+        XCTAssertEqual(config.attentionHeadDim, 128)
+        XCTAssertEqual(config.innerDim, 4096)  // 32 × 128
+        XCTAssertEqual(config.jointAttentionDim, 12288)
+        XCTAssertFalse(config.guidanceEmbeds)
+    }
+
+    func testSupportsKVCacheOnlyKlein9BKV() {
+        // Only klein-9b-kv should support KV cache
+        XCTAssertTrue(Flux2Model.klein9BKV.supportsKVCache)
+        XCTAssertFalse(Flux2Model.klein9B.supportsKVCache)
+        XCTAssertFalse(Flux2Model.klein4B.supportsKVCache)
+        XCTAssertFalse(Flux2Model.dev.supportsKVCache)
+        XCTAssertFalse(Flux2Model.klein9BBase.supportsKVCache)
+        XCTAssertFalse(Flux2Model.klein4BBase.supportsKVCache)
+    }
+
+    func testKlein9BKVInferenceVariant() {
+        // Inference variant should be klein9B (standard distilled)
+        XCTAssertEqual(Flux2Model.klein9BKV.inferenceVariant, .klein9B)
+    }
+
+    func testKlein9BKVTrainingVariant() {
+        // Training variant should be klein9BBase
+        XCTAssertEqual(Flux2Model.klein9BKV.trainingVariant, .klein9BBase)
+    }
+}
+
+// MARK: - Klein 9B KV Registry Tests
+
+final class Klein9BKVRegistryTests: XCTestCase {
+
+    func testKlein9BKVTransformerVariant() {
+        let variant = ModelRegistry.TransformerVariant.klein9B_kv_bf16
+
+        XCTAssertEqual(variant.rawValue, "klein9b-kv-bf16")
+        XCTAssertEqual(variant.huggingFaceRepo, "black-forest-labs/FLUX.2-klein-9b-kv")
+        XCTAssertNil(variant.huggingFaceSubfolder)
+        XCTAssertEqual(variant.estimatedSizeGB, 18)
+        XCTAssertTrue(variant.isGated)
+        XCTAssertEqual(variant.modelType, .klein9BKV)
+        XCTAssertTrue(variant.isForInference)
+        XCTAssertFalse(variant.isForTraining)
+        XCTAssertEqual(variant.quantization, .bf16)
+    }
+
+    func testKlein9BKVVariantLookup() {
+        // All quantizations should return the bf16 variant (quantize on-the-fly)
+        XCTAssertEqual(
+            ModelRegistry.TransformerVariant.variant(for: .klein9BKV, quantization: .bf16),
+            .klein9B_kv_bf16
+        )
+        XCTAssertEqual(
+            ModelRegistry.TransformerVariant.variant(for: .klein9BKV, quantization: .qint8),
+            .klein9B_kv_bf16
+        )
+        XCTAssertEqual(
+            ModelRegistry.TransformerVariant.variant(for: .klein9BKV, quantization: .int4),
+            .klein9B_kv_bf16
+        )
+    }
+
+    func testKlein9BKVTrainingVariantLookup() {
+        // Training variant should be klein9B_base_bf16 (same base model)
+        XCTAssertEqual(
+            ModelRegistry.TransformerVariant.trainingVariant(for: .klein9BKV),
+            .klein9B_base_bf16
+        )
+    }
+
+    func testKlein9BKVLocalPath() {
+        let path = ModelRegistry.localPath(for: .transformer(.klein9B_kv_bf16))
+        XCTAssertTrue(path.path.contains("FLUX.2-klein-9b-kv"))
+    }
+}
+
+// MARK: - TransformerKVCache Tests
+
+final class TransformerKVCacheTests: XCTestCase {
+
+    func testKVCacheCreation() {
+        let cache = TransformerKVCache(referenceTokenCount: 1024)
+        XCTAssertEqual(cache.referenceTokenCount, 1024)
+        XCTAssertEqual(cache.layerCount, 0)
+        XCTAssertTrue(cache.doubleStreamEntries.isEmpty)
+        XCTAssertTrue(cache.singleStreamEntries.isEmpty)
+    }
+
+    func testKVCacheEntryStorage() {
+        var cache = TransformerKVCache(referenceTokenCount: 512)
+
+        let keys = MLXRandom.normal([1, 32, 512, 128])
+        let values = MLXRandom.normal([1, 32, 512, 128])
+        let entry = LayerKVCacheEntry(keys: keys, values: values)
+
+        cache.setDoubleStream(blockIndex: 0, entry: entry)
+        XCTAssertEqual(cache.layerCount, 1)
+
+        let retrieved = cache.doubleStreamEntry(at: 0)
+        XCTAssertNotNil(retrieved)
+        XCTAssertEqual(retrieved!.keys.shape, [1, 32, 512, 128])
+        XCTAssertEqual(retrieved!.values.shape, [1, 32, 512, 128])
+    }
+
+    func testKVCacheSingleStreamStorage() {
+        var cache = TransformerKVCache(referenceTokenCount: 256)
+
+        let keys = MLXRandom.normal([1, 32, 256, 128])
+        let values = MLXRandom.normal([1, 32, 256, 128])
+        let entry = LayerKVCacheEntry(keys: keys, values: values)
+
+        cache.setSingleStream(blockIndex: 5, entry: entry)
+        XCTAssertEqual(cache.layerCount, 1)
+
+        let retrieved = cache.singleStreamEntry(at: 5)
+        XCTAssertNotNil(retrieved)
+
+        // Non-existent index returns nil
+        XCTAssertNil(cache.singleStreamEntry(at: 99))
+    }
+
+    func testKVCacheClear() {
+        var cache = TransformerKVCache(referenceTokenCount: 128)
+
+        let entry = LayerKVCacheEntry(
+            keys: MLXRandom.normal([1, 32, 128, 128]),
+            values: MLXRandom.normal([1, 32, 128, 128])
+        )
+
+        cache.setDoubleStream(blockIndex: 0, entry: entry)
+        cache.setDoubleStream(blockIndex: 1, entry: entry)
+        cache.setSingleStream(blockIndex: 0, entry: entry)
+        XCTAssertEqual(cache.layerCount, 3)
+
+        cache.clear()
+        XCTAssertEqual(cache.layerCount, 0)
+        XCTAssertTrue(cache.doubleStreamEntries.isEmpty)
+        XCTAssertTrue(cache.singleStreamEntries.isEmpty)
+        // referenceTokenCount is preserved after clear
+        XCTAssertEqual(cache.referenceTokenCount, 128)
+    }
+}

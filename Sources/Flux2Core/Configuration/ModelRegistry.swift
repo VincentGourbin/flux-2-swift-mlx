@@ -28,6 +28,9 @@ public enum ModelRegistry {
         // Flux.2 Klein 9B Base (non-distilled - for LoRA training only)
         case klein9B_base_bf16 = "klein9b-base-bf16"
 
+        // Flux.2 Klein 9B KV (KV-cached variant for faster multi-reference I2I)
+        case klein9B_kv_bf16 = "klein9b-kv-bf16"
+
         public var huggingFaceRepo: String {
             switch self {
             case .bf16:
@@ -47,6 +50,8 @@ public enum ModelRegistry {
             case .klein9B_base_bf16:
                 // Base model (non-distilled) for LoRA training
                 return "black-forest-labs/FLUX.2-klein-base-9B"
+            case .klein9B_kv_bf16:
+                return "black-forest-labs/FLUX.2-klein-9b-kv"
             }
         }
 
@@ -57,7 +62,7 @@ public enum ModelRegistry {
                 return "transformer"
             case .qint8:
                 return "flux-2-dev/transformer/qint8"
-            case .klein4B_bf16, .klein4B_8bit, .klein4B_base_bf16, .klein9B_bf16, .klein9B_base_bf16:
+            case .klein4B_bf16, .klein4B_8bit, .klein4B_base_bf16, .klein9B_bf16, .klein9B_base_bf16, .klein9B_kv_bf16:
                 // Klein models have transformer weights in root folder
                 return nil
             }
@@ -72,6 +77,7 @@ public enum ModelRegistry {
             case .klein4B_base_bf16: return 8  // Same size as distilled
             case .klein9B_bf16: return 18
             case .klein9B_base_bf16: return 18  // Same size as distilled
+            case .klein9B_kv_bf16: return 18  // Same architecture as klein-9b
             }
         }
 
@@ -98,6 +104,9 @@ public enum ModelRegistry {
                 return true
             case .klein9B_base_bf16:
                 // Klein 9B Base from black-forest-labs IS gated
+                return true
+            case .klein9B_kv_bf16:
+                // Klein 9B KV from black-forest-labs IS gated
                 return true
             }
         }
@@ -134,7 +143,7 @@ public enum ModelRegistry {
 
         public var quantization: TransformerQuantization {
             switch self {
-            case .bf16, .klein4B_bf16, .klein4B_base_bf16, .klein9B_bf16, .klein9B_base_bf16: return .bf16
+            case .bf16, .klein4B_bf16, .klein4B_base_bf16, .klein9B_bf16, .klein9B_base_bf16, .klein9B_kv_bf16: return .bf16
             case .qint8, .klein4B_8bit: return .qint8
             }
         }
@@ -152,6 +161,8 @@ public enum ModelRegistry {
                 return .klein9B
             case .klein9B_base_bf16:
                 return .klein9BBase
+            case .klein9B_kv_bf16:
+                return .klein9BKV
             }
         }
 
@@ -164,6 +175,8 @@ public enum ModelRegistry {
             case .klein4B_bf16, .klein4B_8bit:  // Klein 4B distilled
                 return true
             case .klein9B_bf16:  // Klein 9B distilled
+                return true
+            case .klein9B_kv_bf16:  // Klein 9B KV distilled
                 return true
             case .klein4B_base_bf16, .klein9B_base_bf16:  // Base models
                 return false
@@ -181,6 +194,8 @@ public enum ModelRegistry {
             case .klein4B_bf16, .klein4B_8bit:  // Distilled - cannot train
                 return false
             case .klein9B_bf16:  // Distilled - cannot train
+                return false
+            case .klein9B_kv_bf16:  // KV variant - cannot train
                 return false
             case .klein4B_base_bf16, .klein9B_base_bf16:  // Base models - for training
                 return true
@@ -204,6 +219,8 @@ public enum ModelRegistry {
             case (.klein9BBase, _): return .klein9B_base_bf16
             // Klein 9B only has bf16 — quantize on-the-fly for qint8/int4
             case (.klein9B, _): return .klein9B_bf16
+            // Klein 9B KV only has bf16 — quantize on-the-fly for qint8/int4
+            case (.klein9BKV, _): return .klein9B_kv_bf16
             }
         }
 
@@ -215,7 +232,7 @@ public enum ModelRegistry {
             case .klein4B, .klein4BBase:
                 // Base model only available in bf16
                 return .klein4B_base_bf16
-            case .klein9B, .klein9BBase:
+            case .klein9B, .klein9BBase, .klein9BKV:
                 // Base model (non-distilled) for LoRA training
                 return .klein9B_base_bf16
             case .dev:
@@ -402,6 +419,8 @@ public enum ModelRegistry {
                 modelName = "FLUX.2-klein-9B-\(variant.rawValue)"
             case .klein9B_base_bf16:
                 modelName = "FLUX.2-klein-base-9B-\(variant.rawValue)"
+            case .klein9B_kv_bf16:
+                modelName = "FLUX.2-klein-9b-kv-\(variant.rawValue)"
             }
             return modelsDirectory
                 .appendingPathComponent("black-forest-labs")

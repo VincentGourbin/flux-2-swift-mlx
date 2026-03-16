@@ -96,6 +96,72 @@ public class Flux2SingleTransformerBlock: Module, @unchecked Sendable {
         // (the caller is responsible for splitting if needed)
         return residual + output
     }
+
+    // MARK: - KV Cache Methods (for klein-9b-kv)
+
+    /// Forward pass with KV extraction for single-stream blocks (step 0)
+    public func callWithKVExtraction(
+        hiddenStates: MLXArray,
+        temb: MLXArray,
+        rotaryEmb: (cos: MLXArray, sin: MLXArray)?,
+        modParams: [ModulationParams]?,
+        textLen: Int,
+        referenceTokenCount: Int
+    ) -> (MLXArray, LayerKVCacheEntry) {
+        let residual = hiddenStates
+
+        var normalized = norm(hiddenStates)
+
+        if let mod = modParams, !mod.isEmpty {
+            normalized = applyModulation(normalized, shift: mod[0].shift, scale: mod[0].scale)
+        }
+
+        let (attnOutput, cacheEntry) = attn.callWithKVExtraction(
+            hiddenStates: normalized,
+            rotaryEmb: rotaryEmb,
+            textLen: textLen,
+            referenceTokenCount: referenceTokenCount
+        )
+
+        var output = attnOutput
+        if let mod = modParams, !mod.isEmpty {
+            output = applyGate(output, gate: mod[0].gate)
+        }
+
+        return (residual + output, cacheEntry)
+    }
+
+    /// Forward pass with cached KV for single-stream blocks (steps 1+)
+    public func callWithKVCached(
+        hiddenStates: MLXArray,
+        temb: MLXArray,
+        rotaryEmb: (cos: MLXArray, sin: MLXArray)?,
+        modParams: [ModulationParams]?,
+        cachedKV: LayerKVCacheEntry,
+        textLen: Int
+    ) -> MLXArray {
+        let residual = hiddenStates
+
+        var normalized = norm(hiddenStates)
+
+        if let mod = modParams, !mod.isEmpty {
+            normalized = applyModulation(normalized, shift: mod[0].shift, scale: mod[0].scale)
+        }
+
+        let attnOutput = attn.callWithKVCached(
+            hiddenStates: normalized,
+            rotaryEmb: rotaryEmb,
+            cachedKV: cachedKV,
+            textLen: textLen
+        )
+
+        var output = attnOutput
+        if let mod = modParams, !mod.isEmpty {
+            output = applyGate(output, gate: mod[0].gate)
+        }
+
+        return residual + output
+    }
 }
 
 /// Stack of Single-Stream Transformer Blocks

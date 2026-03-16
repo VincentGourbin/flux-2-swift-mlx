@@ -166,6 +166,165 @@ public class Flux2TransformerBlock: Module, @unchecked Sendable {
         // Return order matches diffusers: (encoder_hidden_states, hidden_states)
         return (encoderHiddenStates: txtOut, hiddenStates: imgOut)
     }
+
+    // MARK: - KV Cache Methods (for klein-9b-kv)
+
+    /// Forward pass with KV extraction (step 0 of KV-cached denoising)
+    public func callWithKVExtraction(
+        hiddenStates: MLXArray,
+        encoderHiddenStates: MLXArray,
+        temb: MLXArray,
+        rotaryEmb: (cos: MLXArray, sin: MLXArray),
+        imgModParams: [ModulationParams]?,
+        txtModParams: [ModulationParams]?,
+        referenceTokenCount: Int
+    ) -> (encoderHiddenStates: MLXArray, hiddenStates: MLXArray, cache: LayerKVCacheEntry) {
+        let residualImg = hiddenStates
+        let residualTxt = encoderHiddenStates
+
+        // --- Attention Block ---
+        var imgNorm = norm1(hiddenStates)
+        var txtNorm = norm1Context(encoderHiddenStates)
+
+        if let imgMod = imgModParams, imgMod.count >= 1 {
+            imgNorm = applyModulation(imgNorm, shift: imgMod[0].shift, scale: imgMod[0].scale)
+        }
+        if let txtMod = txtModParams, txtMod.count >= 1 {
+            txtNorm = applyModulation(txtNorm, shift: txtMod[0].shift, scale: txtMod[0].scale)
+        }
+
+        // Joint attention with KV extraction
+        let (imgAttnOut, txtAttnOut, cacheEntry) = attn.callWithKVExtraction(
+            hiddenStates: imgNorm,
+            encoderHiddenStates: txtNorm,
+            rotaryEmb: rotaryEmb,
+            referenceTokenCount: referenceTokenCount
+        )
+
+        // Apply gate and add residual
+        var imgOut: MLXArray
+        var txtOut: MLXArray
+
+        if let imgMod = imgModParams, imgMod.count >= 1 {
+            imgOut = residualImg + applyGate(imgAttnOut, gate: imgMod[0].gate)
+        } else {
+            imgOut = residualImg + imgAttnOut
+        }
+
+        if let txtMod = txtModParams, txtMod.count >= 1 {
+            txtOut = residualTxt + applyGate(txtAttnOut, gate: txtMod[0].gate)
+        } else {
+            txtOut = residualTxt + txtAttnOut
+        }
+
+        // --- FeedForward Block ---
+        let residualImg2 = imgOut
+        let residualTxt2 = txtOut
+
+        var imgNorm2 = norm2(imgOut)
+        var txtNorm2 = norm2Context(txtOut)
+
+        if let imgMod = imgModParams, imgMod.count >= 2 {
+            imgNorm2 = applyModulation(imgNorm2, shift: imgMod[1].shift, scale: imgMod[1].scale)
+        }
+        if let txtMod = txtModParams, txtMod.count >= 2 {
+            txtNorm2 = applyModulation(txtNorm2, shift: txtMod[1].shift, scale: txtMod[1].scale)
+        }
+
+        let imgFFOut = ff(imgNorm2)
+        let txtFFOut = ffContext(txtNorm2)
+
+        if let imgMod = imgModParams, imgMod.count >= 2 {
+            imgOut = residualImg2 + applyGate(imgFFOut, gate: imgMod[1].gate)
+        } else {
+            imgOut = residualImg2 + imgFFOut
+        }
+
+        if let txtMod = txtModParams, txtMod.count >= 2 {
+            txtOut = residualTxt2 + applyGate(txtFFOut, gate: txtMod[1].gate)
+        } else {
+            txtOut = residualTxt2 + txtFFOut
+        }
+
+        return (encoderHiddenStates: txtOut, hiddenStates: imgOut, cache: cacheEntry)
+    }
+
+    /// Forward pass with cached KV (steps 1+ of KV-cached denoising)
+    public func callWithKVCached(
+        hiddenStates: MLXArray,
+        encoderHiddenStates: MLXArray,
+        temb: MLXArray,
+        rotaryEmb: (cos: MLXArray, sin: MLXArray),
+        imgModParams: [ModulationParams]?,
+        txtModParams: [ModulationParams]?,
+        cachedKV: LayerKVCacheEntry
+    ) -> (encoderHiddenStates: MLXArray, hiddenStates: MLXArray) {
+        let residualImg = hiddenStates
+        let residualTxt = encoderHiddenStates
+
+        var imgNorm = norm1(hiddenStates)
+        var txtNorm = norm1Context(encoderHiddenStates)
+
+        if let imgMod = imgModParams, imgMod.count >= 1 {
+            imgNorm = applyModulation(imgNorm, shift: imgMod[0].shift, scale: imgMod[0].scale)
+        }
+        if let txtMod = txtModParams, txtMod.count >= 1 {
+            txtNorm = applyModulation(txtNorm, shift: txtMod[0].shift, scale: txtMod[0].scale)
+        }
+
+        let (imgAttnOut, txtAttnOut) = attn.callWithKVCached(
+            hiddenStates: imgNorm,
+            encoderHiddenStates: txtNorm,
+            rotaryEmb: rotaryEmb,
+            cachedKV: cachedKV
+        )
+
+        var imgOut: MLXArray
+        var txtOut: MLXArray
+
+        if let imgMod = imgModParams, imgMod.count >= 1 {
+            imgOut = residualImg + applyGate(imgAttnOut, gate: imgMod[0].gate)
+        } else {
+            imgOut = residualImg + imgAttnOut
+        }
+
+        if let txtMod = txtModParams, txtMod.count >= 1 {
+            txtOut = residualTxt + applyGate(txtAttnOut, gate: txtMod[0].gate)
+        } else {
+            txtOut = residualTxt + txtAttnOut
+        }
+
+        // FeedForward
+        let residualImg2 = imgOut
+        let residualTxt2 = txtOut
+
+        var imgNorm2 = norm2(imgOut)
+        var txtNorm2 = norm2Context(txtOut)
+
+        if let imgMod = imgModParams, imgMod.count >= 2 {
+            imgNorm2 = applyModulation(imgNorm2, shift: imgMod[1].shift, scale: imgMod[1].scale)
+        }
+        if let txtMod = txtModParams, txtMod.count >= 2 {
+            txtNorm2 = applyModulation(txtNorm2, shift: txtMod[1].shift, scale: txtMod[1].scale)
+        }
+
+        let imgFFOut = ff(imgNorm2)
+        let txtFFOut = ffContext(txtNorm2)
+
+        if let imgMod = imgModParams, imgMod.count >= 2 {
+            imgOut = residualImg2 + applyGate(imgFFOut, gate: imgMod[1].gate)
+        } else {
+            imgOut = residualImg2 + imgFFOut
+        }
+
+        if let txtMod = txtModParams, txtMod.count >= 2 {
+            txtOut = residualTxt2 + applyGate(txtFFOut, gate: txtMod[1].gate)
+        } else {
+            txtOut = residualTxt2 + txtFFOut
+        }
+
+        return (encoderHiddenStates: txtOut, hiddenStates: imgOut)
+    }
 }
 
 /// Stack of Double-Stream Transformer Blocks
