@@ -21,9 +21,17 @@ jobs:
       - name: Resolve dependencies
         run: xcodebuild -resolvePackageDependencies -scheme Flux2Swift-Package -clonedSourcePackagesDirPath .spm
 
-      - name: Run tests
+      - name: Build all targets
         run: |
-          xcodebuild test \
+          xcodebuild build-for-testing \
             -scheme Flux2Swift-Package \
             -destination 'platform=macOS,arch=arm64' \
             -clonedSourcePackagesDirPath .spm
+
+      - name: Run FluxTextEncoders tests
+        run: |
+          xcodebuild test-without-building \
+            -scheme Flux2Swift-Package \
+            -destination 'platform=macOS,arch=arm64' \
+            -clonedSourcePackagesDirPath .spm \
+            -only-testing FluxTextEncodersTests
