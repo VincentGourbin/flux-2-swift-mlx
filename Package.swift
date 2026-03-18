@@ -29,6 +29,7 @@ let package = Package(
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXRandom", package: "mlx-swift"),
                 .product(name: "MLXFast", package: "mlx-swift"),
+                .product(name: "Hub", package: "swift-transformers"),
                 .product(name: "Transformers", package: "swift-transformers"),
             ]
         ),
@@ -41,6 +42,7 @@ let package = Package(
                 .product(name: "MLXRandom", package: "mlx-swift"),
                 .product(name: "MLXFast", package: "mlx-swift"),
                 .product(name: "MLXOptimizers", package: "mlx-swift"),
+                .product(name: "Hub", package: "swift-transformers"),
                 .product(name: "Transformers", package: "swift-transformers"),
             ]
         ),
