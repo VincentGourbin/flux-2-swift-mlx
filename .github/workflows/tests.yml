@@ -23,5 +23,5 @@ jobs:
         run: |
           xcodebuild test \
             -scheme Flux2Swift-Package \
-            -destination 'platform=macOS' \
+            -destination 'platform=macOS,arch=arm64' \
             -clonedSourcePackagesDirPath .spm
