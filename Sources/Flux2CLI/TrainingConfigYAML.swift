@@ -2,7 +2,7 @@
 // Copyright 2025 Vincent Gourbin
 
 import Foundation
-import Yams
+import YAML
 import Flux2Core
 
 // MARK: - YAML Configuration Structure
@@ -296,8 +296,9 @@ struct YAMLConfigParser {
         let yamlString = try String(contentsOf: url, encoding: .utf8)
 
         do {
-            let decoder = YAMLDecoder()
-            let config = try decoder.decode(TrainingConfigYAML.self, from: yamlString)
+            let yamlValue = try YAML.parse(yaml: yamlString)
+            let jsonData = try JSONEncoder().encode(yamlValue)
+            let config = try JSONDecoder().decode(TrainingConfigYAML.self, from: jsonData)
             return config
         } catch {
             throw YAMLConfigError.parseError(error.localizedDescription)
