@@ -195,13 +195,13 @@ public class Flux2ModelDownloader: @unchecked Sendable {
         Flux2Debug.log("Downloading \(component.displayName) from \(repoId)")
 
         // Get file list from HuggingFace API
-        let files = try await fetchFileList(repoId: repoId, subfolder: subfolder)
+        let allFiles = try await fetchFileList(repoId: repoId, subfolder: subfolder)
 
         // Filter to only necessary files
-        let filesToDownload = files.filter { file in
-            file.hasSuffix(".safetensors") ||
-            file.hasSuffix(".json") ||
-            file == "tokenizer.model"
+        let filesToDownload = allFiles.filter { file in
+            file.path.hasSuffix(".safetensors") ||
+            file.path.hasSuffix(".json") ||
+            file.path == "tokenizer.model"
         }
 
         guard !filesToDownload.isEmpty else {
@@ -212,29 +212,37 @@ public class Flux2ModelDownloader: @unchecked Sendable {
         let destDir = ModelRegistry.localPath(for: component)
         try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
 
-        // Download each file
-        var downloadedBytes: Int64 = 0
-        let totalFiles = filesToDownload.count
+        // Download each file with byte-level progress
+        var completedBytes: Int64 = 0
+        let totalBytes = filesToDownload.reduce(Int64(0)) { $0 + $1.size }
 
-        for (index, file) in filesToDownload.enumerated() {
-            let fileName = URL(fileURLWithPath: file).lastPathComponent
-            progress?(Double(index) / Double(totalFiles), "Downloading \(fileName)...")
+        for file in filesToDownload {
+            let fileName = URL(fileURLWithPath: file.path).lastPathComponent
+            let baseBytes = completedBytes
+
+            let fileProgress: ((Int64, Int64) -> Void)? = totalBytes > 0 ? { bytesWritten, _ in
+                let overall = Double(baseBytes + bytesWritten) / Double(totalBytes)
+                let downloaded = Self.formatSize(baseBytes + bytesWritten)
+                let total = Self.formatSize(totalBytes)
+                progress?(min(overall, 0.99), "Downloading \(fileName): \(downloaded) / \(total)")
+            } : nil
 
             let fileURL = try await downloadFile(
                 repoId: repoId,
-                filePath: file,
-                to: destDir.appendingPathComponent(fileName)
+                filePath: file.path,
+                to: destDir.appendingPathComponent(fileName),
+                progress: fileProgress
             )
 
             if let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
                let size = attrs[.size] as? Int64 {
-                downloadedBytes += size
+                completedBytes += size
             }
 
-            Flux2Debug.log("Downloaded \(fileName) (\(Self.formatSize(downloadedBytes)) total)")
+            Flux2Debug.log("Downloaded \(fileName) (\(Self.formatSize(completedBytes)) total)")
         }
 
-        progress?(1.0, "Download complete: \(Self.formatSize(downloadedBytes))")
+        progress?(1.0, "Download complete: \(Self.formatSize(completedBytes))")
         return destDir
     }
 
@@ -250,8 +258,8 @@ public class Flux2ModelDownloader: @unchecked Sendable {
         }
     }
 
-    /// Fetch file list from HuggingFace API
-    private func fetchFileList(repoId: String, subfolder: String?) async throws -> [String] {
+    /// Fetch file list with sizes from HuggingFace API
+    private func fetchFileList(repoId: String, subfolder: String?) async throws -> [(path: String, size: Int64)] {
         var urlString = "https://huggingface.co/api/models/\(repoId)/tree/main"
         if let subfolder = subfolder {
             urlString += "/\(subfolder)"
@@ -293,19 +301,25 @@ public class Flux2ModelDownloader: @unchecked Sendable {
             throw Flux2DownloadError.downloadFailed("Invalid JSON response")
         }
 
-        var files: [String] = []
+        var files: [(path: String, size: Int64)] = []
         for item in json {
             if let type = item["type"] as? String, type == "file",
                let path = item["path"] as? String {
-                files.append(path)
+                let size = (item["size"] as? Int64) ?? (item["size"] as? Int).map(Int64.init) ?? 0
+                files.append((path: path, size: size))
             }
         }
 
         return files
     }
 
-    /// Download a single file from HuggingFace
-    private func downloadFile(repoId: String, filePath: String, to destination: URL) async throws -> URL {
+    /// Download a single file from HuggingFace with optional byte-level progress
+    private func downloadFile(
+        repoId: String,
+        filePath: String,
+        to destination: URL,
+        progress: ((Int64, Int64) -> Void)? = nil
+    ) async throws -> URL {
         let urlString = "https://huggingface.co/\(repoId)/resolve/main/\(filePath)"
 
         guard let url = URL(string: urlString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? urlString) else {
@@ -317,11 +331,30 @@ public class Flux2ModelDownloader: @unchecked Sendable {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
 
-        let (tempURL, response) = try await session.download(for: request)
+        let tempURL: URL
 
-        guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
-            throw Flux2DownloadError.downloadFailed("Failed to download \(filePath)")
+        if let progress = progress {
+            tempURL = try await withCheckedThrowingContinuation { continuation in
+                let delegate = FileDownloadDelegate(
+                    progressHandler: progress,
+                    continuation: continuation
+                )
+                let config = URLSessionConfiguration.default
+                config.timeoutIntervalForResource = 3600
+                let delegateSession = URLSession(
+                    configuration: config,
+                    delegate: delegate,
+                    delegateQueue: nil
+                )
+                delegateSession.downloadTask(with: request).resume()
+            }
+        } else {
+            let (url, response) = try await session.download(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                throw Flux2DownloadError.downloadFailed("Failed to download \(filePath)")
+            }
+            tempURL = url
         }
 
         // Move to destination
@@ -414,6 +447,76 @@ public class Flux2ModelDownloader: @unchecked Sendable {
         }
 
         return total
+    }
+}
+
+// MARK: - Download Delegate
+
+/// Bridges URLSessionDownloadDelegate callbacks to async/await with byte-level progress
+private final class FileDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let progressHandler: (Int64, Int64) -> Void
+    private let continuation: CheckedContinuation<URL, Error>
+    private var resumed = false
+
+    init(
+        progressHandler: @escaping (Int64, Int64) -> Void,
+        continuation: CheckedContinuation<URL, Error>
+    ) {
+        self.progressHandler = progressHandler
+        self.continuation = continuation
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        guard !resumed else { return }
+
+        // Check HTTP status
+        if let httpResponse = downloadTask.response as? HTTPURLResponse,
+           httpResponse.statusCode != 200 {
+            resumed = true
+            continuation.resume(throwing: Flux2DownloadError.downloadFailed(
+                "HTTP \(httpResponse.statusCode)"
+            ))
+            session.finishTasksAndInvalidate()
+            return
+        }
+
+        // Copy to a stable temp path (original is deleted after this method returns)
+        let tempFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        do {
+            try FileManager.default.copyItem(at: location, to: tempFile)
+            resumed = true
+            continuation.resume(returning: tempFile)
+        } catch {
+            resumed = true
+            continuation.resume(throwing: error)
+        }
+        session.finishTasksAndInvalidate()
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        progressHandler(totalBytesWritten, totalBytesExpectedToWrite)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        guard !resumed, let error = error else { return }
+        resumed = true
+        continuation.resume(throwing: Flux2DownloadError.downloadFailed(error.localizedDescription))
+        session.finishTasksAndInvalidate()
     }
 }
 
