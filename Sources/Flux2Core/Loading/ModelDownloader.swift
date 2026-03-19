@@ -174,7 +174,7 @@ public class Flux2ModelDownloader: @unchecked Sendable {
 
     // MARK: - Download
 
-    /// Download a model component from HuggingFace
+    /// Download a model component from CDN or HuggingFace
     public func download(
         _ component: ModelRegistry.ModelComponent,
         progress: Flux2DownloadProgressCallback? = nil
@@ -185,6 +185,19 @@ public class Flux2ModelDownloader: @unchecked Sendable {
             if verification.complete {
                 progress?(1.0, "Model already downloaded")
                 return existingPath
+            }
+        }
+
+        // Try CDN first if configured
+        if let cdnBase = ModelRegistry.cdnBaseURL {
+            do {
+                return try await downloadFromCDN(
+                    component,
+                    cdnBase: cdnBase,
+                    progress: progress
+                )
+            } catch {
+                Flux2Debug.log("CDN download failed for \(component.displayName): \(error.localizedDescription). Falling back to HuggingFace.")
             }
         }
 
@@ -245,6 +258,129 @@ public class Flux2ModelDownloader: @unchecked Sendable {
         progress?(1.0, "Download complete: \(Self.formatSize(completedBytes))")
         return destDir
     }
+
+    // MARK: - CDN Download
+
+    /// Download a model component from a CDN using manifest.json
+    private func downloadFromCDN(
+        _ component: ModelRegistry.ModelComponent,
+        cdnBase: URL,
+        progress: Flux2DownloadProgressCallback? = nil
+    ) async throws -> URL {
+        let cdnDir = component.cdnDirectoryName
+        let manifestURL = cdnBase
+            .appendingPathComponent("models")
+            .appendingPathComponent(cdnDir)
+            .appendingPathComponent("manifest.json")
+
+        progress?(0.0, "Fetching manifest for \(component.displayName)...")
+        Flux2Debug.log("Downloading \(component.displayName) from CDN: \(cdnBase)")
+
+        // Fetch manifest
+        let (data, response) = try await session.data(from: manifestURL)
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            throw Flux2DownloadError.downloadFailed(
+                "CDN manifest not available for \(cdnDir)"
+            )
+        }
+
+        guard let manifest = try? JSONDecoder().decode(CDNManifest.self, from: data) else {
+            throw Flux2DownloadError.downloadFailed("Invalid CDN manifest for \(cdnDir)")
+        }
+
+        let filesToDownload = manifest.files.filter { file in
+            file.name.hasSuffix(".safetensors") ||
+            file.name.hasSuffix(".json") ||
+            file.name == "tokenizer.model"
+        }
+
+        guard !filesToDownload.isEmpty else {
+            throw Flux2DownloadError.modelNotFound("No model files in CDN manifest for \(cdnDir)")
+        }
+
+        // Create destination directory
+        let destDir = ModelRegistry.localPath(for: component)
+        try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
+
+        // Download each file
+        var completedBytes: Int64 = 0
+        let totalBytes = filesToDownload.reduce(Int64(0)) { $0 + $1.size }
+
+        for file in filesToDownload {
+            let fileURL = cdnBase
+                .appendingPathComponent("models")
+                .appendingPathComponent(cdnDir)
+                .appendingPathComponent(file.name)
+            let destFile = destDir.appendingPathComponent(file.name)
+
+            let baseBytes = completedBytes
+            let fileProgress: ((Int64, Int64) -> Void)? = totalBytes > 0 ? { bytesWritten, _ in
+                let overall = Double(baseBytes + bytesWritten) / Double(totalBytes)
+                let downloaded = Self.formatSize(baseBytes + bytesWritten)
+                let total = Self.formatSize(totalBytes)
+                progress?(min(overall, 0.99), "Downloading \(file.name): \(downloaded) / \(total)")
+            } : nil
+
+            let downloadedFile = try await downloadDirectURL(
+                fileURL,
+                to: destFile,
+                progress: fileProgress
+            )
+
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: downloadedFile.path),
+               let size = attrs[.size] as? Int64 {
+                completedBytes += size
+            }
+
+            Flux2Debug.log("Downloaded \(file.name) from CDN (\(Self.formatSize(completedBytes)) total)")
+        }
+
+        progress?(1.0, "Download complete: \(Self.formatSize(completedBytes))")
+        return destDir
+    }
+
+    /// Download a file from a direct URL (no auth headers)
+    private func downloadDirectURL(
+        _ url: URL,
+        to destination: URL,
+        progress: ((Int64, Int64) -> Void)? = nil
+    ) async throws -> URL {
+        let request = URLRequest(url: url)
+
+        let tempURL: URL
+        if let progress = progress {
+            tempURL = try await withCheckedThrowingContinuation { continuation in
+                let delegate = FileDownloadDelegate(
+                    progressHandler: progress,
+                    continuation: continuation
+                )
+                let config = URLSessionConfiguration.default
+                config.timeoutIntervalForResource = 3600
+                let delegateSession = URLSession(
+                    configuration: config,
+                    delegate: delegate,
+                    delegateQueue: nil
+                )
+                delegateSession.downloadTask(with: request).resume()
+            }
+        } else {
+            let (url, response) = try await session.download(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                throw Flux2DownloadError.downloadFailed("Failed to download from CDN")
+            }
+            tempURL = url
+        }
+
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
+        }
+        try FileManager.default.moveItem(at: tempURL, to: destination)
+        return destination
+    }
+
+    // MARK: - HuggingFace Download Helpers
 
     /// Get subfolder path for component within repo
     private static func subfolder(for component: ModelRegistry.ModelComponent) -> String? {
@@ -518,6 +654,19 @@ private final class FileDownloadDelegate: NSObject, URLSessionDownloadDelegate, 
         continuation.resume(throwing: Flux2DownloadError.downloadFailed(error.localizedDescription))
         session.finishTasksAndInvalidate()
     }
+}
+
+// MARK: - CDN Manifest
+
+/// Manifest file structure for CDN-hosted models.
+/// Generated by CI and uploaded alongside model files.
+struct CDNManifest: Codable {
+    struct FileEntry: Codable {
+        let name: String
+        let size: Int64
+    }
+
+    let files: [FileEntry]
 }
 
 // MARK: - Errors

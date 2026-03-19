@@ -385,6 +385,27 @@ public enum ModelRegistry {
                 return "flux2-vae"
             }
         }
+
+        /// CDN directory name for this component (used when `ModelRegistry.cdnBaseURL` is set).
+        public var cdnDirectoryName: String {
+            switch self {
+            case .transformer(let variant):
+                switch variant {
+                case .klein4B_bf16: return "FLUX.2-klein-4B"
+                case .klein9B_bf16: return "FLUX.2-klein-9B"
+                case .bf16: return "FLUX.2-dev-bf16"
+                case .qint8: return "FLUX.2-dev-qint8"
+                case .klein4B_8bit: return "FLUX.2-klein-4B-int8"
+                case .klein4B_base_bf16: return "FLUX.2-klein-base-4B"
+                case .klein9B_base_bf16: return "FLUX.2-klein-base-9B"
+                case .klein9B_kv_bf16: return "FLUX.2-klein-9b-kv"
+                }
+            case .textEncoder(let variant):
+                return "mistral-small-3.2-\(variant.rawValue)"
+            case .vae:
+                return "FLUX.2-vae"
+            }
+        }
     }
 
     // MARK: - Paths
@@ -392,6 +413,21 @@ public enum ModelRegistry {
     /// Custom override for model storage directory.
     /// Set this before any download/check call to redirect model storage.
     nonisolated(unsafe) public static var customModelsDirectory: URL?
+
+    /// CDN base URL for downloading models without HuggingFace authentication.
+    ///
+    /// When set, the downloader fetches a `manifest.json` from the CDN path
+    /// instead of querying the HuggingFace API, and downloads files directly
+    /// from the CDN. No authentication headers are sent.
+    ///
+    /// Expected CDN structure:
+    /// ```
+    /// <cdnBaseURL>/models/<component-dir>/manifest.json
+    /// <cdnBaseURL>/models/<component-dir>/<file>
+    /// ```
+    ///
+    /// Set this at app startup before any download calls.
+    nonisolated(unsafe) public static var cdnBaseURL: URL?
 
     /// Base directory for model storage.
     /// Uses customModelsDirectory if set, otherwise falls back to ~/Library/Caches/models
