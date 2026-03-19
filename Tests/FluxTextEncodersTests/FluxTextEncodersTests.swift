@@ -12,11 +12,11 @@ final class FluxTextEncodersTests: XCTestCase {
 
     func testVersion() {
         XCTAssertFalse(FluxTextEncoders.version.isEmpty, "Version should not be empty")
-        XCTAssertEqual(FluxTextEncoders.version, "0.1.0", "Version should be 0.1.0")
+        XCTAssertEqual(FluxTextEncoders.version, "2.4.0", "Version should be 2.4.0")
     }
 
     func testMistralVersionInfo() {
-        XCTAssertEqual(MistralVersion.version, "0.1.0")
+        XCTAssertEqual(MistralVersion.version, "2.4.0")
         XCTAssertEqual(MistralVersion.modelName, "Mistral Small 3.2")
         XCTAssertEqual(MistralVersion.modelVersion, "24B-Instruct-2506")
     }
