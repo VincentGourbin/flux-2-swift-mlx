@@ -91,9 +91,6 @@ public class Qwen35ImageProcessor {
         }
 
         context.interpolationQuality = .high
-        // CGContext origin is bottom-left; flip Y to match top-left convention
-        context.translateBy(x: 0, y: CGFloat(targetH))
-        context.scaleBy(x: 1.0, y: -1.0)
         context.draw(image, in: CGRect(x: 0, y: 0, width: targetW, height: targetH))
 
         guard let data = context.data else {
