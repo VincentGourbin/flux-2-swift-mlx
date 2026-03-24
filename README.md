@@ -31,6 +31,7 @@ A native Swift implementation of [Flux.2](https://blackforestlabs.ai/) image gen
 - **Prompt Upsampling**: Enhance prompts with Mistral/Qwen3 before generation
 - **LoRA Support**: Load and apply LoRA adapters for style transfer
 - **LoRA Training**: Train your own LoRAs on Apple Silicon ([guide](docs/examples/TRAINING_GUIDE.md))
+- **LoRA Evaluation**: Automated pipeline to evaluate training gap and recommend parameters ([guide](docs/examples/evaluate-lora/README.md))
 - **Image-to-Image Training**: Train paired I2I LoRAs (e.g. style transfer, image restoration)
 - **CLI Tool**: Full-featured command-line interface (`Flux2CLI`)
 - **macOS App**: Demo SwiftUI application (`Flux2App`) with T2I, I2I, and chat
@@ -38,9 +39,12 @@ A native Swift implementation of [Flux.2](https://blackforestlabs.ai/) image gen
 ### Text Encoders (FluxTextEncoders)
 - **Mistral Small 3.2 (24B)**: Text encoder for FLUX.2 dev/pro
 - **Qwen3 (4B/8B)**: Text encoder for FLUX.2 Klein
+- **Qwen3.5-4B VLM**: Native vision-language model for image analysis (~3GB, auto-downloaded)
+- **FLUX.2 Image Description**: VLM-powered image analysis optimized for FLUX.2 regeneration
+- **Image Comparison**: Score two images on scene and style fidelity (0-10)
 - **Text Generation**: Streaming text generation with configurable parameters
 - **Interactive Chat**: Multi-turn conversation with chat template support
-- **Vision Analysis**: Image understanding via Pixtral vision encoder (VLM)
+- **Vision Analysis**: Image understanding via Pixtral (Mistral) or Qwen3.5 vision encoders
 - **FLUX.2 Embeddings**: Extract embeddings compatible with FLUX.2 image generation
 - **CLI Tool**: Complete command-line interface (`FluxEncodersCLI`)
 
@@ -204,6 +208,7 @@ See [Quantization Benchmark](docs/examples/quantization-benchmark/) for detailed
 | [CLI Documentation](docs/CLI.md) | Command-line interface — all commands and options |
 | [LoRA Guide](docs/LoRA.md) | Loading and using LoRA adapters |
 | [LoRA Training Guide](docs/examples/TRAINING_GUIDE.md) | Training parameters, DOP, gradient checkpointing, YAML config |
+| [LoRA Evaluation](docs/examples/evaluate-lora/) | Automated gap analysis and training parameter recommendations |
 | [Text Encoders](docs/TextEncoders.md) | FluxTextEncoders library API and CLI |
 | [Custom Model Integration](docs/CustomModelIntegration.md) | Integrating custom MLX-compatible models into the framework |
 | [Flux2App Guide](docs/Flux2App.md) | Demo macOS application |
@@ -219,12 +224,15 @@ See [Quantization Benchmark](docs/examples/quantization-benchmark/) for detailed
 | [Flux.2 Klein 4B Examples](docs/examples/flux2-klein-4b/) | Fast T2I, multiple resolutions, quantization comparison |
 | [Flux.2 Klein 9B Examples](docs/examples/flux2-klein-9b/) | T2I, multiple resolutions, prompt upsampling |
 
-### LoRA Training Examples
+### LoRA Training
 
-| Example | Model | Description |
-|---------|-------|-------------|
-| [Cat Toy (Subject LoRA)](examples/cat-toy/) | Klein 4B | Subject injection with DOP, trigger word `sks` |
-| [Tarot Style (Style LoRA)](docs/examples/tarot-style-lora/) | Klein 4B | Style transfer, trigger word `rwaite`, 32 training images |
+| Guide | Description |
+|-------|-------------|
+| [LoRA Evaluation Pipeline](docs/examples/evaluate-lora/) | **New** — Automated gap analysis: VLM describes reference, generates baseline, compares, recommends training params |
+| [Cat Toy (Subject LoRA)](examples/cat-toy/) | Subject injection with DOP, trigger word `sks` (Klein 4B) |
+| [Tarot Style (Style LoRA)](docs/examples/tarot-style-lora/) | Style transfer, trigger word `rwaite`, 32 training images (Klein 4B) |
+
+> **Help Wanted** — The LoRA evaluation parameter recommendations are based on initial heuristics and will be refined with user feedback. If you use `evaluate-lora` and train LoRAs, please [share your results](https://github.com/VincentGourbin/flux-2-swift-mlx/issues) to help improve the recommendations!
 
 ## Current Limitations
 

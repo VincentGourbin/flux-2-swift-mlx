@@ -88,6 +88,24 @@ Klein 9B offers better quality than Klein 4B while remaining much faster than De
 
 ---
 
+## LoRA Evaluation Pipeline
+
+Before training a LoRA, evaluate the gap between your reference image and the base model output to get recommended training parameters automatically.
+
+| Reference | Baseline (no LoRA) | Score |
+|:---------:|:------------------:|:-----:|
+| ![Reference](evaluate-lora/reference.png) | ![Baseline](evaluate-lora/baseline.png) | Scene: 0/10, Style: 9/10 |
+
+```bash
+flux2 evaluate-lora --image reference.png --model klein-4b --trigger-word "xyz_cat"
+```
+
+Outputs: reference copy, baseline image, VLM prompt, comparison report, and ready-to-use YAML training config. See **[LoRA Evaluation Pipeline](evaluate-lora/README.md)** for full documentation.
+
+> **Help Wanted**: The recommendation weights are initial heuristics — we need user feedback from real training runs to refine them. Please share your evaluation results!
+
+---
+
 ## LoRA Adapters
 
 LoRA (Low-Rank Adaptation) allows fine-tuning models for specific tasks without modifying the base weights.
