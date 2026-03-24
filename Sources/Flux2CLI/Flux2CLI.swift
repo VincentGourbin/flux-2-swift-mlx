@@ -32,6 +32,7 @@ struct Flux2CLI: AsyncParsableCommand {
             CompareEncoders.self,
             TestVLGeneration.self,
             TestQwen35.self,
+            EvaluateLoRA.self,
             TrainLoRA.self,
             TrainingControlCommand.self,
         ],
