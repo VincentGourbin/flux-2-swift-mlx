@@ -476,6 +476,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         guidance: Float = 4.0,
         seed: UInt64? = nil,
         upsamplePrompt: Bool = false,
+        precomputedEmbeddings: MLXArray? = nil,
         checkpointInterval: Int? = nil,
         onProgress: Flux2ProgressCallback? = nil,
         onCheckpoint: Flux2CheckpointCallback? = nil
@@ -490,6 +491,7 @@ public class Flux2Pipeline: @unchecked Sendable {
             guidance: guidance,
             seed: seed,
             upsamplePrompt: upsamplePrompt,
+            precomputedEmbeddings: precomputedEmbeddings,
             checkpointInterval: checkpointInterval,
             onProgress: onProgress,
             onCheckpoint: onCheckpoint
@@ -716,6 +718,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         guidance: Float,
         seed: UInt64?,
         upsamplePrompt: Bool,
+        precomputedEmbeddings: MLXArray? = nil,
         checkpointInterval: Int?,
         onProgress: Flux2ProgressCallback?,
         onCheckpoint: Flux2CheckpointCallback?
@@ -730,6 +733,7 @@ public class Flux2Pipeline: @unchecked Sendable {
             guidance: guidance,
             seed: seed,
             upsamplePrompt: upsamplePrompt,
+            precomputedEmbeddings: precomputedEmbeddings,
             checkpointInterval: checkpointInterval,
             onProgress: onProgress,
             onCheckpoint: onCheckpoint
@@ -748,6 +752,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         guidance: Float,
         seed: UInt64?,
         upsamplePrompt: Bool,
+        precomputedEmbeddings: MLXArray? = nil,
         checkpointInterval: Int?,
         onProgress: Flux2ProgressCallback?,
         onCheckpoint: Flux2CheckpointCallback?
@@ -776,167 +781,177 @@ public class Flux2Pipeline: @unchecked Sendable {
 
         // === PHASE 1: Text Encoding ===
         // Note: Progress will be reported once denoising loop starts with accurate step count
-        Flux2Debug.log("=== PHASE 1: Text Encoding ===")
 
-        // MEMORY OPTIMIZATION: Set cache limit for text encoding phase
-        let phaseLimits = MemoryConfig.PhaseLimits.forModel(model, profile: memoryProfile)
-        MemoryConfig.applyCacheLimit(bytes: phaseLimits.textEncoding)
-
-        profiler.start("1. Load Text Encoder")
-        try await loadTextEncoder()
-        profiler.end("1. Load Text Encoder")
-
-        // === INTERPRET IMAGES: VLM semantic analysis ===
-        // If interpretImagePaths are provided, describe them with VLM and inject into prompt
-        // Note: VLM interpretation only available for Dev model (Mistral)
-        var enrichedPrompt = prompt
-        if let interpretPaths = interpretImagePaths, !interpretPaths.isEmpty {
-            switch model {
-            case .dev:
-                Flux2Debug.log("Interpreting \(interpretPaths.count) image(s) with VLM for prompt injection...")
-                profiler.start("1b. VLM Interpretation")
-
-                let descriptions = try await textEncoder!.describeImagePathsForPrompt(interpretPaths, context: prompt)
-
-                if !descriptions.isEmpty {
-                    // Build enriched prompt with image descriptions
-                    let imageContext = descriptions.enumerated().map { (idx, desc) in
-                        "Interpret image \(idx + 1): \(desc)"
-                    }.joined(separator: "\n")
-
-                    enrichedPrompt = """
-                    \(imageContext)
-
-                    User request: \(prompt)
-                    """
-
-                    Flux2Debug.log("Prompt enriched with \(descriptions.count) VLM description(s)")
-                    print("[VLM-Interpret] Enriched prompt:\n\(enrichedPrompt)")
-                    fflush(stdout)
-                }
-
-                profiler.end("1b. VLM Interpretation")
-
-            case .klein4B, .klein4BBase, .klein9B, .klein9BBase, .klein9BKV:
-                // Klein + --interpret: load Mistral VLM temporarily to analyze images
-                Flux2Debug.log("Klein with --interpret: loading Mistral VLM temporarily to analyze images...")
-                profiler.start("1b. VLM Interpretation")
-
-                // Step 1: Unload Qwen3 to free memory for Mistral
-                Flux2Debug.log("Unloading Qwen3 to make room for Mistral VLM...")
-                await MainActor.run { kleinEncoder?.unload() }
-                memoryManager.fullCleanup()
-
-                // Step 2: Load Mistral VLM
-                Flux2Debug.log("Loading Mistral VLM for image interpretation...")
-                let tempMistralForInterpret = Flux2TextEncoder(quantization: quantization.textEncoder)
-                try await tempMistralForInterpret.load()
-
-                // Step 3: VLM interpretation (same logic as Dev)
-                let descriptions = try await tempMistralForInterpret.describeImagePathsForPrompt(interpretPaths, context: prompt)
-
-                if !descriptions.isEmpty {
-                    let imageContext = descriptions.enumerated().map { (idx, desc) in
-                        "Interpret image \(idx + 1): \(desc)"
-                    }.joined(separator: "\n")
-
-                    enrichedPrompt = """
-                    \(imageContext)
-
-                    User request: \(prompt)
-                    """
-
-                    Flux2Debug.log("Prompt enriched with \(descriptions.count) VLM description(s)")
-                    print("[VLM-Interpret] Enriched prompt:\n\(enrichedPrompt)")
-                    fflush(stdout)
-                }
-
-                // Step 4: Unload Mistral
-                Flux2Debug.log("Unloading Mistral VLM...")
-                await MainActor.run { tempMistralForInterpret.unload() }
-                memoryManager.fullCleanup()
-
-                // Step 5: Reload Qwen3 for text encoding
-                Flux2Debug.log("Reloading Qwen3 for Klein text encoding...")
-                try await kleinEncoder!.load()
-
-                profiler.end("1b. VLM Interpretation")
-            }
-        }
-
-        profiler.start("2. Text Encoding")
-        // Use vision-based upsampling for I2I if enabled (Dev only)
-        // Track the final prompt used for generation
         let textEmbeddings: MLXArray
-        var finalUsedPrompt: String = enrichedPrompt
+        var finalUsedPrompt: String = prompt
         var wasPromptUpsampled: Bool = false
 
-        switch model {
-        case .dev:
-            if upsamplePrompt, case .imageToImage(let images) = mode {
-                // Use VLM to analyze reference images and enhance prompt
-                Flux2Debug.log("Using vision-based prompt upsampling for I2I with \(images.count) image(s)")
-                let enhancedPrompt = try await textEncoder!.upsamplePromptWithImages(enrichedPrompt, images: images)
-                finalUsedPrompt = enhancedPrompt
-                wasPromptUpsampled = true
-                textEmbeddings = try textEncoder!.encode(enhancedPrompt, upsample: false)
-            } else {
-                let (embeddings, usedPrompt) = try textEncoder!.encodeWithPrompt(enrichedPrompt, upsample: upsamplePrompt)
-                textEmbeddings = embeddings
-                finalUsedPrompt = usedPrompt
-                wasPromptUpsampled = upsamplePrompt && (usedPrompt != enrichedPrompt)
+        // MEMORY OPTIMIZATION: Compute phase limits for all phases
+        let phaseLimits = MemoryConfig.PhaseLimits.forModel(model, profile: memoryProfile)
+
+        if let precomputed = precomputedEmbeddings {
+            // Skip text encoding entirely — use pre-computed embeddings
+            textEmbeddings = precomputed
+            Flux2Debug.log("=== PHASE 1: SKIPPED (using pre-computed embeddings) ===")
+            Flux2Debug.log("Pre-computed embeddings shape: \(precomputed.shape)")
+        } else {
+            Flux2Debug.log("=== PHASE 1: Text Encoding ===")
+
+            MemoryConfig.applyCacheLimit(bytes: phaseLimits.textEncoding)
+
+            profiler.start("1. Load Text Encoder")
+            try await loadTextEncoder()
+            profiler.end("1. Load Text Encoder")
+
+            // === INTERPRET IMAGES: VLM semantic analysis ===
+            // If interpretImagePaths are provided, describe them with VLM and inject into prompt
+            // Note: VLM interpretation only available for Dev model (Mistral)
+            var enrichedPrompt = prompt
+            if let interpretPaths = interpretImagePaths, !interpretPaths.isEmpty {
+                switch model {
+                case .dev:
+                    Flux2Debug.log("Interpreting \(interpretPaths.count) image(s) with VLM for prompt injection...")
+                    profiler.start("1b. VLM Interpretation")
+
+                    let descriptions = try await textEncoder!.describeImagePathsForPrompt(interpretPaths, context: prompt)
+
+                    if !descriptions.isEmpty {
+                        // Build enriched prompt with image descriptions
+                        let imageContext = descriptions.enumerated().map { (idx, desc) in
+                            "Interpret image \(idx + 1): \(desc)"
+                        }.joined(separator: "\n")
+
+                        enrichedPrompt = """
+                        \(imageContext)
+
+                        User request: \(prompt)
+                        """
+
+                        Flux2Debug.log("Prompt enriched with \(descriptions.count) VLM description(s)")
+                        print("[VLM-Interpret] Enriched prompt:\n\(enrichedPrompt)")
+                        fflush(stdout)
+                    }
+
+                    profiler.end("1b. VLM Interpretation")
+
+                case .klein4B, .klein4BBase, .klein9B, .klein9BBase, .klein9BKV:
+                    // Klein + --interpret: load Mistral VLM temporarily to analyze images
+                    Flux2Debug.log("Klein with --interpret: loading Mistral VLM temporarily to analyze images...")
+                    profiler.start("1b. VLM Interpretation")
+
+                    // Step 1: Unload Qwen3 to free memory for Mistral
+                    Flux2Debug.log("Unloading Qwen3 to make room for Mistral VLM...")
+                    await MainActor.run { kleinEncoder?.unload() }
+                    memoryManager.fullCleanup()
+
+                    // Step 2: Load Mistral VLM
+                    Flux2Debug.log("Loading Mistral VLM for image interpretation...")
+                    let tempMistralForInterpret = Flux2TextEncoder(quantization: quantization.textEncoder)
+                    try await tempMistralForInterpret.load()
+
+                    // Step 3: VLM interpretation (same logic as Dev)
+                    let descriptions = try await tempMistralForInterpret.describeImagePathsForPrompt(interpretPaths, context: prompt)
+
+                    if !descriptions.isEmpty {
+                        let imageContext = descriptions.enumerated().map { (idx, desc) in
+                            "Interpret image \(idx + 1): \(desc)"
+                        }.joined(separator: "\n")
+
+                        enrichedPrompt = """
+                        \(imageContext)
+
+                        User request: \(prompt)
+                        """
+
+                        Flux2Debug.log("Prompt enriched with \(descriptions.count) VLM description(s)")
+                        print("[VLM-Interpret] Enriched prompt:\n\(enrichedPrompt)")
+                        fflush(stdout)
+                    }
+
+                    // Step 4: Unload Mistral
+                    Flux2Debug.log("Unloading Mistral VLM...")
+                    await MainActor.run { tempMistralForInterpret.unload() }
+                    memoryManager.fullCleanup()
+
+                    // Step 5: Reload Qwen3 for text encoding
+                    Flux2Debug.log("Reloading Qwen3 for Klein text encoding...")
+                    try await kleinEncoder!.load()
+
+                    profiler.end("1b. VLM Interpretation")
+                }
             }
 
-        case .klein4B, .klein4BBase, .klein9B, .klein9BBase, .klein9BKV:
-            // Klein I2I with upsampling: load Mistral VLM temporarily to see reference images
-            // This matches the official flux2 implementation which loads Mistral for Klein I2I upsampling
-            if upsamplePrompt, case .imageToImage(let images) = mode {
-                Flux2Debug.log("Klein I2I with upsampling: using Mistral VLM to analyze reference images...")
+            profiler.start("2. Text Encoding")
+            // Use vision-based upsampling for I2I if enabled (Dev only)
+            // Track the final prompt used for generation
 
-                // Step 1: Unload Qwen3 (already loaded by loadTextEncoder) to free memory for Mistral
-                Flux2Debug.log("Unloading Qwen3 to make room for Mistral VLM...")
-                await MainActor.run { kleinEncoder?.unload() }
-                memoryManager.fullCleanup()
+            switch model {
+            case .dev:
+                if upsamplePrompt, case .imageToImage(let images) = mode {
+                    // Use VLM to analyze reference images and enhance prompt
+                    Flux2Debug.log("Using vision-based prompt upsampling for I2I with \(images.count) image(s)")
+                    let enhancedPrompt = try await textEncoder!.upsamplePromptWithImages(enrichedPrompt, images: images)
+                    finalUsedPrompt = enhancedPrompt
+                    wasPromptUpsampled = true
+                    textEmbeddings = try textEncoder!.encode(enhancedPrompt, upsample: false)
+                } else {
+                    let (embeddings, usedPrompt) = try textEncoder!.encodeWithPrompt(enrichedPrompt, upsample: upsamplePrompt)
+                    textEmbeddings = embeddings
+                    finalUsedPrompt = usedPrompt
+                    wasPromptUpsampled = upsamplePrompt && (usedPrompt != enrichedPrompt)
+                }
 
-                // Step 2: Load Mistral VLM for vision-aware upsampling
-                Flux2Debug.log("Loading Mistral VLM for image analysis...")
-                let tempMistralEncoder = Flux2TextEncoder(quantization: quantization.textEncoder)
-                try await tempMistralEncoder.load()
+            case .klein4B, .klein4BBase, .klein9B, .klein9BBase, .klein9BKV:
+                // Klein I2I with upsampling: load Mistral VLM temporarily to see reference images
+                // This matches the official flux2 implementation which loads Mistral for Klein I2I upsampling
+                if upsamplePrompt, case .imageToImage(let images) = mode {
+                    Flux2Debug.log("Klein I2I with upsampling: using Mistral VLM to analyze reference images...")
 
-                // Step 3: Upsample prompt with images using Mistral VLM
-                Flux2Debug.log("Upsampling prompt with \(images.count) reference image(s)...")
-                let enhancedPrompt = try await tempMistralEncoder.upsamplePromptWithImages(enrichedPrompt, images: images)
-                finalUsedPrompt = enhancedPrompt
-                wasPromptUpsampled = true
+                    // Step 1: Unload Qwen3 (already loaded by loadTextEncoder) to free memory for Mistral
+                    Flux2Debug.log("Unloading Qwen3 to make room for Mistral VLM...")
+                    await MainActor.run { kleinEncoder?.unload() }
+                    memoryManager.fullCleanup()
 
-                // Step 4: Unload Mistral to free memory
-                Flux2Debug.log("Unloading Mistral VLM...")
-                await MainActor.run { tempMistralEncoder.unload() }
-                memoryManager.fullCleanup()
+                    // Step 2: Load Mistral VLM for vision-aware upsampling
+                    Flux2Debug.log("Loading Mistral VLM for image analysis...")
+                    let tempMistralEncoder = Flux2TextEncoder(quantization: quantization.textEncoder)
+                    try await tempMistralEncoder.load()
 
-                // Step 5: Reload Qwen3 for text encoding
-                Flux2Debug.log("Reloading Qwen3 for Klein text encoding...")
-                try await kleinEncoder!.load()
+                    // Step 3: Upsample prompt with images using Mistral VLM
+                    Flux2Debug.log("Upsampling prompt with \(images.count) reference image(s)...")
+                    let enhancedPrompt = try await tempMistralEncoder.upsamplePromptWithImages(enrichedPrompt, images: images)
+                    finalUsedPrompt = enhancedPrompt
+                    wasPromptUpsampled = true
 
-                // Step 6: Encode with Qwen3 (already upsampled, so upsample=false)
-                textEmbeddings = try kleinEncoder!.encode(enhancedPrompt, upsample: false)
-            } else {
-                // Standard Klein encoding (text-only upsampling if enabled)
-                let (embeddings, usedPrompt) = try kleinEncoder!.encodeWithPrompt(enrichedPrompt, upsample: upsamplePrompt)
-                textEmbeddings = embeddings
-                finalUsedPrompt = usedPrompt
-                wasPromptUpsampled = upsamplePrompt && (usedPrompt != enrichedPrompt)
+                    // Step 4: Unload Mistral to free memory
+                    Flux2Debug.log("Unloading Mistral VLM...")
+                    await MainActor.run { tempMistralEncoder.unload() }
+                    memoryManager.fullCleanup()
+
+                    // Step 5: Reload Qwen3 for text encoding
+                    Flux2Debug.log("Reloading Qwen3 for Klein text encoding...")
+                    try await kleinEncoder!.load()
+
+                    // Step 6: Encode with Qwen3 (already upsampled, so upsample=false)
+                    textEmbeddings = try kleinEncoder!.encode(enhancedPrompt, upsample: false)
+                } else {
+                    // Standard Klein encoding (text-only upsampling if enabled)
+                    let (embeddings, usedPrompt) = try kleinEncoder!.encodeWithPrompt(enrichedPrompt, upsample: upsamplePrompt)
+                    textEmbeddings = embeddings
+                    finalUsedPrompt = usedPrompt
+                    wasPromptUpsampled = upsamplePrompt && (usedPrompt != enrichedPrompt)
+                }
             }
+            eval(textEmbeddings)
+            profiler.end("2. Text Encoding")
+
+            Flux2Debug.log("Text embeddings shape: \(textEmbeddings.shape)")
+
+            // Unload text encoder to free memory
+            profiler.start("3. Unload Text Encoder")
+            await unloadTextEncoder()
+            profiler.end("3. Unload Text Encoder")
         }
-        eval(textEmbeddings)
-        profiler.end("2. Text Encoding")
-
-        Flux2Debug.log("Text embeddings shape: \(textEmbeddings.shape)")
-
-        // Unload text encoder to free memory
-        profiler.start("3. Unload Text Encoder")
-        await unloadTextEncoder()
-        profiler.end("3. Unload Text Encoder")
 
         // === PHASE 2: Image Generation ===
         Flux2Debug.log("=== PHASE 2: Image Generation ===")

@@ -11,11 +11,15 @@ import Foundation
 public enum ModelType: String, CaseIterable, Codable, Sendable {
     case mistral = "mistral"
     case qwen3 = "qwen3"
-    
+    case qwen3VL = "qwen3_vl"
+    case qwen35 = "qwen3_5"
+
     public var displayName: String {
         switch self {
         case .mistral: return "Mistral"
         case .qwen3: return "Qwen3"
+        case .qwen3VL: return "Qwen3-VL"
+        case .qwen35: return "Qwen3.5"
         }
     }
 }
@@ -191,6 +195,139 @@ public enum Qwen3Variant: String, CaseIterable, Codable, Sendable {
     }
 }
 
+// MARK: - Qwen3-VL Variant
+
+/// Quantization variants for Qwen3-VL models (vision-language)
+/// VL-4B matches Klein 4B (hidden_size=2560), VL-8B matches Klein 9B (hidden_size=4096)
+public enum Qwen3VLVariant: String, CaseIterable, Codable, Sendable {
+    case qwen3VL_4B_8bit = "qwen3vl-4b-8bit"
+    case qwen3VL_4B_4bit = "qwen3vl-4b-4bit"
+    case qwen3VL_8B_8bit = "qwen3vl-8b-8bit"
+    case qwen3VL_8B_4bit = "qwen3vl-8b-4bit"
+
+    public var displayName: String {
+        switch self {
+        case .qwen3VL_4B_8bit: return "Qwen3-VL 4B (8-bit)"
+        case .qwen3VL_4B_4bit: return "Qwen3-VL 4B (4-bit)"
+        case .qwen3VL_8B_8bit: return "Qwen3-VL 8B (8-bit)"
+        case .qwen3VL_8B_4bit: return "Qwen3-VL 8B (4-bit)"
+        }
+    }
+
+    public var estimatedSize: String {
+        switch self {
+        case .qwen3VL_4B_8bit: return "~5GB"
+        case .qwen3VL_4B_4bit: return "~3GB"
+        case .qwen3VL_8B_8bit: return "~9GB"
+        case .qwen3VL_8B_4bit: return "~5GB"
+        }
+    }
+
+    public var shortName: String {
+        switch self {
+        case .qwen3VL_4B_8bit: return "VL-4B-8bit"
+        case .qwen3VL_4B_4bit: return "VL-4B-4bit"
+        case .qwen3VL_8B_8bit: return "VL-8B-8bit"
+        case .qwen3VL_8B_4bit: return "VL-8B-4bit"
+        }
+    }
+
+    /// Klein variant this model maps to (based on hidden_size match)
+    public var kleinVariant: KleinVariant {
+        switch self {
+        case .qwen3VL_4B_8bit, .qwen3VL_4B_4bit: return .klein4B   // hidden_size=2560
+        case .qwen3VL_8B_8bit, .qwen3VL_8B_4bit: return .klein9B   // hidden_size=4096
+        }
+    }
+
+    public var repoId: String {
+        switch self {
+        case .qwen3VL_4B_8bit: return "lmstudio-community/Qwen3-VL-4B-Instruct-MLX-8bit"
+        case .qwen3VL_4B_4bit: return "lmstudio-community/Qwen3-VL-4B-Instruct-MLX-4bit"
+        case .qwen3VL_8B_8bit: return "lmstudio-community/Qwen3-VL-8B-Instruct-MLX-8bit"
+        case .qwen3VL_8B_4bit: return "lmstudio-community/Qwen3-VL-8B-Instruct-MLX-4bit"
+        }
+    }
+
+    public var huggingFaceURL: String {
+        "https://huggingface.co/\(repoId)"
+    }
+
+    public var isGated: Bool { false }
+
+    public var estimatedSizeGB: Int {
+        switch self {
+        case .qwen3VL_4B_8bit: return 5
+        case .qwen3VL_4B_4bit: return 3
+        case .qwen3VL_8B_8bit: return 9
+        case .qwen3VL_8B_4bit: return 5
+        }
+    }
+
+    public var license: String { "Apache 2.0" }
+    public var isCommercialUseAllowed: Bool { true }
+}
+
+// MARK: - Qwen3.5 Variant
+
+/// Quantization variants for Qwen3.5 VLM models
+public enum Qwen35Variant: String, CaseIterable, Codable, Sendable {
+    case qwen35_4B_8bit = "qwen35-4b-8bit"
+    case qwen35_4B_4bit = "qwen35-4b-4bit"
+
+    public var displayName: String {
+        switch self {
+        case .qwen35_4B_8bit: return "Qwen3.5 4B (8-bit)"
+        case .qwen35_4B_4bit: return "Qwen3.5 4B (4-bit)"
+        }
+    }
+
+    public var estimatedSize: String {
+        switch self {
+        case .qwen35_4B_8bit: return "~5GB"
+        case .qwen35_4B_4bit: return "~3GB"
+        }
+    }
+
+    public var shortName: String {
+        switch self {
+        case .qwen35_4B_8bit: return "3.5-4B-8bit"
+        case .qwen35_4B_4bit: return "3.5-4B-4bit"
+        }
+    }
+
+    public var repoId: String {
+        switch self {
+        case .qwen35_4B_8bit: return "mlx-community/Qwen3.5-4B-MLX-8bit"
+        case .qwen35_4B_4bit: return "mlx-community/Qwen3.5-4B-MLX-4bit"
+        }
+    }
+
+    public var huggingFaceURL: String { "https://huggingface.co/\(repoId)" }
+    public var isGated: Bool { false }
+    public var estimatedSizeGB: Int {
+        switch self {
+        case .qwen35_4B_8bit: return 5
+        case .qwen35_4B_4bit: return 3
+        }
+    }
+    public var license: String { "Apache 2.0" }
+}
+
+/// Model info for Qwen3.5
+public struct Qwen35ModelInfo: Sendable {
+    public let id: String
+    public let repoId: String
+    public let name: String
+    public let description: String
+    public let variant: Qwen35Variant
+    public let parameters: String
+
+    public var displayName: String { name }
+    public var huggingFaceURL: String { "https://huggingface.co/\(repoId)" }
+    public var isGated: Bool { false }
+}
+
 // MARK: - Model Info
 
 public struct ModelInfo: Codable, Sendable {
@@ -268,6 +405,37 @@ public struct Qwen3ModelInfo: Codable, Sendable {
     }
 }
 
+// MARK: - Qwen3-VL Model Info
+
+public struct Qwen3VLModelInfo: Sendable {
+    public let id: String
+    public let repoId: String
+    public let name: String
+    public let description: String
+    public let variant: Qwen3VLVariant
+    public let parameters: String
+
+    public var displayName: String { name }
+    public var huggingFaceURL: String { "https://huggingface.co/\(repoId)" }
+    public var isGated: Bool { false }
+
+    public init(
+        id: String,
+        repoId: String,
+        name: String,
+        description: String,
+        variant: Qwen3VLVariant,
+        parameters: String
+    ) {
+        self.id = id
+        self.repoId = repoId
+        self.name = name
+        self.description = description
+        self.variant = variant
+        self.parameters = parameters
+    }
+}
+
 // MARK: - Model Registry
 
 @MainActor
@@ -276,10 +444,14 @@ public final class TextEncoderModelRegistry {
 
     private var models: [ModelInfo] = []
     private var qwen3Models: [Qwen3ModelInfo] = []
+    private var qwen3VLModels: [Qwen3VLModelInfo] = []
+    private var qwen35Models: [Qwen35ModelInfo] = []
 
     private init() {
         registerDefaultModels()
         registerQwen3Models()
+        registerQwen3VLModels()
+        registerQwen35Models()
     }
 
     private func registerDefaultModels() {
@@ -412,6 +584,92 @@ public final class TextEncoderModelRegistry {
     
     public func defaultQwen3Model() -> Qwen3ModelInfo {
         return qwen3Model(withVariant: .qwen3_4B_8bit) ?? qwen3Models[0]
+    }
+
+    // MARK: - Qwen3-VL Models
+
+    private func registerQwen3VLModels() {
+        qwen3VLModels = [
+            Qwen3VLModelInfo(
+                id: "qwen3vl-4b-8bit",
+                repoId: "lmstudio-community/Qwen3-VL-4B-Instruct-MLX-8bit",
+                name: "Qwen3-VL 4B (8-bit)",
+                description: "8-bit quantized Qwen3-VL 4B for Klein 4B VL embeddings",
+                variant: .qwen3VL_4B_8bit,
+                parameters: "4B"
+            ),
+            Qwen3VLModelInfo(
+                id: "qwen3vl-4b-4bit",
+                repoId: "lmstudio-community/Qwen3-VL-4B-Instruct-MLX-4bit",
+                name: "Qwen3-VL 4B (4-bit)",
+                description: "4-bit quantized Qwen3-VL 4B for Klein 4B VL embeddings (memory efficient)",
+                variant: .qwen3VL_4B_4bit,
+                parameters: "4B"
+            ),
+            Qwen3VLModelInfo(
+                id: "qwen3vl-8b-8bit",
+                repoId: "lmstudio-community/Qwen3-VL-8B-Instruct-MLX-8bit",
+                name: "Qwen3-VL 8B (8-bit)",
+                description: "8-bit quantized Qwen3-VL 8B for Klein 9B VL embeddings",
+                variant: .qwen3VL_8B_8bit,
+                parameters: "8B"
+            ),
+            Qwen3VLModelInfo(
+                id: "qwen3vl-8b-4bit",
+                repoId: "lmstudio-community/Qwen3-VL-8B-Instruct-MLX-4bit",
+                name: "Qwen3-VL 8B (4-bit)",
+                description: "4-bit quantized Qwen3-VL 8B for Klein 9B VL embeddings (memory efficient)",
+                variant: .qwen3VL_8B_4bit,
+                parameters: "8B"
+            ),
+        ]
+    }
+
+    public func allQwen3VLModels() -> [Qwen3VLModelInfo] {
+        return qwen3VLModels
+    }
+
+    public func qwen3VLModel(withVariant variant: Qwen3VLVariant) -> Qwen3VLModelInfo? {
+        return qwen3VLModels.first { $0.variant == variant }
+    }
+
+    /// Get the recommended Qwen3-VL model for a Klein variant (8-bit by default)
+    public func qwen3VLModel(forKlein variant: KleinVariant) -> Qwen3VLModelInfo? {
+        switch variant {
+        case .klein4B: return qwen3VLModel(withVariant: .qwen3VL_4B_8bit)
+        case .klein9B: return qwen3VLModel(withVariant: .qwen3VL_8B_8bit)
+        }
+    }
+
+    // MARK: - Qwen3.5 Models
+
+    private func registerQwen35Models() {
+        qwen35Models = [
+            Qwen35ModelInfo(
+                id: "qwen35-4b-8bit",
+                repoId: "mlx-community/Qwen3.5-4B-MLX-8bit",
+                name: "Qwen3.5 4B (8-bit)",
+                description: "8-bit quantized Qwen3.5 4B VLM for image analysis (recommended)",
+                variant: .qwen35_4B_8bit,
+                parameters: "4B"
+            ),
+            Qwen35ModelInfo(
+                id: "qwen35-4b-4bit",
+                repoId: "mlx-community/Qwen3.5-4B-MLX-4bit",
+                name: "Qwen3.5 4B (4-bit)",
+                description: "4-bit quantized Qwen3.5 4B VLM for image analysis (memory efficient)",
+                variant: .qwen35_4B_4bit,
+                parameters: "4B"
+            ),
+        ]
+    }
+
+    public func allQwen35Models() -> [Qwen35ModelInfo] {
+        return qwen35Models
+    }
+
+    public func qwen35Model(withVariant variant: Qwen35Variant) -> Qwen35ModelInfo? {
+        return qwen35Models.first { $0.variant == variant }
     }
 
     // MARK: - Print Methods

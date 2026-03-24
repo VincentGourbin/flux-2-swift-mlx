@@ -1,0 +1,24 @@
+=== LoRA Evaluation Report ===
+Date: 2026-03-24T19:23:59Z
+Model: Flux.2 Klein 4B
+
+Reference Image Description:
+A playful tabby-and-white kitten is captured upside down, clinging to the underside of a plush red sofa or cushion with its front paws hooked over the edge, looking directly up at the camera with wide, curious green eyes. The cat’s body is stretched vertically along the curve of the furniture, its white chest and belly contrasting with its brown-and-black striped back and legs; long white whiskers fan out from its face, and its ears are perked forward in alertness. The red fabric of the sofa fills most of the frame, creating a bold, saturated background that frames the small animal. The lighting is soft and even, likely from an indoor source above, casting gentle shadows beneath the cat’s body and highlighting the texture of its short fur. The image is taken from a low angle, almost eye-level with the cat’s face, giving it a heroic, inverted perspective. The photo has a casual, candid feel—shot with a smartphone or compact camera—with slight motion blur suggesting movement as the cat hangs there. No text is visible in the image.
+
+Comparison Scores:
+  Scene: 0/10 — The images show fundamentally different scenes. The reference image features a cat hanging upside down from the edge of a red sofa, while the generated image shows a cat sitting upright on a red couch. The pose and spatial relationship of the subject to the environment are completely different.
+  Style: 9/10 — The generated image successfully matches the photographic style of the reference. It uses a similar color palette (red sofa, cat's fur colors), lighting conditions, and texture. The composition is also consistent with a close-up shot of the cat against the red background.
+
+Recommended Training Parameters:
+  Steps: 750
+  Rank: 32
+  Alpha: 32.0
+  Learning Rate: 0.0001
+  Warmup Steps: 75
+  Timestep Sampling: content
+  Loss Weighting: bell_shaped
+  Target Layers: all
+  DOP: true (class: object)
+  Gradient Checkpointing: false
+
+Summary: Scene gap: HIGH (0/10), Style gap: LOW (9/10) → 750 steps, rank 32, content sampling
