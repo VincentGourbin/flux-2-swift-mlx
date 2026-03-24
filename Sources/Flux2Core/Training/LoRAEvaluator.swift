@@ -11,13 +11,26 @@ import ImageIO
 
 /// Result of LoRA evaluation pipeline
 public struct LoRAEvaluation: @unchecked Sendable {
+    // Input
+    public let referenceImage: CGImage
+
+    // VLM description used as generation prompt
+    public let prompt: String
+
+    // Generated baseline
+    public let baselineImage: CGImage
+
+    // Comparison scores
     public let sceneScore: Int
     public let styleScore: Int
     public let sceneReason: String
     public let styleReason: String
-    public let description: String
-    public let baselineImage: CGImage
+
+    // Training recommendation
     public let recommendation: LoRARecommendation
+
+    /// Convenience alias
+    public var description: String { prompt }
 }
 
 /// Recommended LoRA training parameters based on evaluation
@@ -195,12 +208,13 @@ public class LoRAEvaluator {
         onProgress?("  \(recommendation.summary)")
 
         return LoRAEvaluation(
+            referenceImage: referenceImage,
+            prompt: description,
+            baselineImage: baselineImage,
             sceneScore: comparison.sceneScore,
             styleScore: comparison.styleScore,
             sceneReason: comparison.sceneReason,
             styleReason: comparison.styleReason,
-            description: description,
-            baselineImage: baselineImage,
             recommendation: recommendation
         )
     }

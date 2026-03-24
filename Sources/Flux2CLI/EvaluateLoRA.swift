@@ -94,15 +94,20 @@ struct EvaluateLoRA: AsyncParsableCommand {
         // Save results
         print("\n--- Saving results ---")
 
-        // Description
-        let descPath = "\(outputDir)/description.txt"
-        try result.description.write(toFile: descPath, atomically: true, encoding: .utf8)
-        print("  Description: \(descPath)")
+        // Copy reference image into output dir
+        let refPath = "\(outputDir)/reference.png"
+        try saveImage(refImage, to: refPath)
+        print("  Reference:   \(refPath)")
 
         // Baseline image
         let baselinePath = "\(outputDir)/baseline.png"
         try saveImage(result.baselineImage, to: baselinePath)
-        print("  Baseline: \(baselinePath)")
+        print("  Baseline:    \(baselinePath)")
+
+        // Description (the prompt used to generate baseline)
+        let descPath = "\(outputDir)/prompt.txt"
+        try result.description.write(toFile: descPath, atomically: true, encoding: .utf8)
+        print("  Prompt:      \(descPath)")
 
         // YAML config
         let yamlPath = "\(outputDir)/recommended_config.yaml"
@@ -110,13 +115,13 @@ struct EvaluateLoRA: AsyncParsableCommand {
             model: modelVariant, triggerWord: triggerWord, datasetPath: datasetPath
         )
         try yaml.write(toFile: yamlPath, atomically: true, encoding: .utf8)
-        print("  Config: \(yamlPath)")
+        print("  Config:      \(yamlPath)")
 
         // Report
         let report = buildReport(result: result, model: modelVariant)
         let reportPath = "\(outputDir)/report.txt"
         try report.write(toFile: reportPath, atomically: true, encoding: .utf8)
-        print("  Report: \(reportPath)")
+        print("  Report:      \(reportPath)")
 
         // Print recommendation
         let rec = result.recommendation
