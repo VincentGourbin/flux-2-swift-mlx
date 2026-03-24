@@ -55,24 +55,26 @@ flux2 train-lora --config my_eval/recommended_config.yaml
 
 ### VLM-Generated Prompt
 
-> A playful tabby-and-white kitten is captured upside down, clinging to the underside of a plush red sofa or cushion with its front paws hooked over the edge, looking directly up at the camera with wide, curious green eyes. The cat's body is stretched vertically along the curve of the furniture, its white chest and belly contrasting with its brown-and-black striped back and legs; long white whiskers fan out from its face, and its ears are perked forward in alertness.
+> A single domestic shorthair cat with a tabby-and-white coat sits attentively on the plush, deep red upholstery of a sofa. The cat is positioned in a seated posture with its front paws planted firmly on the fabric, facing directly toward the camera with wide, alert green eyes and perked ears. Its fur features distinct dark brown and black stripes on the head, back, and legs, contrasting with a clean white chest, muzzle, and paws.
 
 ### Comparison Scores
 
 | Criterion | Score | Reason |
 |-----------|:-----:|--------|
-| **Scene** | 0/10 | Reference: cat hanging upside down. Baseline: cat sitting upright. Pose and spatial relationship completely different. |
-| **Style** | 9/10 | Successfully matches photographic style, color palette (red sofa, fur colors), lighting conditions, and texture. |
+| **Scene** | 9/10 | Accurately preserves the core scene elements: tabby and white cat, alert seated pose, red sofa. Spatial relationship maintained. |
+| **Style** | 9/10 | Faithfully replicates the photographic style, color palette, lighting conditions, and texture of the fabric with high fidelity. |
 
 ### Recommendation
 
+Since the base model already produces a very faithful result (9/10 on both criteria), only a **light LoRA** is needed:
+
 | Parameter | Value | Why |
 |-----------|-------|-----|
-| **Steps** | 750 | High scene gap requires significant training |
-| **Rank** | 32 | Standard capacity for learning new content |
-| **Timestep Sampling** | `content` | Scene gap >> style gap — focus on subjects/poses |
-| **DOP** | Yes | Preserve existing style while learning new content |
-| **Target Layers** | `all` | Full LoRA coverage (rank ≤ 32) |
+| **Steps** | 150 | Very small gap — minimal training needed |
+| **Rank** | 8 | Low capacity sufficient for fine-tuning |
+| **Timestep Sampling** | `balanced` | Both scene and style are close — uniform refinement |
+| **DOP** | No | Base model already captures the subject well |
+| **Target Layers** | `all` | Full coverage at low rank is affordable |
 | **Learning Rate** | 1e-4 | Standard LoRA learning rate |
 | **Loss Weighting** | `bell_shaped` | Focus on medium denoising steps |
 | **Gradient Checkpointing** | No | Not needed for Klein 4B |
@@ -86,23 +88,20 @@ model:
   quantization: bf16
 
 lora:
-  rank: 32
-  alpha: 32.0
+  rank: 8
+  alpha: 8.0
   target_layers: all
 
 training:
   batch_size: 1
-  max_steps: 750
-  warmup_steps: 75
+  max_steps: 150
+  warmup_steps: 15
   learning_rate: 0.0001
   weight_decay: 0.0001
 
 loss:
   weighting: bell_shaped
-  timestep_sampling: content
-  diff_output_preservation: true
-  diff_output_preservation_class: "object"
-  diff_output_preservation_multiplier: 1.0
+  timestep_sampling: balanced
 
 memory:
   gradient_checkpointing: false
