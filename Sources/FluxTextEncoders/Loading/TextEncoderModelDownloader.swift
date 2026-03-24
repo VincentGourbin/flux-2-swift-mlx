@@ -446,6 +446,199 @@ public class TextEncoderModelDownloader {
         return findQwen3ModelPath(for: variant) != nil
     }
 
+    // MARK: - Qwen3-VL Download
+
+    /// Download a Qwen3-VL model from HuggingFace Hub
+    public func downloadQwen3VL(
+        _ model: Qwen3VLModelInfo,
+        progress: TextEncoderDownloadProgressCallback? = nil
+    ) async throws -> URL {
+        if let existingPath = Self.findQwen3VLModelPath(for: model) {
+            let verification = Self.verifyShardedModel(at: existingPath)
+            if verification.complete {
+                progress?(1.0, "Qwen3-VL model already downloaded")
+                return existingPath
+            } else {
+                print("Warning: Incomplete Qwen3-VL download detected. Missing files: \(verification.missing)")
+                print("Re-downloading...")
+            }
+        }
+
+        progress?(0.0, "Starting download of \(model.name)...")
+        print("\nDownloading \(model.name) from HuggingFace...")
+        print("Repository: \(model.repoId)")
+        print()
+
+        let modelUrl = try await Self.hubApi.snapshot(
+            from: model.repoId,
+            matching: ["*.json", "*.safetensors", "tokenizer.model"]
+        ) { downloadProgress in
+            let completed = downloadProgress.completedUnitCount
+            let total = downloadProgress.totalUnitCount
+            let fraction = downloadProgress.fractionCompleted
+
+            let message = "Downloading file \(completed)/\(total)"
+            progress?(fraction, message)
+        }
+
+        progress?(1.0, "Download complete!")
+        print("Qwen3-VL model available at: \(modelUrl.path)")
+
+        return modelUrl
+    }
+
+    /// Download a Qwen3-VL model by variant
+    public func downloadQwen3VL(
+        variant: Qwen3VLVariant,
+        progress: TextEncoderDownloadProgressCallback? = nil
+    ) async throws -> URL {
+        guard let model = await TextEncoderModelRegistry.shared.qwen3VLModel(withVariant: variant) else {
+            throw TextEncoderModelDownloaderError.qwen3VLModelNotFound
+        }
+        return try await downloadQwen3VL(model, progress: progress)
+    }
+
+    /// Find a Qwen3-VL model path (checks Hub cache)
+    public static func findQwen3VLModelPath(for model: Qwen3VLModelInfo) -> URL? {
+        var newPath = hubDownloadDirectory
+        for component in model.repoId.split(separator: "/") {
+            newPath = newPath.appendingPathComponent(String(component))
+        }
+
+        if FileManager.default.fileExists(atPath: newPath.appendingPathComponent("config.json").path) {
+            let verification = verifyShardedModel(at: newPath)
+            if verification.complete {
+                return newPath
+            }
+        }
+
+        // Check legacy Hub cache location
+        let homeDir = FileManager.default.homeDirectoryForCurrentUser
+        let hubCache = homeDir
+            .appendingPathComponent(".cache")
+            .appendingPathComponent("huggingface")
+            .appendingPathComponent("hub")
+
+        let repoDir = "models--\(model.repoId.replacingOccurrences(of: "/", with: "--"))"
+        let snapshotDir = hubCache.appendingPathComponent(repoDir).appendingPathComponent("snapshots")
+
+        if let enumerator = FileManager.default.enumerator(atPath: snapshotDir.path),
+           let firstSnapshot = enumerator.nextObject() as? String {
+            let snapshotPath = snapshotDir.appendingPathComponent(firstSnapshot)
+            if FileManager.default.fileExists(atPath: snapshotPath.appendingPathComponent("config.json").path) {
+                let verification = verifyShardedModel(at: snapshotPath)
+                if verification.complete {
+                    return snapshotPath
+                }
+            }
+        }
+
+        return nil
+    }
+
+    /// Find a Qwen3-VL model path by variant
+    public static func findQwen3VLModelPath(for variant: Qwen3VLVariant) -> URL? {
+        let repoId = variant.repoId
+
+        var newPath = hubDownloadDirectory
+        for component in repoId.split(separator: "/") {
+            newPath = newPath.appendingPathComponent(String(component))
+        }
+
+        if FileManager.default.fileExists(atPath: newPath.appendingPathComponent("config.json").path) {
+            let verification = verifyShardedModel(at: newPath)
+            if verification.complete {
+                return newPath
+            }
+        }
+
+        return nil
+    }
+
+    /// Check if a Qwen3-VL model is already downloaded
+    public static func isQwen3VLModelDownloaded(_ model: Qwen3VLModelInfo) -> Bool {
+        return findQwen3VLModelPath(for: model) != nil
+    }
+
+    /// Check if a Qwen3-VL model is already downloaded by variant
+    public static func isQwen3VLModelDownloaded(variant: Qwen3VLVariant) -> Bool {
+        return findQwen3VLModelPath(for: variant) != nil
+    }
+
+    // MARK: - Qwen3.5 Download
+
+    /// Download a Qwen3.5 model from HuggingFace Hub
+    public func downloadQwen35(
+        _ model: Qwen35ModelInfo,
+        progress: TextEncoderDownloadProgressCallback? = nil
+    ) async throws -> URL {
+        if let existingPath = Self.findQwen35ModelPath(for: model) {
+            let verification = Self.verifyShardedModel(at: existingPath)
+            if verification.complete {
+                progress?(1.0, "Qwen3.5 model already downloaded")
+                return existingPath
+            }
+        }
+
+        progress?(0.0, "Starting download of \(model.name)...")
+        print("\nDownloading \(model.name) from HuggingFace...")
+        print("Repository: \(model.repoId)")
+
+        let modelUrl = try await Self.hubApi.snapshot(
+            from: model.repoId,
+            matching: ["*.json", "*.safetensors", "tokenizer.model", "*.jinja"]
+        ) { downloadProgress in
+            let fraction = downloadProgress.fractionCompleted
+            let message = "Downloading file \(downloadProgress.completedUnitCount)/\(downloadProgress.totalUnitCount)"
+            progress?(fraction, message)
+        }
+
+        progress?(1.0, "Download complete!")
+        print("Qwen3.5 model available at: \(modelUrl.path)")
+        return modelUrl
+    }
+
+    /// Download a Qwen3.5 model by variant
+    public func downloadQwen35(
+        variant: Qwen35Variant,
+        progress: TextEncoderDownloadProgressCallback? = nil
+    ) async throws -> URL {
+        guard let model = await TextEncoderModelRegistry.shared.qwen35Model(withVariant: variant) else {
+            throw TextEncoderModelDownloaderError.qwen35ModelNotFound
+        }
+        return try await downloadQwen35(model, progress: progress)
+    }
+
+    /// Find a Qwen3.5 model path
+    public static func findQwen35ModelPath(for model: Qwen35ModelInfo) -> URL? {
+        var newPath = hubDownloadDirectory
+        for component in model.repoId.split(separator: "/") {
+            newPath = newPath.appendingPathComponent(String(component))
+        }
+        if FileManager.default.fileExists(atPath: newPath.appendingPathComponent("config.json").path) {
+            let verification = verifyShardedModel(at: newPath)
+            if verification.complete { return newPath }
+        }
+        return nil
+    }
+
+    /// Find a Qwen3.5 model path by variant
+    public static func findQwen35ModelPath(for variant: Qwen35Variant) -> URL? {
+        var newPath = hubDownloadDirectory
+        for component in variant.repoId.split(separator: "/") {
+            newPath = newPath.appendingPathComponent(String(component))
+        }
+        if FileManager.default.fileExists(atPath: newPath.appendingPathComponent("config.json").path) {
+            let verification = verifyShardedModel(at: newPath)
+            if verification.complete { return newPath }
+        }
+        return nil
+    }
+
+    public static func isQwen35ModelDownloaded(variant: Qwen35Variant) -> Bool {
+        return findQwen35ModelPath(for: variant) != nil
+    }
+
     /// Download a model by repo ID directly
     public func downloadByRepoId(
         _ repoId: String,
@@ -510,6 +703,8 @@ public class TextEncoderModelDownloader {
 public enum TextEncoderModelDownloaderError: LocalizedError {
     case modelNotFound
     case qwen3ModelNotFound
+    case qwen3VLModelNotFound
+    case qwen35ModelNotFound
     case downloadFailed(String)
     case invalidToken
 
@@ -519,6 +714,10 @@ public enum TextEncoderModelDownloaderError: LocalizedError {
             return "Model not found"
         case .qwen3ModelNotFound:
             return "Qwen3 model not found"
+        case .qwen3VLModelNotFound:
+            return "Qwen3-VL model not found"
+        case .qwen35ModelNotFound:
+            return "Qwen3.5 model not found"
         case .downloadFailed(let reason):
             return "Download failed: \(reason)"
         case .invalidToken:

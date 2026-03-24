@@ -12,6 +12,8 @@
 import Foundation
 import MLX
 import Tokenizers
+import ImageIO
+import CoreGraphics
 
 #if canImport(AppKit)
 import AppKit
@@ -40,6 +42,16 @@ public final class FluxTextEncoders: @unchecked Sendable {
     private var loadedKleinVariant: KleinVariant?
     private var qwen3Generator: Qwen3Generator?
 
+    // Qwen3-VL/Klein VL support (experimental)
+    private var qwen3VLModel: Qwen3VLForCausalLM?
+    private var kleinVLExtractor: KleinVLEmbeddingExtractor?
+    private var qwen3VLTokenizer: Tokenizer?
+    private var qwen3VLGenerator: Qwen3VLGenerator?
+    private var isKleinVLMode: Bool = false
+
+    // Qwen3.5 VLM service
+    private var qwen35VLM: Qwen35VLM?
+
     /// Whether VLM (vision) model is loaded
     public var isVLMLoaded: Bool {
         return vlmModel != nil && tokenizer != nil && imageProcessor != nil
@@ -53,6 +65,11 @@ public final class FluxTextEncoders: @unchecked Sendable {
     /// Get the loaded Klein variant
     public var kleinVariant: KleinVariant? {
         return loadedKleinVariant
+    }
+
+    /// Whether Qwen3-VL/Klein VL model is loaded
+    public var isKleinVLLoaded: Bool {
+        return qwen3VLModel != nil && qwen3VLTokenizer != nil && kleinVLExtractor != nil
     }
 
     private init() {}
@@ -255,8 +272,424 @@ public final class FluxTextEncoders: @unchecked Sendable {
         qwen3Tokenizer = nil
         loadedKleinVariant = nil
         qwen3Generator = nil
+        // Also unload VL model if loaded
+        qwen3VLModel = nil
+        kleinVLExtractor = nil
+        qwen3VLTokenizer = nil
+        qwen3VLGenerator = nil
+        isKleinVLMode = false
         Memory.clearCache()
         FluxDebug.log("Klein model unloaded")
+    }
+
+    // MARK: - Klein VL (Qwen3-VL) Loading
+
+    /// Load Qwen3-VL model for Klein VL embeddings (experimental)
+    /// This replaces the standard Qwen3 text encoder with Qwen3-VL (language component only)
+    @MainActor
+    public func loadKleinVLModel(variant: KleinVariant, from modelPath: String) async throws {
+        print("[Klein-VL] Loading Qwen3-VL model for \(variant.displayName)")
+        print("[Klein-VL] Model path: \(modelPath)")
+
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: modelPath) else {
+            throw FluxEncoderError.invalidInput("Model path does not exist: \(modelPath)")
+        }
+
+        // Load Qwen3-VL model (language component only — skips visual.* weights)
+        print("[Klein-VL] Loading model weights (language only, skipping vision encoder)...")
+        qwen3VLModel = try Qwen3VLForCausalLM.load(from: modelPath)
+        print("[Klein-VL] Model weights loaded successfully")
+
+        Memory.cacheLimit = 512 * 1024 * 1024
+        qwen3VLModel?.model.memoryConfig = .aggressive
+        print("[Klein-VL] Memory optimization enabled")
+
+        // Load tokenizer
+        print("[Klein-VL] Loading tokenizer...")
+        let modelFolderURL = URL(fileURLWithPath: modelPath)
+        qwen3VLTokenizer = try await AutoTokenizer.from(modelFolder: modelFolderURL)
+        print("[Klein-VL] Tokenizer loaded")
+
+        // Create VL embedding extractor and generator
+        if let model = qwen3VLModel, let tokenizer = qwen3VLTokenizer {
+            kleinVLExtractor = KleinVLEmbeddingExtractor(model: model, tokenizer: tokenizer, variant: variant)
+            qwen3VLGenerator = Qwen3VLGenerator(model: model, tokenizer: tokenizer)
+            loadedKleinVariant = variant
+            isKleinVLMode = true
+            print("[Klein-VL] VL extractor and generator created")
+        }
+
+        print("[Klein-VL] Klein VL model loaded successfully for \(variant.displayName)")
+    }
+
+    /// Load Qwen3-VL model for Klein VL embeddings with automatic download
+    @MainActor
+    public func loadKleinVLModel(
+        variant: KleinVariant,
+        qwen3VLVariant: Qwen3VLVariant? = nil,
+        hfToken: String? = nil,
+        progress: TextEncoderDownloadProgressCallback? = nil
+    ) async throws {
+        // Determine variant: explicit > already downloaded > default 8-bit
+        let modelVariant: Qwen3VLVariant
+        if let specified = qwen3VLVariant {
+            modelVariant = specified
+        } else {
+            // Check if something is already downloaded
+            let candidates: [Qwen3VLVariant] = variant == .klein4B
+                ? [.qwen3VL_4B_8bit, .qwen3VL_4B_4bit]
+                : [.qwen3VL_8B_8bit, .qwen3VL_8B_4bit]
+            if let downloaded = candidates.first(where: { TextEncoderModelDownloader.isQwen3VLModelDownloaded(variant: $0) }) {
+                modelVariant = downloaded
+            } else {
+                modelVariant = variant == .klein4B ? .qwen3VL_4B_8bit : .qwen3VL_8B_8bit
+            }
+        }
+
+        guard let modelInfo = TextEncoderModelRegistry.shared.qwen3VLModel(withVariant: modelVariant) else {
+            throw FluxEncoderError.invalidInput("Qwen3-VL model variant not found: \(modelVariant)")
+        }
+
+        print("[Klein-VL] Loading variant: \(modelVariant), repoId: \(modelInfo.repoId)")
+
+        // Download model (or get existing path)
+        let downloader = TextEncoderModelDownloader(hfToken: hfToken)
+        let modelPath = try await downloader.downloadQwen3VL(modelInfo, progress: progress)
+
+        print("[Klein-VL] Model path resolved: \(modelPath.path)")
+
+        // Load from downloaded path
+        try await loadKleinVLModel(variant: variant, from: modelPath.path)
+    }
+
+    /// Generate text using Qwen3-VL model
+    public func generateQwen3VL(
+        prompt: String,
+        parameters: GenerateParameters = .balanced,
+        onToken: ((String) -> Bool)? = nil
+    ) throws -> GenerationResult {
+        guard let generator = qwen3VLGenerator else {
+            throw FluxEncoderError.invalidInput("Klein VL model not loaded")
+        }
+        return try generator.generate(prompt: prompt, parameters: parameters, onToken: onToken)
+    }
+
+    /// Extract Klein embeddings using Qwen3-VL
+    public func extractKleinVLEmbeddings(
+        prompt: String,
+        maxLength: Int = KleinConfig.maxSequenceLength
+    ) throws -> MLXArray {
+        guard let extractor = kleinVLExtractor else {
+            throw FluxEncoderError.invalidInput("Klein VL model not loaded")
+        }
+        return try extractor.extractKleinEmbeddings(prompt: prompt, maxLength: maxLength)
+    }
+
+    // MARK: - Qwen3.5 VLM Service
+
+    /// Whether Qwen3.5 VLM is loaded
+    public var isQwen35VLMLoaded: Bool {
+        return qwen35VLM != nil
+    }
+
+    /// Load Qwen3.5 VLM from local path
+    @MainActor
+    public func loadQwen35VLM(from modelPath: String) async throws {
+        print("[Qwen3.5] Loading VLM from \(modelPath)...")
+
+        Memory.cacheLimit = 512 * 1024 * 1024
+        qwen35VLM = try await Qwen35VLM.load(from: modelPath)
+
+        print("[Qwen3.5] VLM loaded successfully")
+    }
+
+    /// Unload Qwen3.5 VLM
+    @MainActor
+    public func unloadQwen35VLM() {
+        qwen35VLM = nil
+        Memory.clearCache()
+        FluxDebug.log("Qwen3.5 VLM unloaded")
+    }
+
+    /// Analyze an image with Qwen3.5 VLM
+    /// - Parameters:
+    ///   - image: CGImage to analyze
+    ///   - prompt: User prompt text
+    ///   - systemPrompt: Optional system prompt to guide the analysis style
+    ///   - maxTokens: Maximum tokens to generate
+    ///   - temperature: Sampling temperature (0 = greedy)
+    ///   - onToken: Streaming callback
+    public func analyzeImageWithQwen35(
+        image: CGImage,
+        prompt: String,
+        systemPrompt: String? = nil,
+        maxTokens: Int = 512,
+        temperature: Float = 0.7,
+        onToken: ((String) -> Bool)? = nil
+    ) throws -> GenerationResult {
+        guard let vlm = qwen35VLM else {
+            throw FluxEncoderError.invalidInput("Qwen3.5 VLM not loaded")
+        }
+        return try vlm.generate(
+            image: image, prompt: prompt, systemPrompt: systemPrompt,
+            maxTokens: maxTokens, temperature: temperature,
+            onToken: onToken
+        )
+    }
+
+    /// Analyze an image from file path with Qwen3.5 VLM
+    public func analyzeImageWithQwen35(
+        path: String,
+        prompt: String,
+        systemPrompt: String? = nil,
+        maxTokens: Int = 512,
+        temperature: Float = 0.7,
+        onToken: ((String) -> Bool)? = nil
+    ) throws -> GenerationResult {
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            throw FluxEncoderError.invalidInput("Failed to load image: \(path)")
+        }
+        return try analyzeImageWithQwen35(
+            image: cgImage, prompt: prompt, systemPrompt: systemPrompt,
+            maxTokens: maxTokens, temperature: temperature, onToken: onToken
+        )
+    }
+
+    /// Generate text with Qwen3.5 VLM (no image)
+    public func generateWithQwen35(
+        prompt: String,
+        systemPrompt: String? = nil,
+        maxTokens: Int = 512,
+        temperature: Float = 0.7,
+        onToken: ((String) -> Bool)? = nil
+    ) throws -> GenerationResult {
+        guard let vlm = qwen35VLM else {
+            throw FluxEncoderError.invalidInput("Qwen3.5 VLM not loaded")
+        }
+        return try vlm.generate(
+            image: nil, prompt: prompt, systemPrompt: systemPrompt,
+            maxTokens: maxTokens, temperature: temperature,
+            onToken: onToken
+        )
+    }
+
+    // MARK: - FLUX.2 Image Description Service
+
+    /// System prompt for describing images in FLUX.2-compatible style
+    /// Produces detailed visual descriptions optimized for image regeneration
+    /// Covers both scene content AND visual style
+    public static let fluxImageDescriptionSystemPrompt = """
+    You are an expert image analyst for FLUX.2 by Black Forest Labs. Describe the provided image so that FLUX.2 can recreate it faithfully. You MUST describe both WHAT is depicted AND HOW it looks.
+
+    SCENE (what is depicted):
+    1. Action and narrative: what is happening, what are people/characters doing, interactions
+    2. People/characters: number, identity, gender, age, pose, expression, clothing, position relative to each other
+    3. Objects: what objects are present, their state, spatial relationships
+    4. Setting: location, indoor/outdoor, time of day, environment details
+
+    STYLE (how it looks):
+    5. Art style: photographic, illustrated, 3D render, vector art, sketch, painting, etc.
+    6. Composition: framing, perspective, camera angle, depth of field
+    7. Colors and lighting: palette, contrast, light direction, shadows, color temperature
+    8. Textures and materials: surfaces, fabrics, skin quality, line work
+    9. Text in image: reproduce ALL visible text in quotation marks
+
+    Write a single flowing paragraph, scene first then style. Be concrete and specific.
+    Output only the description, nothing else.
+    """
+
+    /// Describe an image in FLUX.2-compatible style for regeneration
+    /// - Parameters:
+    ///   - image: CGImage to describe
+    ///   - context: Optional additional context from the user (e.g., "focus on the background")
+    ///   - maxTokens: Maximum description length
+    /// - Returns: GenerationResult with FLUX.2-optimized image description
+    public func describeImageForFlux(
+        image: CGImage,
+        context: String? = nil,
+        maxTokens: Int = 300,
+        onToken: ((String) -> Bool)? = nil
+    ) throws -> GenerationResult {
+        let prompt = context ?? "Describe this image."
+        return try analyzeImageWithQwen35(
+            image: image,
+            prompt: prompt,
+            systemPrompt: Self.fluxImageDescriptionSystemPrompt,
+            maxTokens: maxTokens,
+            temperature: 0,
+            onToken: onToken
+        )
+    }
+
+    /// Describe an image from file path in FLUX.2-compatible style
+    public func describeImageForFlux(
+        path: String,
+        context: String? = nil,
+        maxTokens: Int = 300,
+        onToken: ((String) -> Bool)? = nil
+    ) throws -> GenerationResult {
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            throw FluxEncoderError.invalidInput("Failed to load image: \(path)")
+        }
+        return try describeImageForFlux(
+            image: cgImage, context: context, maxTokens: maxTokens, onToken: onToken
+        )
+    }
+
+    // MARK: - FLUX.2 Image Comparison Service
+
+    /// Result of comparing two images
+    public struct FluxImageComparison: Sendable {
+        public let sceneScore: Int
+        public let styleScore: Int
+        public let sceneReason: String
+        public let styleReason: String
+        public let rawResponse: String
+    }
+
+    /// System prompt for image comparison
+    public static let fluxImageComparisonSystemPrompt = """
+    You compare two images for FLUX.2 by Black Forest Labs. Image 1 is the REFERENCE (original). Image 2 is the GENERATED image.
+
+    Score each criterion from 0 to 10:
+
+    SCENE (content fidelity):
+    - Same subjects, people, characters present?
+    - Same actions, interactions, poses?
+    - Same objects and spatial relationships?
+    - Same setting and environment?
+
+    STYLE (visual fidelity):
+    - Same art style (photographic, illustrated, 3D, vector, etc.)?
+    - Same composition, framing, perspective?
+    - Same color palette, lighting, contrast, color temperature?
+    - Same textures, materials, line work?
+
+    Respond ONLY with this exact JSON format, no other text:
+    {"scene_score": N, "scene_reason": "brief explanation", "style_score": N, "style_reason": "brief explanation"}
+    """
+
+    /// Compare two images using FLUX.2 criteria
+    /// - Parameters:
+    ///   - reference: The original/reference image
+    ///   - generated: The generated image to compare against reference
+    ///   - onToken: Optional streaming callback
+    /// - Returns: Structured comparison with scene and style scores (0-10)
+    public func compareImagesForFlux(
+        reference: CGImage,
+        generated: CGImage,
+        onToken: ((String) -> Bool)? = nil
+    ) throws -> FluxImageComparison {
+        guard let vlm = qwen35VLM else {
+            throw FluxEncoderError.invalidInput("Qwen3.5 VLM not loaded")
+        }
+
+        let result = try vlm.generateMultiImage(
+            images: [reference, generated],
+            prompt: "Compare these two images.",
+            systemPrompt: Self.fluxImageComparisonSystemPrompt,
+            maxTokens: 300,
+            temperature: 0,
+            onToken: onToken
+        )
+
+        // Parse JSON from response
+        return parseComparisonResult(result.text)
+    }
+
+    /// Compare two images from file paths
+    public func compareImagesForFlux(
+        referencePath: String,
+        generatedPath: String,
+        onToken: ((String) -> Bool)? = nil
+    ) throws -> FluxImageComparison {
+        guard let refSource = CGImageSourceCreateWithURL(URL(fileURLWithPath: referencePath) as CFURL, nil),
+              let ref = CGImageSourceCreateImageAtIndex(refSource, 0, nil) else {
+            throw FluxEncoderError.invalidInput("Failed to load reference image: \(referencePath)")
+        }
+        guard let genSource = CGImageSourceCreateWithURL(URL(fileURLWithPath: generatedPath) as CFURL, nil),
+              let gen = CGImageSourceCreateImageAtIndex(genSource, 0, nil) else {
+            throw FluxEncoderError.invalidInput("Failed to load generated image: \(generatedPath)")
+        }
+        return try compareImagesForFlux(reference: ref, generated: gen, onToken: onToken)
+    }
+
+    /// Parse comparison result from VLM output (JSON or regex fallback)
+    private func parseComparisonResult(_ text: String) -> FluxImageComparison {
+        // Try JSON extraction first
+        if let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}") {
+            let jsonStr = String(text[start...end])
+
+            struct ComparisonJSON: Decodable {
+                let scene_score: Int?
+                let style_score: Int?
+                let scene_reason: String?
+                let style_reason: String?
+            }
+
+            if let data = jsonStr.data(using: .utf8),
+               let parsed = try? JSONDecoder().decode(ComparisonJSON.self, from: data),
+               parsed.scene_score != nil {
+                return FluxImageComparison(
+                    sceneScore: parsed.scene_score ?? -1,
+                    styleScore: parsed.style_score ?? -1,
+                    sceneReason: parsed.scene_reason ?? "",
+                    styleReason: parsed.style_reason ?? "",
+                    rawResponse: text
+                )
+            }
+        }
+
+        // Regex fallback: look for "scene.*N/10" and "style.*N/10" patterns
+        let sceneScore = extractScore(from: text, keyword: "scene")
+        let styleScore = extractScore(from: text, keyword: "style")
+
+        return FluxImageComparison(
+            sceneScore: sceneScore,
+            styleScore: styleScore,
+            sceneReason: extractReason(from: text, keyword: "scene"),
+            styleReason: extractReason(from: text, keyword: "style"),
+            rawResponse: text
+        )
+    }
+
+    private func extractScore(from text: String, keyword: String) -> Int {
+        // Match patterns like "Scene: 7/10" or "scene_score: 7" or "Scene:** 7"
+        let patterns = [
+            "\(keyword)[^0-9]*?(\\d+)/10",
+            "\(keyword)_score[^0-9]*?(\\d+)",
+            "\(keyword)[^0-9]*?(\\d+)\\s*/\\s*10"
+        ]
+        let lower = text.lowercased()
+        for pattern in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+               let match = regex.firstMatch(in: lower, range: NSRange(lower.startIndex..., in: lower)),
+               match.numberOfRanges > 1,
+               let range = Range(match.range(at: 1), in: lower) {
+                return Int(lower[range]) ?? -1
+            }
+        }
+        return -1
+    }
+
+    private func extractReason(from text: String, keyword: String) -> String {
+        // Find text after "scene_reason" or "Scene:" and extract the explanation
+        let patterns = [
+            "\(keyword)_reason[\":\\s]+(.*?)[\",}]",
+            "\(keyword).*?/10[^.]*\\.\\s*(.*?)(?:\\n|$)"
+        ]
+        for pattern in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators]),
+               let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+               match.numberOfRanges > 1,
+               let range = Range(match.range(at: 1), in: text) {
+                return String(text[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return ""
     }
 
     // MARK: - Generation
