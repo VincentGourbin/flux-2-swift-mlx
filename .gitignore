@@ -23,6 +23,9 @@ output/
 !docs/screenshots/**/*.png
 !examples/tarot-style/**/*.png
 
+# Profiling
+*.profraw
+
 # Temporary files
 *.tmp
 *.swp
