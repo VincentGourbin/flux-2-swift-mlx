@@ -1,13 +1,16 @@
 === LoRA Evaluation Report ===
-Date: 2026-03-24T20:58:07Z
+Date: 2026-03-25T06:47:45Z
+LoRA: "Tabby Cat" — A specific tabby-and-white domestic cat with brown and black stripes, sitting on a red couch
 Model: Flux.2 Klein 4B
+Trigger word: sks
+DOP: not needed
 
 Reference Image Description:
-A single domestic shorthair cat with a tabby-and-white coat sits attentively on the plush, deep red upholstery of a sofa. The cat is positioned in a seated posture with its front paws planted firmly on the fabric, facing directly toward the camera with wide, alert green eyes and perked ears that suggest a state of focused curiosity or mild wariness. Its fur features distinct dark brown and black stripes on the head, back, and legs, contrasting with a clean white chest, muzzle, and paws. The texture of the cat's fur appears soft yet dense, while the red couch behind it has a smooth, slightly sheened texture that catches the ambient indoor lighting. The scene is lit by soft, diffuse light likely from an overhead source, casting gentle shadows beneath the cat and highlighting its facial features. The composition is a medium close-up shot taken from eye level, filling the frame with the animal and the immediate background of the red couch cushions. The color palette is dominated by the saturated crimson of the sofa, which provides a vivid backdrop that makes the natural browns and creams of the cat’s coat stand out sharply. There is no visible text in the image.
+A single, alert tabby-and-white domestic cat sits upright on a plush red sofa, facing directly toward the camera with an attentive gaze. The feline has a distinctive coat pattern featuring bold brown and black stripes on its back, head, and legs, contrasted by a clean white chest, muzzle, and paws. Its ears are perked high and forward, suggesting curiosity or readiness, while its green eyes reflect the ambient light. The cat’s posture is poised and slightly tense, with front paws planted firmly on the fabric of the couch. Behind it, a large red cushion fills the background, creating a vivid color contrast with the cat’s warm fur tones. A small black object—possibly a button or bead—is visible on the seat cushion to the left of the cat. The scene is shot indoors during daylight, with soft natural lighting that casts gentle shadows and highlights the texture of both the cat’s fur and the velvety red upholstery. The photo is taken at eye level with the animal, using a shallow depth of field that keeps the cat sharply in focus while softly blurring the background wall and furniture. The overall color palette is warm and saturated, dominated by the deep crimson of the couch and the earthy browns and creams of the cat’s fur. The image has a realistic, high-resolution photographic quality with fine detail in whiskers and fur texture, capturing the subtle sheen of the cat’s coat and the slight wrinkling of the sofa fabric
 
 Comparison Scores:
-  Scene: 9/10 — The generated image accurately preserves the core scene elements: a tabby and white cat in an alert, seated pose on a red sofa. The spatial relationship between the cat and the background is maintained.
-  Style: 9/10 — The generated image faithfully replicates the photographic style of the reference. It captures the same color palette, lighting conditions, and texture of the fabric with high fidelity.
+  Scene: 9/10 — The generated image accurately captures the core subject: a tabby-and-white cat sitting on a red couch. The pose, color palette (red sofa, brown/black/white fur), and the small black object on the cushion are all correctly reproduced. The LoRA needs to learn this specific subject matter and spatial arrangement.
+  Style: 8/10 — The rendering style is very close, with similar lighting and texture on the couch. However, there are minor discrepancies in the cat's facial features (eye shape and nose) compared to the reference, which are critical for a high-fidelity LoRA.
 
 Recommended Training Parameters:
   Steps: 150
@@ -21,4 +24,4 @@ Recommended Training Parameters:
   DOP: false 
   Gradient Checkpointing: false
 
-Summary: Scene gap: LOW (9/10), Style gap: LOW (9/10) → 150 steps, rank 8, balanced sampling
+Summary: Scene gap: LOW (9/10), Style gap: LOW (8/10) → 150 steps, rank 8, balanced sampling
