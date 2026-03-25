@@ -8,7 +8,7 @@ import MLXOptimizers
 
 /// AdamW optimizer with support for saving and restoring optimizer state
 /// This enables proper checkpoint resume without losing momentum/variance history
-public final class ResumableAdamW: AdamW {
+public final class ResumableAdamW: AdamW, ResumableOptimizer {
 
     /// Step counter for bias correction (not used in MLX's Adam, but useful for logging)
     public private(set) var step: Int = 0

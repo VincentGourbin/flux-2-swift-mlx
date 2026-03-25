@@ -106,6 +106,56 @@ public enum LRSchedulerType: String, Codable, Sendable, CaseIterable {
     }
 }
 
+/// Optimizer type for LoRA training
+public enum OptimizerType: String, Codable, CaseIterable, Sendable {
+    /// AdamW — standard optimizer, well-tested default
+    case adamw
+
+    /// Lion — EvoLved Sign Momentum (Google Brain, NeurIPS 2023)
+    /// Uses ~50% less optimizer memory, potentially better convergence on diffusion models
+    /// Requires different hyperparameters: smaller LR (3-10x), larger weight decay (3-10x)
+    case lion
+
+    public var displayName: String {
+        switch self {
+        case .adamw: return "AdamW"
+        case .lion: return "Lion"
+        }
+    }
+
+    /// Default learning rate for this optimizer
+    public var defaultLearningRate: Float {
+        switch self {
+        case .adamw: return 1e-4
+        case .lion: return 3e-5
+        }
+    }
+
+    /// Default weight decay for this optimizer
+    public var defaultWeightDecay: Float {
+        switch self {
+        case .adamw: return 0.01
+        case .lion: return 0.1
+        }
+    }
+
+    /// Default beta2 for this optimizer
+    public var defaultBeta2: Float {
+        switch self {
+        case .adamw: return 0.999
+        case .lion: return 0.99
+        }
+    }
+
+    /// Number of state arrays per parameter (affects memory estimation)
+    public var stateArraysPerParam: Int {
+        switch self {
+        case .adamw: return 2  // momentum + variance
+        case .lion: return 1   // momentum only
+        }
+    }
+}
+
 /// Timestep sampling strategy for flow matching training
 /// Different strategies can improve training quality for specific use cases
 public enum TimestepSampling: String, Codable, Sendable, CaseIterable {
@@ -238,17 +288,20 @@ public struct LoRATrainingConfig: Codable, Sendable {
     
     /// Learning rate scheduler type
     public var lrScheduler: LRSchedulerType
-    
-    /// AdamW weight decay
+
+    /// Optimizer type (adamw or lion)
+    public var optimizerType: OptimizerType
+
+    /// Weight decay
     public var weightDecay: Float
-    
-    /// AdamW beta1
+
+    /// AdamW/Lion beta1
     public var adamBeta1: Float
-    
-    /// AdamW beta2
+
+    /// AdamW/Lion beta2
     public var adamBeta2: Float
-    
-    /// AdamW epsilon
+
+    /// AdamW epsilon (not used by Lion)
     public var adamEpsilon: Float
     
     /// Gradient clipping max norm (0 to disable)
@@ -473,6 +526,7 @@ public struct LoRATrainingConfig: Codable, Sendable {
         maxSteps: Int? = nil,
         warmupSteps: Int = 100,
         lrScheduler: LRSchedulerType = .cosine,
+        optimizerType: OptimizerType = .adamw,
         weightDecay: Float = 0.01,
         adamBeta1: Float = 0.9,
         adamBeta2: Float = 0.999,
@@ -556,6 +610,7 @@ public struct LoRATrainingConfig: Codable, Sendable {
         self.maxSteps = maxSteps
         self.warmupSteps = warmupSteps
         self.lrScheduler = lrScheduler
+        self.optimizerType = optimizerType
         self.weightDecay = weightDecay
         self.adamBeta1 = adamBeta1
         self.adamBeta2 = adamBeta2
@@ -834,8 +889,8 @@ extension LoRATrainingConfig {
         // LoRA parameters (small addition)
         let loraParamsGB: Float = Float(rank * 2) * 0.001  // Rough estimate
         
-        // Optimizer states (2x LoRA params for AdamW)
-        let optimizerGB = loraParamsGB * 2
+        // Optimizer states (2x for AdamW, 1x for Lion)
+        let optimizerGB = loraParamsGB * Float(optimizerType.stateArraysPerParam)
         
         // Activations and gradients (depends on batch size and image size)
         let activationsGB = Float(batchSize) * Float(imageSize * imageSize) / (512 * 512) * 2.0

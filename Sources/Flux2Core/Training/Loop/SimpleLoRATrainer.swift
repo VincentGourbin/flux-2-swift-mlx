@@ -18,8 +18,12 @@ public struct SimpleLoRAConfig: Sendable {
     public var alpha: Float = 32.0
     
     // Training settings (Ostris defaults)
+    public var optimizerType: OptimizerType = .adamw
     public var learningRate: Float = 1e-4
     public var weightDecay: Float = 0.0001
+    public var adamBeta1: Float = 0.9
+    public var adamBeta2: Float = 0.999
+    public var adamEpsilon: Float = 1e-8
     public var batchSize: Int = 1
     public var maxSteps: Int = 3000
     
@@ -370,13 +374,24 @@ public final class SimpleLoRATrainer {
         transformer.freeze(recursive: true)
         transformer.unfreezeLoRAParameters()
 
-        // Create optimizer (ResumableAdamW for checkpoint support, no EMA!)
-        let optimizer = ResumableAdamW(
-            learningRate: config.learningRate,
-            betas: (0.9, 0.999),
-            eps: 1e-8,
-            weightDecay: config.weightDecay
-        )
+        // Create optimizer based on config (AdamW or Lion)
+        let optimizer: any ResumableOptimizer
+        switch config.optimizerType {
+        case .adamw:
+            optimizer = ResumableAdamW(
+                learningRate: config.learningRate,
+                betas: (config.adamBeta1, config.adamBeta2),
+                eps: config.adamEpsilon,
+                weightDecay: config.weightDecay
+            )
+        case .lion:
+            optimizer = ResumableLion(
+                learningRate: config.learningRate,
+                betas: (config.adamBeta1, config.adamBeta2),
+                weightDecay: config.weightDecay
+            )
+        }
+        print("Optimizer: \(config.optimizerType.displayName) (lr=\(config.learningRate), wd=\(config.weightDecay))")
 
         // Load optimizer state if resuming
         if let optimizerStateURL = optimizerState {
@@ -773,7 +788,7 @@ public final class SimpleLoRATrainer {
         width: Int,
         height: Int,
         transformer: Flux2Transformer2DModel,
-        optimizer: AdamW,
+        optimizer: any ResumableOptimizer,
         accumulatedGrads: inout NestedDictionary<String, MLXArray>?,
         shouldUpdate: Bool = true
     ) throws -> (mainLoss: Float, dopLoss: Float?) {
@@ -1453,7 +1468,7 @@ public final class SimpleLoRATrainer {
     private func saveCheckpoint(
         step: Int,
         transformer: Flux2Transformer2DModel,
-        optimizer: ResumableAdamW,
+        optimizer: any ResumableOptimizer,
         isPauseCheckpoint: Bool = false
     ) async throws {
         // Create checkpoint subdirectory
@@ -1491,7 +1506,7 @@ public final class SimpleLoRATrainer {
     }
 
     /// Save optimizer state (AdamW momentum and variance)
-    private func saveOptimizerState(optimizer: ResumableAdamW, to path: URL) throws {
+    private func saveOptimizerState(optimizer: any ResumableOptimizer, to path: URL) throws {
         // Use ResumableAdamW's saveState() to get all momentum/variance tensors
         let stateArrays = optimizer.saveState()
 
@@ -1503,7 +1518,7 @@ public final class SimpleLoRATrainer {
     }
 
     /// Load optimizer state
-    private func loadOptimizerState(optimizer: ResumableAdamW, from path: URL) throws {
+    private func loadOptimizerState(optimizer: any ResumableOptimizer, from path: URL) throws {
         // Load state arrays
         let stateArrays = try loadArrays(url: path)
 

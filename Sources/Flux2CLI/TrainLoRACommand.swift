@@ -692,8 +692,12 @@ struct TrainLoRA: AsyncParsableCommand {
         var simpleConfig = SimpleLoRAConfig(outputDir: config.outputPath)
         simpleConfig.rank = config.rank
         simpleConfig.alpha = config.alpha
+        simpleConfig.optimizerType = config.optimizerType
         simpleConfig.learningRate = config.learningRate
         simpleConfig.weightDecay = config.weightDecay
+        simpleConfig.adamBeta1 = config.adamBeta1
+        simpleConfig.adamBeta2 = config.adamBeta2
+        simpleConfig.adamEpsilon = config.adamEpsilon
         simpleConfig.batchSize = config.batchSize
         simpleConfig.maxSteps = config.maxSteps ?? (config.epochs * 100)  // Estimate if not set
         simpleConfig.saveEveryNSteps = config.saveEveryNSteps

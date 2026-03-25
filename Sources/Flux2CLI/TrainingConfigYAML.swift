@@ -84,6 +84,7 @@ struct TrainingParams: Codable {
     var epochs: Int?
     var maxSteps: Int?
     var warmupSteps: Int?
+    var optimizer: String?          // "adamw" or "lion"
     var learningRate: Float?
     var weightDecay: Float?
     var captionDropout: Float?
@@ -98,6 +99,7 @@ struct TrainingParams: Codable {
         case epochs
         case maxSteps = "max_steps"
         case warmupSteps = "warmup_steps"
+        case optimizer
         case learningRate = "learning_rate"
         case weightDecay = "weight_decay"
         case captionDropout = "caption_dropout"
@@ -353,8 +355,15 @@ struct YAMLConfigParser {
         let epochs = yaml.training?.epochs ?? 10
         let maxSteps = cliOverrides.maxSteps ?? yaml.training?.maxSteps
         let warmupSteps = yaml.training?.warmupSteps ?? 100
-        let learningRate = cliOverrides.learningRate ?? yaml.training?.learningRate ?? 1e-4
-        let weightDecay = yaml.training?.weightDecay ?? 0.01
+        // Optimizer type
+        let optimizerStr = yaml.training?.optimizer ?? "adamw"
+        guard let optimizerType = OptimizerType(rawValue: optimizerStr) else {
+            throw YAMLConfigError.validationError("Invalid optimizer: \(optimizerStr). Use adamw or lion")
+        }
+
+        // Apply smart defaults per optimizer (user can still override)
+        let learningRate = cliOverrides.learningRate ?? yaml.training?.learningRate ?? optimizerType.defaultLearningRate
+        let weightDecay = yaml.training?.weightDecay ?? optimizerType.defaultWeightDecay
         let captionDropout = yaml.training?.captionDropout ?? 0.0
         let maxGradNorm = yaml.training?.maxGradNorm ?? 1.0
 
@@ -480,9 +489,10 @@ struct YAMLConfigParser {
             maxSteps: maxSteps,
             warmupSteps: warmupSteps,
             lrScheduler: lrScheduler,
+            optimizerType: optimizerType,
             weightDecay: weightDecay,
             adamBeta1: 0.9,
-            adamBeta2: 0.999,
+            adamBeta2: optimizerType.defaultBeta2,
             adamEpsilon: 1e-8,
             maxGradNorm: maxGradNorm,
             gradientAccumulationSteps: gradientAccumulation,
