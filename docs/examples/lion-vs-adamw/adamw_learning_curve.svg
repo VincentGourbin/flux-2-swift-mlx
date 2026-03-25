@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800.0 400.0" width="800" height="400">
+  <style>
+    .title { font: bold 16px sans-serif; }
+    .label { font: 12px sans-serif; }
+    .axis-label { font: 10px sans-serif; fill: #666; }
+    .grid { stroke: #e0e0e0; stroke-width: 1; }
+    .raw-line { fill: none; stroke: #ccc; stroke-width: 1; }
+    .smooth-line { fill: none; stroke: #2196F3; stroke-width: 2; }
+    .current-loss { font: bold 14px sans-serif; fill: #2196F3; }
+  </style>
+
+  <!-- Background -->
+  <rect width="800.0" height="400.0" fill="white"/>
+
+  <!-- Title -->
+  <text x="400.0" y="25" text-anchor="middle" class="title">Learning Curve</text>
+
+  <!-- Grid lines -->  <line x1="60.0" y1="340.0" x2="740.0" y2="340.0" class="grid"/>
+  <text x="55.0" y="344.0" text-anchor="end" class="axis-label">0.169</text>  <line x1="60.0" y1="270.0" x2="740.0" y2="270.0" class="grid"/>
+  <text x="55.0" y="274.0" text-anchor="end" class="axis-label">0.414</text>  <line x1="60.0" y1="200.0" x2="740.0" y2="200.0" class="grid"/>
+  <text x="55.0" y="204.0" text-anchor="end" class="axis-label">0.659</text>  <line x1="60.0" y1="130.00002" x2="740.0" y2="130.00002" class="grid"/>
+  <text x="55.0" y="134.00002" text-anchor="end" class="axis-label">0.904</text>  <line x1="60.0" y1="60.0" x2="740.0" y2="60.0" class="grid"/>
+  <text x="55.0" y="64.0" text-anchor="end" class="axis-label">1.149</text>  <line x1="60.0" y1="60.0" x2="60.0" y2="340.0" class="grid"/>
+  <text x="60.0" y="355.0" text-anchor="middle" class="axis-label">1</text>  <line x1="228.97795" y1="60.0" x2="228.97795" y2="340.0" class="grid"/>
+  <text x="228.97795" y="355.0" text-anchor="middle" class="axis-label">125</text>  <line x1="399.31863" y1="60.0" x2="399.31863" y2="340.0" class="grid"/>
+  <text x="399.31863" y="355.0" text-anchor="middle" class="axis-label">250</text>  <line x1="569.6593" y1="60.0" x2="569.6593" y2="340.0" class="grid"/>
+  <text x="569.6593" y="355.0" text-anchor="middle" class="axis-label">375</text>  <line x1="740.0" y1="60.0" x2="740.0" y2="340.0" class="grid"/>
+  <text x="740.0" y="355.0" text-anchor="middle" class="axis-label">500</text>  <text x="400.0" y="390.0" text-anchor="middle" class="label">Step</text>
+  <text x="15" y="200.0" text-anchor="middle" class="label" transform="rotate(-90, 15, 200.0)">Loss</text>  <path d="M 60.0 260.6323 L 72.26453 107.598816 L 85.891785 253.65852 L 99.519035 281.79706 L 113.14629 96.1299 L 126.77355 93.39784 L 140.4008 298.64215 L 154.02805 275.82928 L 167.6553 300.81165 L 181.28256 177.35153 L 194.90982 264.48126 L 208.53706 91.65613 L 222.16432 256.74292 L 235.79158 307.77594 L 249.41884 166.01703 L 263.04608 285.6317 L 276.67334 206.61821 L 290.3006 285.55078 L 303.92786 269.95883 L 317.5551 84.271965 L 331.18237 303.5227 L 344.8096 95.33559 L 358.4369 270.06 L 372.06412 290.21814 L 385.69138 175.80046 L 399.31863 286.9676 L 412.9459 215.12386 L 426.57315 275.90466 L 440.20038 271.77606 L 453.82764 84.131256 L 467.45493 286.13727 L 481.08218 98.07597 L 494.7094 271.61075 L 508.33667 316.6667 L 521.9639 162.83362 L 535.5912 294.37103 L 549.2184 228.84335 L 562.8457 279.09604 L 576.47296 267.38318 L 590.1002 83.784485 L 603.7274 298.52252 L 617.3547 99.81244 L 630.982 255.17332 L 644.60925 309.01437 L 658.23645 174.17679 L 671.8637 288.89166 L 685.49097 210.94487 L 699.1182 287.24036 L 712.7455 274.0683 L 726.37274 83.33334 L 740.0 283.9941" class="raw-line"/>  <path d="M 60.0 260.6323 L 72.26453 184.11555 L 85.891785 207.29654 L 99.519035 225.92169 L 113.14629 199.96332 L 126.77355 182.2024 L 140.4008 198.83665 L 154.02805 208.46074 L 167.6553 218.72195 L 181.28256 214.58492 L 194.90982 219.12094 L 208.53706 208.49889 L 222.16432 212.20996 L 235.79158 219.03609 L 249.41884 215.5015 L 263.04608 219.88463 L 276.67334 219.10425 L 290.3006 222.79573 L 303.92786 225.27798 L 317.5551 218.22769 L 331.18237 220.37222 L 344.8096 219.75903 L 358.4369 220.57915 L 372.06412 221.00018 L 385.69138 224.98372 L 399.31863 234.6622 L 412.9459 230.4863 L 426.57315 230.49005 L 440.20038 229.03828 L 453.82764 224.37726 L 467.45493 225.46005 L 481.08218 225.78107 L 494.7094 226.52444 L 508.33667 226.96898 L 521.9639 226.8098 L 535.5912 227.24675 L 549.2184 228.35803 L 562.8457 228.0353 L 576.47296 227.90651 L 590.1002 227.88211 L 603.7274 227.63211 L 617.3547 227.85597 L 630.982 227.11163 L 644.60925 228.05144 L 658.23645 227.97026 L 671.8637 228.06647 L 685.49097 227.85751 L 699.1182 228.42432 L 712.7455 228.53894 L 726.37274 228.49905 L 740.0 228.39188" class="smooth-line"/>  <circle cx="740.0" cy="228.39188" r="4" fill="#2196F3"/>
+  <text x="750.0" y="233.39188" class="current-loss">0.5597</text>  <rect x="650.0" y="40" width="140" height="60" fill="white" stroke="#ddd" rx="4"/>
+  <text x="655.0" y="58" class="axis-label">Step: 500</text>
+  <text x="655.0" y="73" class="axis-label">Loss: 0.3652</text>
+  <text x="655.0" y="88" class="axis-label">Smoothed: 0.5597</text></svg>
