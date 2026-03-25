@@ -1,0 +1,66 @@
+# Cat Toy LoRA — Lion Optimizer
+# Comparison test: AdamW vs Lion on same dataset
+# Lion uses smart defaults: lr=3e-5 (vs 1e-4), wd=0.1 (vs 0.0001), beta2=0.99 (vs 0.999)
+
+model:
+  name: klein-4b
+  quantization: bf16
+
+lora:
+  rank: 32
+  alpha: 32.0
+  target_layers: all
+
+dataset:
+  path: examples/cat-toy/train
+  trigger_word: "statue_cat_toy"
+
+training:
+  optimizer: lion
+  batch_size: 1
+  max_steps: 500
+  warmup_steps: 50
+  # Lion smart defaults applied automatically:
+  # learning_rate: 3.0e-5
+  # weight_decay: 0.1
+
+loss:
+  weighting: bell_shaped
+  timestep_sampling: balanced
+  diff_output_preservation: true
+  diff_output_preservation_class: "cat"
+  diff_output_preservation_multiplier: 1.0
+
+memory:
+  gradient_checkpointing: false
+  cache_latents: true
+  bucketing:
+    enabled: true
+    resolutions:
+      - 512
+
+checkpoints:
+  output: output/lion-vs-adamw/lion
+  save_every: 100
+  keep_last: 5
+
+validation:
+  prompts:
+    - prompt: "a colorful wooden cat figurine sitting on a beach"
+      apply_trigger: true
+      is_512: true
+      is_1024: false
+    - prompt: "a striped cat statue in a garden"
+      apply_trigger: true
+      is_512: true
+      is_1024: false
+    - prompt: "a cat sitting on a couch"
+      apply_trigger: false
+      is_512: true
+      is_1024: false
+  every_n_steps: 100
+  seed: 42
+  steps: 4
+
+ema:
+  enabled: false
