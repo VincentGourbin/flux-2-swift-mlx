@@ -116,6 +116,44 @@ dataset:
   trigger_word: xyz_cat
 ```
 
+---
+
+## Example: Sonic the Hedgehog (3D Render)
+
+A more complex test: a well-known video game character in a dynamic action pose.
+
+### Reference vs Baseline
+
+| Reference (input) | Baseline (Klein 4B, no LoRA) |
+|:--:|:--:|
+| ![Reference](sonic_reference.png) | ![Baseline](sonic_baseline.png) |
+
+### VLM-Generated Prompt
+
+> A dynamic, high-resolution 3D render of Sonic the Hedgehog captured mid-stride in a full-speed sprint across a broad, sunlit asphalt road. Sonic leans forward at a steep angle, his cobalt-blue body streamlined, with his signature red-and-white sneakers — featuring gold buckles — planted firmly on the road surface. His white-gloved fists are clenched at his sides, his peach-colored belly and muzzle contrast with his vivid blue quills, which stream backward with motion blur lines trailing behind them.
+
+### Comparison Scores
+
+| Criterion | Score | Reason |
+|-----------|:-----:|--------|
+| **Scene** | 9/10 | Both feature Sonic in a dynamic running pose on a road, maintaining consistent character identity and action. |
+| **Style** | 8/10 | Both rendered in similar high-quality 3D animation style with motion blur, though generated image has slightly different background details and shoe design. |
+
+### Recommendation
+
+The base model already knows Sonic well (9/10 scene, 8/10 style). Only minimal fine-tuning needed:
+
+| Parameter | Value |
+|-----------|-------|
+| **Steps** | 150 |
+| **Rank** | 8 |
+| **Timestep** | `balanced` |
+| **DOP** | No |
+
+This demonstrates that popular, well-represented subjects require minimal LoRA training — the base model already captures them faithfully.
+
+---
+
 ## Recommendation Logic
 
 The gap between scores determines the training effort:
