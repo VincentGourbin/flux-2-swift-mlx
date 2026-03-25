@@ -31,4 +31,4 @@ memory:
 
 dataset:
   path: ./dataset
-  trigger_word: snchdghg
+  trigger_word: sks cat toy

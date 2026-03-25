@@ -1,0 +1,24 @@
+=== LoRA Evaluation Report ===
+Date: 2026-03-25T06:14:44Z
+Model: Flux.2 Klein 4B
+
+Reference Image Description:
+A whimsical, hand-carved wooden cat figurine sits upright on a textured gray fabric surface, likely a sofa or cushion. The cat has a dark blue-gray head with simple black line-drawn eyes, nose, and whiskers, giving it a charmingly naive expression. Its body is adorned with bold vertical stripes in vibrant colors—green, orange, yellow, and black—while its tail curves upward and is painted with alternating bands of red, blue, green, orange, and black. The sculpture appears to be made from a single piece of wood or clay, with visible grain and slight imperfections suggesting artisanal craftsmanship. In the background, a soft-focus view reveals part of a patterned blanket or pillow with floral motifs and another gray cushion, placing the scene in a cozy indoor domestic setting during daylight hours. The lighting is natural and diffused, casting gentle shadows that emphasize the rounded forms of the figure. The overall composition is centered and intimate, with shallow depth of field drawing focus to the figurine’s colorful details against the neutral backdrop. The style is photographic with a slightly grainy texture, capturing the tactile quality of the material and the playful contrast between the muted surroundings and the vivid hues of the cat. No text is visible in the image.
+
+Comparison Scores:
+  Scene: 9/10 — The generated image accurately preserves the core subject (a painted cat figurine), its pose, and the general setting. However, there are notable discrepancies in spatial relationships: the background pillow is positioned differently and lacks specific details like the floral pattern seen in the reference. Additionally, the tail's color sequence differs between the two images.
+  Style: 8/10 — The generated image successfully replicates the artistic style of a hand-painted wooden toy, including the visible wood grain and brush strokes. The color palette is consistent with the reference. While the composition and perspective are well-matched, the lighting in the generated image is slightly flatter compared to the natural lighting of the reference photo.
+
+Recommended Training Parameters:
+  Steps: 150
+  Rank: 8
+  Alpha: 8.0
+  Learning Rate: 0.0001
+  Warmup Steps: 15
+  Timestep Sampling: balanced
+  Loss Weighting: bell_shaped
+  Target Layers: all
+  DOP: false 
+  Gradient Checkpointing: false
+
+Summary: Scene gap: LOW (9/10), Style gap: LOW (8/10) → 150 steps, rank 8, balanced sampling

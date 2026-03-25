@@ -118,39 +118,39 @@ dataset:
 
 ---
 
-## Example: Sonic the Hedgehog (3D Render)
+## Example: Hand-Painted Cat Toy (Unique Object)
 
-A more complex test: a well-known video game character in a dynamic action pose.
+A specific, unique object — a hand-carved wooden cat figurine with colorful stripes. This tests whether the base model can reproduce a distinctive, non-generic subject from description alone.
 
 ### Reference vs Baseline
 
 | Reference (input) | Baseline (Klein 4B, no LoRA) |
 |:--:|:--:|
-| ![Reference](sonic_reference.png) | ![Baseline](sonic_baseline.png) |
+| ![Reference](cattoy_reference.png) | ![Baseline](cattoy_baseline.png) |
 
 ### VLM-Generated Prompt
 
-> A dynamic, high-resolution 3D render of Sonic the Hedgehog captured mid-stride in a full-speed sprint across a broad, sunlit asphalt road. Sonic leans forward at a steep angle, his cobalt-blue body streamlined, with his signature red-and-white sneakers — featuring gold buckles — planted firmly on the road surface. His white-gloved fists are clenched at his sides, his peach-colored belly and muzzle contrast with his vivid blue quills, which stream backward with motion blur lines trailing behind them.
+> A whimsical, hand-carved wooden cat figurine sits upright on a textured gray fabric surface. The figurine has a simplified, folk-art style with a round head featuring small painted eyes, a black nose, and delicate whiskers. Its body is painted with bold vertical stripes in alternating colors of dark blue, black, green, orange, and red. The tail curves upward and to the right, also striped in matching colors, ending in a round coral-pink tip.
 
 ### Comparison Scores
 
 | Criterion | Score | Reason |
 |-----------|:-----:|--------|
-| **Scene** | 9/10 | Both feature Sonic in a dynamic running pose on a road, maintaining consistent character identity and action. |
-| **Style** | 8/10 | Both rendered in similar high-quality 3D animation style with motion blur, though generated image has slightly different background details and shoe design. |
+| **Scene** | 9/10 | Accurately preserves the core subject (painted cat figurine), pose, and general setting. Minor differences in background pillow position and tail color sequence. |
+| **Style** | 8/10 | Successfully replicates hand-painted wooden toy style with visible wood grain and brush strokes. Lighting slightly flatter than reference's natural lighting. |
 
 ### Recommendation
 
-The base model already knows Sonic well (9/10 scene, 8/10 style). Only minimal fine-tuning needed:
+The base model captures the general concept well from the VLM description alone (9/10 scene, 8/10 style). A light LoRA would refine the specific details (exact stripe pattern, tail shape, proportions):
 
-| Parameter | Value |
-|-----------|-------|
-| **Steps** | 150 |
-| **Rank** | 8 |
-| **Timestep** | `balanced` |
-| **DOP** | No |
+| Parameter | Value | Why |
+|-----------|-------|-----|
+| **Steps** | 150 | Small gap — fine-tuning details only |
+| **Rank** | 8 | Low capacity sufficient |
+| **Timestep** | `balanced` | Both scene and style are close |
+| **DOP** | No | Base model already captures the concept |
 
-This demonstrates that popular, well-represented subjects require minimal LoRA training — the base model already captures them faithfully.
+This shows that even for unique, specific objects, a good VLM description lets the base model get remarkably close. The LoRA's job is to refine the exact details that make *this specific* cat toy unique.
 
 ---
 
