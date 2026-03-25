@@ -9,13 +9,30 @@ import ImageIO
 
 // MARK: - Evaluation Results
 
+/// LoRA training context — what the user wants to teach the model
+public struct LoRAContext: Sendable {
+    /// Short name for the training (e.g., "Cat Toy", "My Art Style")
+    public let name: String
+    /// Description of what the LoRA should learn (e.g., "A specific hand-painted wooden cat figurine")
+    public let description: String
+
+    public init(name: String, description: String) {
+        self.name = name
+        self.description = description
+    }
+}
+
 /// Result of LoRA evaluation pipeline
 public struct LoRAEvaluation: @unchecked Sendable {
     // Input
     public let referenceImage: CGImage
+    public let context: LoRAContext
 
-    // VLM description used as generation prompt
-    public let prompt: String
+    // VLM analysis
+    public let prompt: String                // Description used for baseline generation
+    public let triggerWord: String            // Auto-suggested trigger word
+    public let dopRecommended: Bool           // Whether DOP is recommended
+    public let dopClass: String?              // DOP class if recommended
 
     // Generated baseline
     public let baselineImage: CGImage
@@ -28,9 +45,6 @@ public struct LoRAEvaluation: @unchecked Sendable {
 
     // Training recommendation
     public let recommendation: LoRARecommendation
-
-    /// Convenience alias
-    public var description: String { prompt }
 }
 
 /// Recommended LoRA training parameters based on evaluation
@@ -124,6 +138,7 @@ public class LoRAEvaluator {
     ///   - onProgress: Progress callback
     public func evaluate(
         referenceImage: CGImage,
+        context: LoRAContext,
         model: Flux2Model,
         quantization: Flux2QuantizationConfig = .init(textEncoder: .mlx8bit, transformer: .qint8),
         seed: UInt64 = 42,
@@ -133,8 +148,9 @@ public class LoRAEvaluator {
         onProgress: (@Sendable (String) -> Void)? = nil
     ) async throws -> LoRAEvaluation {
 
-        // === Step 1: VLM describes reference image ===
-        onProgress?("[1/4] Analyzing reference image with VLM...")
+        // === Step 1: VLM analyzes reference image with LoRA context ===
+        onProgress?("[1/5] Analyzing reference image with VLM...")
+        onProgress?("  LoRA context: \"\(context.name)\" — \(context.description)")
 
         // Load VLM if not already loaded
         if !FluxTextEncoders.shared.isQwen35VLMLoaded {
@@ -144,16 +160,27 @@ public class LoRAEvaluator {
             try await FluxTextEncoders.shared.loadQwen35VLM(from: vlmPath.path)
         }
 
-        let descResult = try FluxTextEncoders.shared.describeImageForFlux(image: referenceImage)
+        // Describe the image with LoRA context for focused description
+        let descResult = try FluxTextEncoders.shared.describeImageForFlux(
+            image: referenceImage,
+            context: "This image is a training reference for a LoRA called \"\(context.name)\". Training goal: \(context.description). Describe the image focusing on what makes this subject unique and what the model needs to learn."
+        )
         let description = descResult.text
         onProgress?("  Description: \"\(description.prefix(80))...\"")
+
+        // === Step 2: LLM analyzes LoRA context for trigger word and DOP ===
+        onProgress?("[2/5] Analyzing LoRA training context...")
+
+        let analysisResult = try analyzeLoRAContext(context: context)
+        onProgress?("  Trigger word: \(analysisResult.triggerWord)")
+        onProgress?("  DOP: \(analysisResult.dopRecommended ? "yes (\(analysisResult.dopClass ?? "object"))" : "no")")
 
         // Unload VLM to free memory for generation
         await MainActor.run { FluxTextEncoders.shared.unloadQwen35VLM() }
         Memory.clearCache()
 
-        // === Step 2: Generate baseline image with base model ===
-        onProgress?("[2/4] Generating baseline image (\(width)x\(height), seed=\(seed))...")
+        // === Step 3: Generate baseline image with base model ===
+        onProgress?("[3/5] Generating baseline image (\(width)x\(height), seed=\(seed))...")
 
         let pipeline = Flux2Pipeline(model: model, quantization: quantization, hfToken: hfToken)
 
@@ -175,8 +202,8 @@ public class LoRAEvaluator {
         // (pipeline deallocates when it goes out of scope, but let's be explicit)
         Memory.clearCache()
 
-        // === Step 3: VLM compares reference vs baseline ===
-        onProgress?("[3/4] Comparing reference vs baseline...")
+        // === Step 4: VLM compares reference vs baseline with LoRA focus ===
+        onProgress?("[4/5] Comparing reference vs baseline...")
 
         // Reload VLM
         if !FluxTextEncoders.shared.isQwen35VLMLoaded {
@@ -185,10 +212,42 @@ public class LoRAEvaluator {
             try await FluxTextEncoders.shared.loadQwen35VLM(from: vlmPath.path)
         }
 
-        let comparison = try FluxTextEncoders.shared.compareImagesForFlux(
-            reference: referenceImage,
-            generated: baselineImage
+        // Contextual comparison — focused on what the LoRA needs to learn
+        let comparisonSystemPrompt = """
+        You compare two images for FLUX.2 LoRA training evaluation.
+        Image 1 is the REFERENCE (target). Image 2 is what the base model generated WITHOUT any LoRA.
+
+        TRAINING CONTEXT: "\(context.name)" — \(context.description)
+
+        Score each criterion from 0 to 10, focusing on what matters for this specific LoRA training goal:
+
+        SCENE (content fidelity):
+        - Does the generated image capture the SPECIFIC subject described in the training context?
+        - Same distinctive features, shapes, proportions, details?
+        - Same spatial arrangement and setting?
+
+        STYLE (visual fidelity):
+        - Same art style, rendering technique?
+        - Same color palette, lighting, contrast?
+        - Same textures, materials, surface quality?
+
+        Respond ONLY with this exact JSON format, no other text:
+        {"scene_score": N, "scene_reason": "brief explanation focusing on what the LoRA needs to learn", "style_score": N, "style_reason": "brief explanation"}
+        """
+
+        guard let vlm = FluxTextEncoders.shared.qwen35VLMForEvaluation else {
+            throw Flux2Error.modelNotLoaded("Qwen3.5 VLM not loaded")
+        }
+
+        let compResult = try vlm.generateMultiImage(
+            images: [referenceImage, baselineImage],
+            prompt: "Compare these two images for LoRA training evaluation.",
+            systemPrompt: comparisonSystemPrompt,
+            maxTokens: 300,
+            temperature: 0
         )
+
+        let comparison = FluxTextEncoders.shared.parseComparisonForEvaluation(compResult.text)
 
         onProgress?("  Scene: \(comparison.sceneScore)/10 — \(comparison.sceneReason)")
         onProgress?("  Style: \(comparison.styleScore)/10 — \(comparison.styleReason)")
@@ -196,20 +255,26 @@ public class LoRAEvaluator {
         // Unload VLM
         await MainActor.run { FluxTextEncoders.shared.unloadQwen35VLM() }
 
-        // === Step 4: Generate recommendation ===
-        onProgress?("[4/4] Generating training recommendation...")
+        // === Step 5: Generate recommendation ===
+        onProgress?("[5/5] Generating training recommendation...")
 
         let recommendation = computeRecommendation(
             sceneScore: comparison.sceneScore,
             styleScore: comparison.styleScore,
-            model: model
+            model: model,
+            dopRecommended: analysisResult.dopRecommended,
+            dopClass: analysisResult.dopClass
         )
 
         onProgress?("  \(recommendation.summary)")
 
         return LoRAEvaluation(
             referenceImage: referenceImage,
+            context: context,
             prompt: description,
+            triggerWord: analysisResult.triggerWord,
+            dopRecommended: analysisResult.dopRecommended,
+            dopClass: analysisResult.dopClass,
             baselineImage: baselineImage,
             sceneScore: comparison.sceneScore,
             styleScore: comparison.styleScore,
@@ -219,9 +284,66 @@ public class LoRAEvaluator {
         )
     }
 
+    // MARK: - LoRA Context Analysis
+
+    private struct ContextAnalysis {
+        let triggerWord: String
+        let dopRecommended: Bool
+        let dopClass: String?
+    }
+
+    /// Use LLM to analyze the LoRA context and suggest trigger word + DOP settings
+    private func analyzeLoRAContext(context: LoRAContext) throws -> ContextAnalysis {
+        let analysisPrompt = """
+        TASK: Analyze this LoRA training description and provide recommendations.
+
+        TRAINING NAME: "\(context.name)"
+        DESCRIPTION: "\(context.description)"
+
+        CONTEXT:
+        - A LoRA teaches an AI image generator a new concept
+        - A "trigger word" is a unique word that activates the LoRA in prompts (e.g., "ohwx", "sks")
+        - DOP (Differential Output Preservation) helps preserve the general class while learning specific features
+        - DOP is useful when training a specific instance of a category (e.g., a specific person, a specific object)
+        - DOP requires knowing the "class" (e.g., "woman", "man", "cat", "dog", "car", "toy")
+
+        OUTPUT FORMAT: Valid JSON only, no markdown, no explanation.
+        {"trigger_word": "xyz_name", "dop_recommended": true, "dop_class": "cat"}
+        """
+
+        let result = try FluxTextEncoders.shared.generateWithQwen35(
+            prompt: analysisPrompt,
+            systemPrompt: "You are a LoRA training configuration assistant. Output only valid JSON.",
+            maxTokens: 100,
+            temperature: 0
+        )
+
+        // Parse JSON from response
+        let text = result.text
+        if let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}") {
+            let jsonStr = String(text[start...end])
+            struct Analysis: Decodable {
+                let trigger_word: String?
+                let dop_recommended: Bool?
+                let dop_class: String?
+            }
+            if let data = jsonStr.data(using: .utf8),
+               let parsed = try? JSONDecoder().decode(Analysis.self, from: data) {
+                return ContextAnalysis(
+                    triggerWord: parsed.trigger_word ?? "sks",
+                    dopRecommended: parsed.dop_recommended ?? false,
+                    dopClass: parsed.dop_class
+                )
+            }
+        }
+
+        // Fallback
+        return ContextAnalysis(triggerWord: "sks", dopRecommended: false, dopClass: nil)
+    }
+
     // MARK: - Recommendation Logic
 
-    private func computeRecommendation(sceneScore: Int, styleScore: Int, model: Flux2Model) -> LoRARecommendation {
+    private func computeRecommendation(sceneScore: Int, styleScore: Int, model: Flux2Model, dopRecommended: Bool, dopClass: String?) -> LoRARecommendation {
         let sceneGap = 10 - max(0, sceneScore)
         let styleGap = 10 - max(0, styleScore)
         let totalGap = sceneGap + styleGap
@@ -254,9 +376,8 @@ public class LoRAEvaluator {
             timestepSampling = "balanced" // Both need work
         }
 
-        // DOP when scene needs significant training (prevents trigger-less outputs)
-        let useDOP = sceneGap >= 4
-        let dopClass: String? = useDOP ? "object" : nil
+        // DOP from context analysis + scene gap
+        let useDOP = dopRecommended || sceneGap >= 4
 
         // Target layers
         let targetLayers = rank <= 32 ? "all" : "attention"

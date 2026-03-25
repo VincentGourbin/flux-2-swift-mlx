@@ -17,6 +17,12 @@ struct EvaluateLoRA: AsyncParsableCommand {
     @Option(name: .shortAndLong, help: "Reference image path")
     var image: String
 
+    @Option(name: .long, help: "LoRA name (e.g., 'Cat Toy', 'My Art Style')")
+    var name: String
+
+    @Option(name: .long, help: "What the LoRA should learn (e.g., 'A specific hand-painted wooden cat figurine with colorful stripes')")
+    var loraDescription: String
+
     @Option(name: .long, help: "Model variant: klein-4b (default), klein-9b, dev")
     var model: String = "klein-4b"
 
@@ -31,9 +37,6 @@ struct EvaluateLoRA: AsyncParsableCommand {
 
     @Option(name: .long, help: "Output directory for evaluation results")
     var outputDir: String = "./evaluation"
-
-    @Option(name: .long, help: "Trigger word for the LoRA (used in generated YAML)")
-    var triggerWord: String = "xyz_trigger"
 
     @Option(name: .long, help: "Dataset path for training config")
     var datasetPath: String = "./dataset"
@@ -67,7 +70,10 @@ struct EvaluateLoRA: AsyncParsableCommand {
 
         let token = hfToken ?? ProcessInfo.processInfo.environment["HF_TOKEN"]
 
+        let loraContext = LoRAContext(name: name, description: loraDescription)
+
         print("=== LoRA Evaluation Pipeline ===")
+        print("LoRA: \"\(name)\" — \(loraDescription)")
         print("Model: \(modelVariant.displayName)")
         print("Reference: \(image) (\(refImage.width)x\(refImage.height))")
         print("Baseline: \(width)x\(height), seed=\(seed)")
@@ -80,6 +86,7 @@ struct EvaluateLoRA: AsyncParsableCommand {
         let evaluator = LoRAEvaluator()
         let result = try await evaluator.evaluate(
             referenceImage: refImage,
+            context: loraContext,
             model: modelVariant,
             quantization: quantConfig,
             seed: seed,
@@ -106,13 +113,13 @@ struct EvaluateLoRA: AsyncParsableCommand {
 
         // Description (the prompt used to generate baseline)
         let descPath = "\(outputDir)/prompt.txt"
-        try result.description.write(toFile: descPath, atomically: true, encoding: .utf8)
+        try result.prompt.write(toFile: descPath, atomically: true, encoding: .utf8)
         print("  Prompt:      \(descPath)")
 
-        // YAML config
+        // YAML config (uses auto-detected trigger word from LLM analysis)
         let yamlPath = "\(outputDir)/recommended_config.yaml"
         let yaml = result.recommendation.toYAML(
-            model: modelVariant, triggerWord: triggerWord, datasetPath: datasetPath
+            model: modelVariant, triggerWord: result.triggerWord, datasetPath: datasetPath
         )
         try yaml.write(toFile: yamlPath, atomically: true, encoding: .utf8)
         print("  Config:      \(yamlPath)")
@@ -129,6 +136,8 @@ struct EvaluateLoRA: AsyncParsableCommand {
         print("+" + String(repeating: "=", count: 46) + "+")
         print("|     LoRA Training Recommendation            |")
         print("+" + String(repeating: "=", count: 46) + "+")
+        print("| LoRA: \(result.context.name.prefix(38).padding(toLength: 38, withPad: " ", startingAt: 0)) |")
+        print("| Trigger: \(result.triggerWord.padding(toLength: 35, withPad: " ", startingAt: 0)) |")
         print("| Scene: \(pad(result.sceneScore))/10  Style: \(pad(result.styleScore))/10                  |")
         print("|                                              |")
         print("| Steps: \(pad4(rec.steps))   Rank: \(pad(rec.rank))   LR: \(rec.learningRate)      |")
@@ -147,10 +156,13 @@ struct EvaluateLoRA: AsyncParsableCommand {
         return """
         === LoRA Evaluation Report ===
         Date: \(ISO8601DateFormatter().string(from: Date()))
+        LoRA: "\(result.context.name)" — \(result.context.description)
         Model: \(model.displayName)
+        Trigger word: \(result.triggerWord)
+        DOP: \(result.dopRecommended ? "recommended (\(result.dopClass ?? "object"))" : "not needed")
 
         Reference Image Description:
-        \(result.description)
+        \(result.prompt)
 
         Comparison Scores:
           Scene: \(result.sceneScore)/10 — \(result.sceneReason)

@@ -67,6 +67,16 @@ public final class FluxTextEncoders: @unchecked Sendable {
         return loadedKleinVariant
     }
 
+    /// Access VLM directly for advanced use (e.g., LoRA evaluator custom prompts)
+    public var qwen35VLMForEvaluation: Qwen35VLM? {
+        return qwen35VLM
+    }
+
+    /// Public comparison parser for use by LoRA evaluator
+    public func parseComparisonForEvaluation(_ text: String) -> FluxImageComparison {
+        return parseComparisonResult(text)
+    }
+
     /// Whether Qwen3-VL/Klein VL model is loaded
     public var isKleinVLLoaded: Bool {
         return qwen3VLModel != nil && qwen3VLTokenizer != nil && kleinVLExtractor != nil

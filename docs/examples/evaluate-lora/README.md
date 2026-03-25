@@ -24,8 +24,9 @@ The pipeline uses the **Qwen3.5-4B VLM** (auto-downloaded, ~3GB) to:
 ```bash
 flux2 evaluate-lora \
   --image your_reference.png \
+  --name "My Subject" \
+  --lora-description "A specific blue ceramic vase with gold leaf pattern" \
   --model klein-4b \
-  --trigger-word "xyz_mystyle" \
   --output-dir ./my_eval
 ```
 
@@ -120,7 +121,15 @@ dataset:
 
 ## Example: Hand-Painted Cat Toy (Unique Object)
 
-A specific, unique object — a hand-carved wooden cat figurine with colorful stripes. This tests whether the base model can reproduce a distinctive, non-generic subject from description alone.
+A specific, unique object — a hand-carved wooden cat figurine with colorful stripes. The evaluation uses LoRA context to focus the comparison on what matters for training.
+
+```bash
+flux2 evaluate-lora \
+  --image examples/cat-toy/train/6.jpeg \
+  --name "Cat Toy" \
+  --lora-description "A specific hand-painted wooden cat figurine with colorful vertical stripes" \
+  --model klein-4b
+```
 
 ### Reference vs Baseline
 
@@ -128,29 +137,28 @@ A specific, unique object — a hand-carved wooden cat figurine with colorful st
 |:--:|:--:|
 | ![Reference](cattoy_reference.png) | ![Baseline](cattoy_baseline.png) |
 
-### VLM-Generated Prompt
+The base model generates a similar concept (wooden cat toy with stripes) but with **wrong specific details** — different stripe colors, wrong proportions, missing features.
 
-> A whimsical, hand-carved wooden cat figurine sits upright on a textured gray fabric surface. The figurine has a simplified, folk-art style with a round head featuring small painted eyes, a black nose, and delicate whiskers. Its body is painted with bold vertical stripes in alternating colors of dark blue, black, green, orange, and red. The tail curves upward and to the right, also striped in matching colors, ending in a round coral-pink tip.
-
-### Comparison Scores
+### Comparison Scores (context-aware)
 
 | Criterion | Score | Reason |
 |-----------|:-----:|--------|
-| **Scene** | 9/10 | Accurately preserves the core subject (painted cat figurine), pose, and general setting. Minor differences in background pillow position and tail color sequence. |
-| **Style** | 8/10 | Successfully replicates hand-painted wooden toy style with visible wood grain and brush strokes. Lighting slightly flatter than reference's natural lighting. |
+| **Scene** | 6/10 | Correctly identifies the subject as a hand-painted wooden cat figurine. But the bell on neck is missing, tail pattern (coral-pink ball tip with alternating stripes) differs significantly. |
+| **Style** | 5/10 | Rendering style is similar (hand-painted wood), but color palette and proportions are inaccurate. Different stripe colors, head and tail proportions distorted. |
+
+The **LoRA context** makes the VLM focus on the specific details that matter: the exact stripe pattern, the coral-pink tail tip, the bell — details the base model doesn't know. Without context, the same comparison scored 9/10 because "it's a cat toy with stripes" was enough.
 
 ### Recommendation
 
-The base model captures the general concept well from the VLM description alone (9/10 scene, 8/10 style). A light LoRA would refine the specific details (exact stripe pattern, tail shape, proportions):
-
 | Parameter | Value | Why |
 |-----------|-------|-----|
-| **Steps** | 150 | Small gap — fine-tuning details only |
-| **Rank** | 8 | Low capacity sufficient |
-| **Timestep** | `balanced` | Both scene and style are close |
-| **DOP** | No | Base model already captures the concept |
+| **Steps** | 750 | Significant gap in both scene and style details |
+| **Rank** | 32 | Need enough capacity to learn specific stripe patterns and proportions |
+| **Timestep** | `balanced` | Both content (specific object) and style (colors, proportions) need work |
+| **DOP** | Yes | Preserve general "cat toy" concept while learning this specific one |
+| **Trigger word** | `sks` | Auto-detected by LLM analysis |
 
-This shows that even for unique, specific objects, a good VLM description lets the base model get remarkably close. The LoRA's job is to refine the exact details that make *this specific* cat toy unique.
+This demonstrates the value of providing LoRA context: the evaluation focuses on what the training actually needs to achieve, not just generic image similarity.
 
 ---
 
@@ -170,20 +178,23 @@ The gap between scores determines the training effort:
 ## CLI Options
 
 ```
-flux2 evaluate-lora [OPTIONS] --image <path>
+flux2 evaluate-lora [OPTIONS] --image <path> --name <name> --lora-description <desc>
 
 Options:
   --image <path>              Reference image (required)
+  --name <name>               LoRA name, e.g., "Cat Toy" (required)
+  --lora-description <desc>   What the LoRA should learn (required)
   --model <variant>           klein-4b (default), klein-9b, dev
   --seed <n>                  Random seed for baseline (default: 42)
   -w, --width <n>             Baseline width (default: 512)
   -h, --height <n>            Baseline height (default: 512)
   --output-dir <path>         Output directory (default: ./evaluation)
-  --trigger-word <word>       Trigger word for YAML config (default: xyz_trigger)
   --dataset-path <path>       Dataset path in YAML (default: ./dataset)
   --transformer-quant <q>     bf16, qint8, int4 (default: qint8)
   --hf-token <token>          HuggingFace token for gated models
 ```
+
+The trigger word and DOP settings are **auto-detected** by the LLM from the name and description — no need to specify them manually.
 
 ## As a Library
 
@@ -191,9 +202,11 @@ Options:
 import Flux2Core
 import FluxTextEncoders
 
+let context = LoRAContext(name: "Cat Toy", description: "A hand-painted wooden cat figurine with colorful stripes")
 let evaluator = LoRAEvaluator()
 let result = try await evaluator.evaluate(
     referenceImage: myImage,
+    context: context,
     model: .klein4B,
     seed: 42
 ) { progress in
@@ -201,12 +214,13 @@ let result = try await evaluator.evaluate(
 }
 
 // Access all results
-let description = result.prompt           // VLM description
+let prompt = result.prompt                // VLM description
 let baseline = result.baselineImage       // Generated baseline
+let trigger = result.triggerWord           // Auto-detected trigger word
 let scene = result.sceneScore             // 0-10
 let style = result.styleScore             // 0-10
 let yaml = result.recommendation.toYAML(  // Ready YAML config
-    model: .klein4B, triggerWord: "xyz_cat"
+    model: .klein4B, triggerWord: trigger
 )
 ```
 
