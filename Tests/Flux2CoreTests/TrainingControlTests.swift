@@ -303,6 +303,175 @@ final class TrainingControlTests: XCTestCase {
         XCTAssertEqual(observer.lastStep, 10)
     }
 
+    // MARK: - VLM Score Tests
+
+    func testVLMPromptScoreCodable() throws {
+        let score = VLMPromptScore(
+            promptIndex: 0,
+            sceneScore: 62,
+            styleScore: 70,
+            sceneReason: "Good subject match",
+            styleReason: "Color palette matches",
+            baselineSceneScore: 15,
+            baselineStyleScore: 20
+        )
+
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(score)
+        let decoded = try JSONDecoder().decode(VLMPromptScore.self, from: data)
+
+        XCTAssertEqual(decoded.promptIndex, 0)
+        XCTAssertEqual(decoded.sceneScore, 62)
+        XCTAssertEqual(decoded.styleScore, 70)
+        XCTAssertEqual(decoded.sceneReason, "Good subject match")
+        XCTAssertEqual(decoded.styleReason, "Color palette matches")
+        XCTAssertEqual(decoded.baselineSceneScore, 15)
+        XCTAssertEqual(decoded.baselineStyleScore, 20)
+    }
+
+    func testVLMScoreRecordCodable() throws {
+        let record = VLMScoreRecord(
+            step: 50,
+            promptScores: [
+                VLMPromptScore(promptIndex: 0, sceneScore: 60, styleScore: 70,
+                               sceneReason: "test", styleReason: "test",
+                               baselineSceneScore: 10, baselineStyleScore: 15),
+                VLMPromptScore(promptIndex: 1, sceneScore: 55, styleScore: 65,
+                               sceneReason: "test2", styleReason: "test2")
+            ],
+            compositeScore: 62.5,
+            baselineComposite: 12.5,
+            improvement: 50.0
+        )
+
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(record)
+        let decoded = try JSONDecoder().decode(VLMScoreRecord.self, from: data)
+
+        XCTAssertEqual(decoded.step, 50)
+        XCTAssertEqual(decoded.promptScores.count, 2)
+        XCTAssertEqual(decoded.compositeScore, 62.5, accuracy: 0.01)
+        XCTAssertEqual(decoded.baselineComposite, 12.5)
+        XCTAssertEqual(decoded.improvement, 50.0)
+        // Second prompt has nil baseline scores
+        XCTAssertNil(decoded.promptScores[1].baselineSceneScore)
+    }
+
+    func testRecordVLMScoreUpdatesBest() {
+        var state = TrainingState(
+            currentStep: 0,
+            totalSteps: 100,
+            rngSeed: 42,
+            configHash: "test",
+            modelType: "klein-4b",
+            loraRank: 32,
+            loraAlpha: 32.0
+        )
+
+        XCTAssertEqual(state.bestVLMScore, 0)
+        XCTAssertEqual(state.bestVLMStep, 0)
+        XCTAssertTrue(state.vlmScoreHistory.isEmpty)
+
+        // Record first score
+        let record1 = VLMScoreRecord(step: 25, promptScores: [],
+                                      compositeScore: 30.0)
+        state.recordVLMScore(record1)
+
+        XCTAssertEqual(state.bestVLMScore, 30.0, accuracy: 0.01)
+        XCTAssertEqual(state.bestVLMStep, 25)
+        XCTAssertEqual(state.vlmScoreHistory.count, 1)
+
+        // Record better score
+        let record2 = VLMScoreRecord(step: 50, promptScores: [],
+                                      compositeScore: 61.0)
+        state.recordVLMScore(record2)
+
+        XCTAssertEqual(state.bestVLMScore, 61.0, accuracy: 0.01)
+        XCTAssertEqual(state.bestVLMStep, 50)
+
+        // Record worse score — best should NOT change
+        let record3 = VLMScoreRecord(step: 75, promptScores: [],
+                                      compositeScore: 42.0)
+        state.recordVLMScore(record3)
+
+        XCTAssertEqual(state.bestVLMScore, 61.0, accuracy: 0.01)
+        XCTAssertEqual(state.bestVLMStep, 50)
+        XCTAssertEqual(state.vlmScoreHistory.count, 3)
+    }
+
+    func testVLMScoreHistoryPersistence() throws {
+        var state = TrainingState(
+            currentStep: 50,
+            totalSteps: 100,
+            rngSeed: 42,
+            configHash: "test",
+            modelType: "klein-4b",
+            loraRank: 32,
+            loraAlpha: 32.0
+        )
+        state.recordLoss(0.5)  // Avoid Float.infinity in JSON
+
+        let record = VLMScoreRecord(
+            step: 25,
+            promptScores: [
+                VLMPromptScore(promptIndex: 0, sceneScore: 58, styleScore: 66,
+                               sceneReason: "Good", styleReason: "Great")
+            ],
+            compositeScore: 62.0,
+            baselineComposite: 10.0,
+            improvement: 52.0
+        )
+        state.recordVLMScore(record)
+
+        // Save and reload
+        let saveURL = tempDir.appendingPathComponent("vlm_state.json")
+        try state.save(to: saveURL)
+        let loaded = try TrainingState.load(from: saveURL)
+
+        XCTAssertEqual(loaded.vlmScoreHistory.count, 1)
+        XCTAssertEqual(loaded.vlmScoreHistory[0].step, 25)
+        XCTAssertEqual(loaded.vlmScoreHistory[0].compositeScore, 62.0, accuracy: 0.01)
+        XCTAssertEqual(loaded.vlmScoreHistory[0].promptScores[0].sceneScore, 58)
+        XCTAssertEqual(loaded.bestVLMScore, 62.0, accuracy: 0.01)
+        XCTAssertEqual(loaded.bestVLMStep, 25)
+    }
+
+    func testVLMScoreBackwardCompatibility() throws {
+        // Simulate loading a training_state.json from BEFORE VLM scoring was added
+        // (no vlmScoreHistory, bestVLMScore, bestVLMStep fields)
+        let oldJson = """
+        {
+            "currentStep": 100,
+            "totalSteps": 500,
+            "currentEpoch": 0,
+            "totalEpochs": 1,
+            "recentLosses": [0.5, 0.4],
+            "bestLoss": 0.4,
+            "bestLossStep": 100,
+            "startedAt": "2025-01-01T00:00:00Z",
+            "totalTrainingTime": 3600,
+            "rngSeed": 42,
+            "configHash": "abc",
+            "modelType": "klein-4b",
+            "loraRank": 32,
+            "loraAlpha": 32.0,
+            "checkpointSteps": [50, 100]
+        }
+        """
+        let saveURL = tempDir.appendingPathComponent("old_state.json")
+        try oldJson.data(using: .utf8)!.write(to: saveURL)
+
+        let loaded = try TrainingState.load(from: saveURL)
+
+        // VLM fields should have defaults
+        XCTAssertTrue(loaded.vlmScoreHistory.isEmpty)
+        XCTAssertEqual(loaded.bestVLMScore, 0)
+        XCTAssertEqual(loaded.bestVLMStep, 0)
+        // Original fields still work
+        XCTAssertEqual(loaded.currentStep, 100)
+        XCTAssertEqual(loaded.bestLoss, 0.4, accuracy: 0.01)
+    }
+
     // MARK: - Pause Checkpoint Marker Tests
 
     func testPauseCheckpointMarker() throws {

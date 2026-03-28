@@ -201,6 +201,33 @@ public struct TrainingState: Codable, Sendable {
         lastCheckpointAt = Date()
     }
 
+    // MARK: - Codable (backward-compatible decoding for VLM fields)
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        currentStep = try container.decode(Int.self, forKey: .currentStep)
+        totalSteps = try container.decode(Int.self, forKey: .totalSteps)
+        currentEpoch = try container.decode(Int.self, forKey: .currentEpoch)
+        totalEpochs = try container.decode(Int.self, forKey: .totalEpochs)
+        recentLosses = try container.decode([Float].self, forKey: .recentLosses)
+        bestLoss = try container.decode(Float.self, forKey: .bestLoss)
+        bestLossStep = try container.decode(Int.self, forKey: .bestLossStep)
+        startedAt = try container.decode(Date.self, forKey: .startedAt)
+        lastCheckpointAt = try container.decodeIfPresent(Date.self, forKey: .lastCheckpointAt)
+        totalTrainingTime = try container.decode(TimeInterval.self, forKey: .totalTrainingTime)
+        rngSeed = try container.decode(UInt64.self, forKey: .rngSeed)
+        configHash = try container.decode(String.self, forKey: .configHash)
+        modelType = try container.decode(String.self, forKey: .modelType)
+        loraRank = try container.decode(Int.self, forKey: .loraRank)
+        loraAlpha = try container.decode(Float.self, forKey: .loraAlpha)
+        optimizerStatePath = try container.decodeIfPresent(String.self, forKey: .optimizerStatePath)
+        checkpointSteps = try container.decode([Int].self, forKey: .checkpointSteps)
+        // VLM fields — optional for backward compatibility with pre-VLM training states
+        vlmScoreHistory = try container.decodeIfPresent([VLMScoreRecord].self, forKey: .vlmScoreHistory) ?? []
+        bestVLMScore = try container.decodeIfPresent(Float.self, forKey: .bestVLMScore) ?? 0
+        bestVLMStep = try container.decodeIfPresent(Int.self, forKey: .bestVLMStep) ?? 0
+    }
+
     // MARK: - Persistence
 
     /// Save state to JSON file
