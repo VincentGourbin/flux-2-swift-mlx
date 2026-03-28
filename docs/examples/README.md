@@ -88,6 +88,25 @@ Klein 9B offers better quality than Klein 4B while remaining much faster than De
 
 ---
 
+## VLM-Guided Checkpoint Selection
+
+During training, automatically score validation images using the Qwen3.5-4B VLM to detect learning trends and save the best checkpoint.
+
+| Step 25 (14/100) | Step 50 (51/100) | Step 75 (61/100 - Best) | Step 100 (42/100 - Degrading) |
+|:---:|:---:|:---:|:---:|
+| ![Step 25](vlm-scoring/step025_prompt0.png) | ![Step 50](vlm-scoring/step050_prompt0.png) | ![Step 75](vlm-scoring/step075_prompt0.png) | ![Step 100](vlm-scoring/step100_prompt0.png) |
+
+```yaml
+validation:
+  vlm_scoring:
+    enabled: true
+    save_best_checkpoint: true
+```
+
+The VLM detected the best checkpoint at step 75 (61/100) and automatically saved it, even though the loss at step 75 was higher than step 100. See **[VLM-Guided Checkpoint Selection](vlm-scoring/README.md)** for full documentation and results.
+
+---
+
 ## LoRA Evaluation Pipeline
 
 Before training a LoRA, evaluate the gap between your reference image and the base model output to get recommended training parameters automatically.

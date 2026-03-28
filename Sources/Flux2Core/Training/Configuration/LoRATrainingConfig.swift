@@ -493,6 +493,38 @@ public struct LoRATrainingConfig: Codable, Sendable {
     /// EMA decay factor (0.99-0.9999, higher = slower averaging)
     public var emaDecay: Float
 
+    // MARK: - VLM Scoring
+
+    /// Enable VLM scoring of validation images (compares vs reference/baseline)
+    public var vlmScoringEnabled: Bool
+
+    /// Weight for scene score in composite (0-1, style weight = 1 - sceneWeight)
+    public var vlmScoringSceneWeight: Float
+
+    /// Explicit reference images for comparison (empty = auto-select from dataset)
+    public var vlmScoringReferenceImages: [URL]
+
+    /// Max reference images to auto-select from dataset
+    public var vlmScoringMaxReferences: Int
+
+    /// Also compare validation images against baseline (step 0, no LoRA)
+    public var vlmScoringCompareToBaseline: Bool
+
+    /// Auto-save best checkpoint by VLM composite score
+    public var vlmScoringBestCheckpoint: Bool
+
+    /// Enable early stopping based on VLM scores
+    public var vlmScoringEarlyStopping: Bool
+
+    /// Consecutive validations without improvement before stopping
+    public var vlmScoringPatience: Int
+
+    /// Minimum composite score improvement to reset patience (0-100 scale)
+    public var vlmScoringMinDelta: Float
+
+    /// Stop if score drops below peak by this much (0-100 scale)
+    public var vlmScoringDegradationThreshold: Float
+
     // MARK: - Resume Training
 
     /// Path to checkpoint to resume from (nil = start fresh)
@@ -586,6 +618,17 @@ public struct LoRATrainingConfig: Codable, Sendable {
         // EMA
         useEMA: Bool = true,
         emaDecay: Float = 0.99,
+        // VLM Scoring
+        vlmScoringEnabled: Bool = false,
+        vlmScoringSceneWeight: Float = 0.5,
+        vlmScoringReferenceImages: [URL] = [],
+        vlmScoringMaxReferences: Int = 3,
+        vlmScoringCompareToBaseline: Bool = true,
+        vlmScoringBestCheckpoint: Bool = true,
+        vlmScoringEarlyStopping: Bool = false,
+        vlmScoringPatience: Int = 3,
+        vlmScoringMinDelta: Float = 3.0,
+        vlmScoringDegradationThreshold: Float = 15.0,
         // Resume
         resumeFromCheckpoint: URL? = nil
     ) {
@@ -660,6 +703,16 @@ public struct LoRATrainingConfig: Codable, Sendable {
         self.earlyStoppingValStagnationPatience = earlyStoppingValStagnationPatience
         self.useEMA = useEMA
         self.emaDecay = emaDecay
+        self.vlmScoringEnabled = vlmScoringEnabled
+        self.vlmScoringSceneWeight = vlmScoringSceneWeight
+        self.vlmScoringReferenceImages = vlmScoringReferenceImages
+        self.vlmScoringMaxReferences = vlmScoringMaxReferences
+        self.vlmScoringCompareToBaseline = vlmScoringCompareToBaseline
+        self.vlmScoringBestCheckpoint = vlmScoringBestCheckpoint
+        self.vlmScoringEarlyStopping = vlmScoringEarlyStopping
+        self.vlmScoringPatience = vlmScoringPatience
+        self.vlmScoringMinDelta = vlmScoringMinDelta
+        self.vlmScoringDegradationThreshold = vlmScoringDegradationThreshold
         self.resumeFromCheckpoint = resumeFromCheckpoint
     }
     

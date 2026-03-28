@@ -196,10 +196,14 @@ struct YAMLValidationConfig: Codable {
     var width: Int?   // Legacy, ignored if using prompts array
     var height: Int?  // Legacy, ignored if using prompts array
 
+    // VLM scoring configuration
+    var vlmScoring: YAMLVLMScoringConfig?
+
     enum CodingKeys: String, CodingKey {
         case prompt, prompts
         case everyNSteps = "every_n_steps"
         case seed, guidance, steps, width, height
+        case vlmScoring = "vlm_scoring"
     }
 }
 
@@ -230,6 +234,34 @@ struct YAMLValidationPrompt: Codable {
         case applyTrigger = "apply_trigger"
         case seed
         case referenceImage = "reference_image"
+    }
+}
+
+// MARK: - VLM Scoring Configuration
+
+struct YAMLVLMScoringConfig: Codable {
+    var enabled: Bool?
+    var sceneWeight: Float?
+    var referenceImages: [String]?
+    var maxReferenceImages: Int?
+    var compareToBaseline: Bool?
+    var saveBestCheckpoint: Bool?
+    var earlyStopping: Bool?
+    var earlyStoppingPatience: Int?
+    var earlyStoppingMinDelta: Float?   // 0-100 scale
+    var degradationThreshold: Float?    // 0-100 scale
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+        case sceneWeight = "scene_weight"
+        case referenceImages = "reference_images"
+        case maxReferenceImages = "max_reference_images"
+        case compareToBaseline = "compare_to_baseline"
+        case saveBestCheckpoint = "save_best_checkpoint"
+        case earlyStopping = "early_stopping"
+        case earlyStoppingPatience = "early_stopping_patience"
+        case earlyStoppingMinDelta = "early_stopping_min_delta"
+        case degradationThreshold = "degradation_threshold"
     }
 }
 
@@ -440,6 +472,18 @@ struct YAMLConfigParser {
             ))
         }
 
+        // VLM Scoring
+        let vlmScoringEnabled = yaml.validation?.vlmScoring?.enabled ?? false
+        let vlmScoringSceneWeight = yaml.validation?.vlmScoring?.sceneWeight ?? 0.5
+        let vlmScoringReferenceImages = (yaml.validation?.vlmScoring?.referenceImages ?? []).map { URL(fileURLWithPath: $0) }
+        let vlmScoringMaxReferences = yaml.validation?.vlmScoring?.maxReferenceImages ?? 3
+        let vlmScoringCompareToBaseline = yaml.validation?.vlmScoring?.compareToBaseline ?? true
+        let vlmScoringBestCheckpoint = yaml.validation?.vlmScoring?.saveBestCheckpoint ?? true
+        let vlmScoringEarlyStopping = yaml.validation?.vlmScoring?.earlyStopping ?? false
+        let vlmScoringPatience = yaml.validation?.vlmScoring?.earlyStoppingPatience ?? 3
+        let vlmScoringMinDelta = yaml.validation?.vlmScoring?.earlyStoppingMinDelta ?? 3.0
+        let vlmScoringDegradationThreshold = yaml.validation?.vlmScoring?.degradationThreshold ?? 15.0
+
         // EMA
         let useEMA = yaml.ema?.enabled ?? true
         let emaDecay = yaml.ema?.decay ?? 0.99
@@ -549,6 +593,17 @@ struct YAMLConfigParser {
             // EMA
             useEMA: useEMA,
             emaDecay: emaDecay,
+            // VLM Scoring
+            vlmScoringEnabled: vlmScoringEnabled,
+            vlmScoringSceneWeight: vlmScoringSceneWeight,
+            vlmScoringReferenceImages: vlmScoringReferenceImages,
+            vlmScoringMaxReferences: vlmScoringMaxReferences,
+            vlmScoringCompareToBaseline: vlmScoringCompareToBaseline,
+            vlmScoringBestCheckpoint: vlmScoringBestCheckpoint,
+            vlmScoringEarlyStopping: vlmScoringEarlyStopping,
+            vlmScoringPatience: vlmScoringPatience,
+            vlmScoringMinDelta: vlmScoringMinDelta,
+            vlmScoringDegradationThreshold: vlmScoringDegradationThreshold,
             // Resume
             resumeFromCheckpoint: nil
         )

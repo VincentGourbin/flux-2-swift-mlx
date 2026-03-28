@@ -4,6 +4,50 @@
 import Foundation
 import MLX
 
+// MARK: - VLM Score Types
+
+/// Score for a single validation prompt compared via VLM (0-100 scale)
+public struct VLMPromptScore: Codable, Sendable {
+    public let promptIndex: Int
+    public let sceneScore: Int         // 0-100 vs reference training image
+    public let styleScore: Int         // 0-100 vs reference training image
+    public let sceneReason: String
+    public let styleReason: String
+    public let baselineSceneScore: Int? // 0-100 vs baseline (nil if no baseline)
+    public let baselineStyleScore: Int?
+
+    public init(promptIndex: Int, sceneScore: Int, styleScore: Int,
+                sceneReason: String, styleReason: String,
+                baselineSceneScore: Int? = nil, baselineStyleScore: Int? = nil) {
+        self.promptIndex = promptIndex
+        self.sceneScore = sceneScore
+        self.styleScore = styleScore
+        self.sceneReason = sceneReason
+        self.styleReason = styleReason
+        self.baselineSceneScore = baselineSceneScore
+        self.baselineStyleScore = baselineStyleScore
+    }
+}
+
+/// VLM scoring record for a single checkpoint evaluation
+public struct VLMScoreRecord: Codable, Sendable {
+    public let step: Int
+    public let promptScores: [VLMPromptScore]
+    public let compositeScore: Float     // Weighted average (0-100)
+    public let baselineComposite: Float? // Baseline composite for improvement tracking
+    public let improvement: Float?       // compositeScore - baselineComposite
+
+    public init(step: Int, promptScores: [VLMPromptScore],
+                compositeScore: Float, baselineComposite: Float? = nil,
+                improvement: Float? = nil) {
+        self.step = step
+        self.promptScores = promptScores
+        self.compositeScore = compositeScore
+        self.baselineComposite = baselineComposite
+        self.improvement = improvement
+    }
+}
+
 /// Complete training state that can be saved and restored
 public struct TrainingState: Codable, Sendable {
 
@@ -84,6 +128,17 @@ public struct TrainingState: Codable, Sendable {
     /// List of saved checkpoints
     public var checkpointSteps: [Int]
 
+    // MARK: - VLM Score History
+
+    /// VLM score records across checkpoints (0-100 scale)
+    public var vlmScoreHistory: [VLMScoreRecord] = []
+
+    /// Best VLM composite score achieved (0-100)
+    public var bestVLMScore: Float = 0
+
+    /// Step at which best VLM score was achieved
+    public var bestVLMStep: Int = 0
+
     // MARK: - Initialization
 
     public init(
@@ -128,6 +183,15 @@ public struct TrainingState: Codable, Sendable {
         if loss < bestLoss {
             bestLoss = loss
             bestLossStep = currentStep
+        }
+    }
+
+    /// Record a VLM score from checkpoint evaluation
+    public mutating func recordVLMScore(_ record: VLMScoreRecord) {
+        vlmScoreHistory.append(record)
+        if record.compositeScore > bestVLMScore {
+            bestVLMScore = record.compositeScore
+            bestVLMStep = record.step
         }
     }
 

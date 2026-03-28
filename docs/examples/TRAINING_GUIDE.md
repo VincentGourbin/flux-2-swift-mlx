@@ -356,6 +356,27 @@ This enables 768x768 and potentially 1024x1024 training on 96GB machines.
 
 ---
 
+## VLM-Guided Checkpoint Selection
+
+Loss curves in flow matching training are noisy and don't reliably predict visual quality. Enable **VLM scoring** to automatically evaluate validation images against your training data and save the best checkpoint.
+
+```yaml
+validation:
+  vlm_scoring:
+    enabled: true
+    scene_weight: 0.5          # 0.5 = equal scene/style, 0.7 = subject focus
+    save_best_checkpoint: true  # Auto-save best LoRA to best_checkpoint/
+    early_stopping: true        # Stop on stagnation/degradation
+```
+
+At each validation checkpoint, the Qwen3.5-4B VLM scores generated images vs training references on a **0-100 scale** (scene + style). The best checkpoint is saved automatically to `best_checkpoint/lora.safetensors`.
+
+In our [cat-toy test](vlm-scoring/README.md), the VLM identified step 75 as optimal (61/100) while the loss was highest there (1.06). Step 100 had the lowest loss (0.34) but degraded quality (42/100).
+
+See **[VLM-Guided Checkpoint Selection](vlm-scoring/README.md)** for full documentation, configuration reference, and results.
+
+---
+
 ## Training Output Structure
 
 A complete training run produces:
@@ -366,9 +387,12 @@ output/cat-toy-lora/
 ├── checkpoint_000125/           # Checkpoint at step 125
 │   ├── lora.safetensors         # LoRA weights
 │   ├── optimizer_state.safetensors
-│   ├── training_state.json
+│   ├── training_state.json      # Includes VLM score history if enabled
 │   └── prompt_*_512x512.png     # Validation images
 ├── checkpoint_000250/           # Final checkpoint
+├── best_checkpoint/             # Auto-saved best by VLM score (if enabled)
+│   ├── lora.safetensors
+│   └── best_info.json
 ├── .latent_cache/               # Cached VAE latents (reused on resume)
 ├── learning_curve.svg           # Loss visualization
 └── lora_final.safetensors       # Final LoRA weights

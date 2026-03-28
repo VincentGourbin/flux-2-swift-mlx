@@ -1,0 +1,71 @@
+# Cat Toy LoRA Training - VLM Scoring Test
+# 100 steps, checkpoint every 25, VLM scoring enabled
+
+model:
+  name: klein-4b
+  quantization: bf16
+
+lora:
+  rank: 32
+  alpha: 32.0
+  target_layers: all
+
+dataset:
+  path: examples/cat-toy/train
+  trigger_word: "statue_cat_toy"
+
+training:
+  batch_size: 1
+  max_steps: 100
+  warmup_steps: 10
+  learning_rate: 1.0e-4
+  weight_decay: 0.0001
+
+loss:
+  weighting: bell_shaped
+  timestep_sampling: balanced
+  diff_output_preservation: true
+  diff_output_preservation_class: "cat"
+  diff_output_preservation_multiplier: 1.0
+
+memory:
+  gradient_checkpointing: false
+  cache_latents: true
+  bucketing:
+    enabled: true
+    resolutions:
+      - 512
+
+checkpoints:
+  output: output/cat-toy-vlm-test
+  save_every: 25
+  keep_last: 0
+
+validation:
+  prompts:
+    - prompt: "a colorful wooden cat figurine sitting on a beach"
+      apply_trigger: true
+      is_512: true
+      is_1024: false
+    - prompt: "a striped cat statue in a garden"
+      apply_trigger: true
+      is_512: true
+      is_1024: false
+    - prompt: "a cat sitting on a couch"
+      apply_trigger: false
+      is_512: true
+      is_1024: false
+  every_n_steps: 25
+  seed: 42
+  steps: 4
+
+  vlm_scoring:
+    enabled: true
+    scene_weight: 0.5
+    compare_to_baseline: true
+    save_best_checkpoint: true
+    early_stopping: false
+    max_reference_images: 3
+
+ema:
+  enabled: false

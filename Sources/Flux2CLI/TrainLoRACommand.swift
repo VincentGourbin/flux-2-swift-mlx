@@ -763,6 +763,19 @@ struct TrainLoRA: AsyncParsableCommand {
         simpleConfig.generateLearningCurve = config.generateLearningCurve
         simpleConfig.learningCurveSmoothingWindow = config.learningCurveSmoothingWindow
 
+        // VLM Scoring
+        simpleConfig.vlmScoringEnabled = config.vlmScoringEnabled
+        simpleConfig.vlmScoringSceneWeight = config.vlmScoringSceneWeight
+        simpleConfig.vlmScoringDatasetPath = config.datasetPath
+        simpleConfig.vlmScoringReferenceImages = config.vlmScoringReferenceImages
+        simpleConfig.vlmScoringMaxReferences = config.vlmScoringMaxReferences
+        simpleConfig.vlmScoringCompareToBaseline = config.vlmScoringCompareToBaseline
+        simpleConfig.vlmScoringBestCheckpoint = config.vlmScoringBestCheckpoint
+        simpleConfig.vlmScoringEarlyStopping = config.vlmScoringEarlyStopping
+        simpleConfig.vlmScoringPatience = config.vlmScoringPatience
+        simpleConfig.vlmScoringMinDelta = config.vlmScoringMinDelta
+        simpleConfig.vlmScoringDegradationThreshold = config.vlmScoringDegradationThreshold
+
         // Load models
         print("=".repeating(60))
         print("Loading models...")
