@@ -110,8 +110,8 @@ struct TestQwen35: AsyncParsableCommand {
             }
 
             print("\n\n--- Scores ---")
-            print("Scene: \(comparison.sceneScore)/10 — \(comparison.sceneReason)")
-            print("Style: \(comparison.styleScore)/10 — \(comparison.styleReason)")
+            print("Scene: \(comparison.sceneScore)/100 — \(comparison.sceneReason)")
+            print("Style: \(comparison.styleScore)/100 — \(comparison.styleReason)")
 
             let totalElapsed = Date().timeIntervalSince(startTime)
             print("\nTotal time: \(String(format: "%.1f", totalElapsed))s")

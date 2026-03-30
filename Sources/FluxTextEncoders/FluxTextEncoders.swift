@@ -562,21 +562,23 @@ public final class FluxTextEncoders: @unchecked Sendable {
 
     /// System prompt for image comparison
     public static let fluxImageComparisonSystemPrompt = """
-    You compare two images for FLUX.2 by Black Forest Labs. Image 1 is the REFERENCE (original). Image 2 is the GENERATED image.
+    You compare two images for FLUX.2 LoRA training evaluation. Image 1 is the REFERENCE (target). Image 2 is the GENERATED image (baseline without LoRA).
 
-    Score each criterion from 0 to 10:
+    Score each criterion from 0 to 100. Be STRICT and PRECISE — small differences matter for LoRA training decisions.
 
-    SCENE (content fidelity):
-    - Same subjects, people, characters present?
-    - Same actions, interactions, poses?
-    - Same objects and spatial relationships?
-    - Same setting and environment?
+    SCENE score (content fidelity, 0-100):
+    - 90-100: Identical subjects, poses, expressions, interactions, spatial layout
+    - 70-89: Same subjects and general arrangement, minor differences in poses or details
+    - 50-69: Similar concept but different number of subjects, different poses, or missing key elements
+    - 30-49: Same general theme but substantially different composition and subjects
+    - 0-29: Completely different scene
 
-    STYLE (visual fidelity):
-    - Same art style (photographic, illustrated, 3D, vector, etc.)?
-    - Same composition, framing, perspective?
-    - Same color palette, lighting, contrast, color temperature?
-    - Same textures, materials, line work?
+    STYLE score (visual fidelity, 0-100):
+    - 90-100: Identical art style, line work, color palette, lighting, textures
+    - 70-89: Same general style category but noticeable differences in execution (e.g., both vector art but different line weights)
+    - 50-69: Similar style family but clearly different execution (e.g., flat vector vs 3D-shaded vector)
+    - 30-49: Different style categories (e.g., hand-drawn sketch vs digital illustration)
+    - 0-29: Completely different visual style (e.g., photograph vs cartoon)
 
     Respond ONLY with this exact JSON format, no other text:
     {"scene_score": N, "scene_reason": "brief explanation", "style_score": N, "style_reason": "brief explanation"}
@@ -653,7 +655,7 @@ public final class FluxTextEncoders: @unchecked Sendable {
             }
         }
 
-        // Regex fallback: look for "scene.*N/10" and "style.*N/10" patterns
+        // Regex fallback: look for "scene.*N/100" or "scene.*N" patterns
         let sceneScore = extractScore(from: text, keyword: "scene")
         let styleScore = extractScore(from: text, keyword: "style")
 
@@ -667,11 +669,12 @@ public final class FluxTextEncoders: @unchecked Sendable {
     }
 
     private func extractScore(from text: String, keyword: String) -> Int {
-        // Match patterns like "Scene: 7/10" or "scene_score: 7" or "Scene:** 7"
+        // Match patterns like "Scene: 75/100" or "scene_score: 75" or "Scene: 7/10"
         let patterns = [
-            "\(keyword)[^0-9]*?(\\d+)/10",
+            "\(keyword)[^0-9]*?(\\d+)/100",
             "\(keyword)_score[^0-9]*?(\\d+)",
-            "\(keyword)[^0-9]*?(\\d+)\\s*/\\s*10"
+            "\(keyword)[^0-9]*?(\\d+)\\s*/\\s*100",
+            "\(keyword)[^0-9]*?(\\d+)/10"
         ]
         let lower = text.lowercased()
         for pattern in patterns {

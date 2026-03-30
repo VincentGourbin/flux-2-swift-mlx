@@ -140,52 +140,58 @@ final class Qwen35ConfigTests: XCTestCase {
 final class LoRARecommendationTests: XCTestCase {
 
     func testRecommendationHighScores() {
-        // Both scores high → minimal training needed
-        let rec = computeTestRecommendation(scene: 9, style: 9, model: .klein4B)
-        XCTAssertLessThanOrEqual(rec.steps, 200)
-        XCTAssertLessThanOrEqual(rec.rank, 8)
+        // Both scores 95/100 → light training, but still rank 32 minimum
+        let rec = computeTestRecommendation(scene: 95, style: 95, model: .klein4B)
+        XCTAssertLessThanOrEqual(rec.steps, 500)
+        XCTAssertGreaterThanOrEqual(rec.rank, 32)
         XCTAssertEqual(rec.timestepSampling, "balanced")
         XCTAssertFalse(rec.useDOP)
     }
 
     func testRecommendationLowScenes() {
-        // Low scene, high style → content focus
-        let rec = computeTestRecommendation(scene: 2, style: 8, model: .klein4B)
-        XCTAssertGreaterThanOrEqual(rec.steps, 500)
+        // Low scene (30), high style (85) → content focus
+        let rec = computeTestRecommendation(scene: 30, style: 85, model: .klein4B)
+        XCTAssertGreaterThanOrEqual(rec.steps, 1000)
         XCTAssertEqual(rec.timestepSampling, "content")
         XCTAssertTrue(rec.useDOP)
     }
 
     func testRecommendationLowStyle() {
-        // High scene, low style → style focus
-        let rec = computeTestRecommendation(scene: 8, style: 2, model: .klein4B)
-        XCTAssertGreaterThanOrEqual(rec.steps, 500)
+        // High scene (85), low style (30) → style focus
+        let rec = computeTestRecommendation(scene: 85, style: 30, model: .klein4B)
+        XCTAssertGreaterThanOrEqual(rec.steps, 1000)
         XCTAssertEqual(rec.timestepSampling, "style")
         XCTAssertFalse(rec.useDOP)  // Scene OK, no need for DOP
     }
 
     func testRecommendationBothLow() {
-        // Both low → maximum effort
-        let rec = computeTestRecommendation(scene: 1, style: 1, model: .klein4B)
-        XCTAssertGreaterThanOrEqual(rec.steps, 1000)
-        XCTAssertGreaterThanOrEqual(rec.rank, 48)
+        // Both low (20/100) → maximum effort
+        let rec = computeTestRecommendation(scene: 20, style: 20, model: .klein4B)
+        XCTAssertGreaterThanOrEqual(rec.steps, 2000)
+        XCTAssertGreaterThanOrEqual(rec.rank, 64)
         XCTAssertTrue(rec.useDOP)
     }
 
+    func testRecommendationMinimumRank32() {
+        // Even high scores should get rank 32 minimum
+        let rec = computeTestRecommendation(scene: 98, style: 98, model: .klein4B)
+        XCTAssertGreaterThanOrEqual(rec.rank, 32)
+    }
+
     func testRecommendationGradientCheckpointingDev() {
-        let rec = computeTestRecommendation(scene: 5, style: 5, model: .dev)
+        let rec = computeTestRecommendation(scene: 50, style: 50, model: .dev)
         XCTAssertTrue(rec.useGradientCheckpointing)
     }
 
     func testRecommendationGradientCheckpointingKlein4B() {
-        let rec = computeTestRecommendation(scene: 5, style: 5, model: .klein4B)
+        let rec = computeTestRecommendation(scene: 50, style: 50, model: .klein4B)
         XCTAssertFalse(rec.useGradientCheckpointing)
     }
 
     func testRecommendationTargetLayersHighRank() {
-        let rec = computeTestRecommendation(scene: 0, style: 0, model: .klein4B)
-        // rank > 32 → attention only for memory
-        if rec.rank > 32 {
+        let rec = computeTestRecommendation(scene: 10, style: 10, model: .klein4B)
+        // rank > 48 → attention only for memory
+        if rec.rank > 48 {
             XCTAssertEqual(rec.targetLayers, "attention")
         }
     }
@@ -207,30 +213,30 @@ final class LoRARecommendationTests: XCTestCase {
         XCTAssertTrue(yaml.contains("trigger_word: xyz_cat"))
     }
 
-    // Helper — mirrors the private computeRecommendation logic in LoRAEvaluator
+    // Helper — mirrors the private computeRecommendation logic in LoRAEvaluator (0-100 scale)
     private func computeTestRecommendation(scene: Int, style: Int, model: Flux2Model) -> LoRARecommendation {
-        let sceneGap = 10 - max(0, scene)
-        let styleGap = 10 - max(0, style)
-        let totalGap = sceneGap + styleGap
+        let sceneGap = 100 - max(0, min(100, scene))
+        let styleGap = 100 - max(0, min(100, style))
+        let avgGap = (sceneGap + styleGap) / 2
         let needsGradientCheckpoint = model == .dev || model == .klein9B || model == .klein9BBase
 
         let steps: Int
         let rank: Int
-        switch totalGap {
-        case 0...4: steps = 150; rank = 8
-        case 5...8: steps = 400; rank = 16
-        case 9...12: steps = 750; rank = 32
-        case 13...16: steps = 1200; rank = 48
+        switch avgGap {
+        case 0...10: steps = 250; rank = 32
+        case 11...20: steps = 500; rank = 32
+        case 21...35: steps = 1000; rank = 32
+        case 36...50: steps = 1500; rank = 48
         default: steps = 2000; rank = 64
         }
 
         let timestepSampling: String
-        if sceneGap > styleGap + 2 { timestepSampling = "content" }
-        else if styleGap > sceneGap + 2 { timestepSampling = "style" }
+        if sceneGap > styleGap + 15 { timestepSampling = "content" }
+        else if styleGap > sceneGap + 15 { timestepSampling = "style" }
         else { timestepSampling = "balanced" }
 
-        let useDOP = sceneGap >= 4
-        let targetLayers = rank <= 32 ? "all" : "attention"
+        let useDOP = sceneGap >= 30
+        let targetLayers = rank <= 48 ? "all" : "attention"
 
         return LoRARecommendation(
             steps: steps, rank: rank, alpha: Float(rank), learningRate: 1e-4,
@@ -281,24 +287,24 @@ final class FluxComparisonParsingTests: XCTestCase {
 
     func testParseJSONComparison() {
         let json = """
-        {"scene_score": 7, "scene_reason": "Similar subjects", "style_score": 4, "style_reason": "Different palette"}
+        {"scene_score": 72, "scene_reason": "Similar subjects but different poses", "style_score": 45, "style_reason": "Different palette"}
         """
         let comparison = parseTestComparison(json)
-        XCTAssertEqual(comparison.sceneScore, 7)
-        XCTAssertEqual(comparison.styleScore, 4)
-        XCTAssertEqual(comparison.sceneReason, "Similar subjects")
+        XCTAssertEqual(comparison.sceneScore, 72)
+        XCTAssertEqual(comparison.styleScore, 45)
+        XCTAssertEqual(comparison.sceneReason, "Similar subjects but different poses")
         XCTAssertEqual(comparison.styleReason, "Different palette")
     }
 
     func testParseTextFallback() {
         let text = """
         The images are similar.
-        - Scene: 8/10 (Same cat on couch).
-        - Style: 5/10 (Different lighting).
+        - Scene: 78/100 (Same cat on couch).
+        - Style: 55/100 (Different lighting).
         """
         let comparison = parseTestComparison(text)
-        XCTAssertEqual(comparison.sceneScore, 8)
-        XCTAssertEqual(comparison.styleScore, 5)
+        XCTAssertEqual(comparison.sceneScore, 78)
+        XCTAssertEqual(comparison.styleScore, 55)
     }
 
     // Replicates FluxTextEncoders.parseComparisonResult logic for testing
@@ -321,7 +327,7 @@ final class FluxComparisonParsingTests: XCTestCase {
 
     private func extractScore(from text: String, keyword: String) -> Int {
         let lower = text.lowercased()
-        let pattern = "\(keyword)[^0-9]*?(\\d+)/10"
+        let pattern = "\(keyword)[^0-9]*?(\\d+)/100"
         if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
            let match = regex.firstMatch(in: lower, range: NSRange(lower.startIndex..., in: lower)),
            match.numberOfRanges > 1,

@@ -219,20 +219,24 @@ public class LoRAEvaluator {
 
         TRAINING CONTEXT: "\(context.name)" — \(context.description)
 
-        Score each criterion from 0 to 10, focusing on what matters for this specific LoRA training goal:
+        Score each criterion from 0 to 100. Be STRICT — the scores determine training intensity.
 
-        SCENE (content fidelity):
-        - Does the generated image capture the SPECIFIC subject described in the training context?
-        - Same distinctive features, shapes, proportions, details?
-        - Same spatial arrangement and setting?
+        SCENE score (content fidelity, 0-100):
+        - 90-100: Identical subjects, exact same distinctive features, poses, details
+        - 70-89: Same subjects but differences in specific features that the LoRA needs to learn
+        - 50-69: Similar concept but missing key distinctive elements from the training context
+        - 30-49: Same general category but substantially different from the specific subject
+        - 0-29: Completely different subject
 
-        STYLE (visual fidelity):
-        - Same art style, rendering technique?
-        - Same color palette, lighting, contrast?
-        - Same textures, materials, surface quality?
+        STYLE score (visual fidelity, 0-100):
+        - 90-100: Identical art style, line work, color palette, lighting, textures
+        - 70-89: Same style family, minor execution differences
+        - 50-69: Similar approach but clearly different rendering technique
+        - 30-49: Different style categories
+        - 0-29: Completely different visual style
 
         Respond ONLY with this exact JSON format, no other text:
-        {"scene_score": N, "scene_reason": "brief explanation focusing on what the LoRA needs to learn", "style_score": N, "style_reason": "brief explanation"}
+        {"scene_score": N, "scene_reason": "what the LoRA needs to learn", "style_score": N, "style_reason": "what differs in style"}
         """
 
         guard let vlm = FluxTextEncoders.shared.qwen35VLMForEvaluation else {
@@ -249,8 +253,8 @@ public class LoRAEvaluator {
 
         let comparison = FluxTextEncoders.shared.parseComparisonForEvaluation(compResult.text)
 
-        onProgress?("  Scene: \(comparison.sceneScore)/10 — \(comparison.sceneReason)")
-        onProgress?("  Style: \(comparison.styleScore)/10 — \(comparison.styleReason)")
+        onProgress?("  Scene: \(comparison.sceneScore)/100 — \(comparison.sceneReason)")
+        onProgress?("  Style: \(comparison.styleScore)/100 — \(comparison.styleReason)")
 
         // Unload VLM
         await MainActor.run { FluxTextEncoders.shared.unloadQwen35VLM() }
@@ -344,48 +348,50 @@ public class LoRAEvaluator {
     // MARK: - Recommendation Logic
 
     private func computeRecommendation(sceneScore: Int, styleScore: Int, model: Flux2Model, dopRecommended: Bool, dopClass: String?) -> LoRARecommendation {
-        let sceneGap = 10 - max(0, sceneScore)
-        let styleGap = 10 - max(0, styleScore)
-        let totalGap = sceneGap + styleGap
+        // Scores are now 0-100
+        let sceneGap = 100 - max(0, min(100, sceneScore))
+        let styleGap = 100 - max(0, min(100, styleScore))
+        let avgGap = (sceneGap + styleGap) / 2
         let needsGradientCheckpoint = model == .dev || model == .klein9B || model == .klein9BBase
 
-        // Steps based on total gap
+        // Steps and rank based on average gap (0-100 scale)
+        // Minimum rank 32 — anything lower doesn't have enough capacity for meaningful LoRA training
         let steps: Int
         let rank: Int
 
-        switch totalGap {
-        case 0...4:   // Very close (both 8-10)
-            steps = 150; rank = 8
-        case 5...8:   // Moderate gap
-            steps = 400; rank = 16
-        case 9...12:  // Significant gap
-            steps = 750; rank = 32
-        case 13...16: // Large gap
-            steps = 1200; rank = 48
-        default:      // Maximum gap
+        switch avgGap {
+        case 0...10:   // Almost identical (both 90+)
+            steps = 250; rank = 32
+        case 11...20:  // Very close (both 80+)
+            steps = 500; rank = 32
+        case 21...35:  // Moderate gap
+            steps = 1000; rank = 32
+        case 36...50:  // Significant gap
+            steps = 1500; rank = 48
+        default:       // Large gap (50+)
             steps = 2000; rank = 64
         }
 
         // Timestep sampling based on which dimension needs more work
         let timestepSampling: String
-        if sceneGap > styleGap + 2 {
+        if sceneGap > styleGap + 15 {
             timestepSampling = "content"  // Focus on subjects/objects
-        } else if styleGap > sceneGap + 2 {
+        } else if styleGap > sceneGap + 15 {
             timestepSampling = "style"    // Focus on visual style
         } else {
             timestepSampling = "balanced" // Both need work
         }
 
         // DOP from context analysis + scene gap
-        let useDOP = dopRecommended || sceneGap >= 4
+        let useDOP = dopRecommended || sceneGap >= 30
 
-        // Target layers
-        let targetLayers = rank <= 32 ? "all" : "attention"
+        // Target layers — always "all" for rank <= 48 (enough memory)
+        let targetLayers = rank <= 48 ? "all" : "attention"
 
         // Summary
-        let sceneLabel = sceneGap <= 2 ? "LOW" : (sceneGap <= 5 ? "MODERATE" : "HIGH")
-        let styleLabel = styleGap <= 2 ? "LOW" : (styleGap <= 5 ? "MODERATE" : "HIGH")
-        let summary = "Scene gap: \(sceneLabel) (\(sceneScore)/10), Style gap: \(styleLabel) (\(styleScore)/10) → \(steps) steps, rank \(rank), \(timestepSampling) sampling"
+        let sceneLabel = sceneGap <= 10 ? "LOW" : (sceneGap <= 30 ? "MODERATE" : "HIGH")
+        let styleLabel = styleGap <= 10 ? "LOW" : (styleGap <= 30 ? "MODERATE" : "HIGH")
+        let summary = "Scene gap: \(sceneLabel) (\(sceneScore)/100), Style gap: \(styleLabel) (\(styleScore)/100) → \(steps) steps, rank \(rank), \(timestepSampling) sampling"
 
         return LoRARecommendation(
             steps: steps,

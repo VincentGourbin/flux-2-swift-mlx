@@ -138,7 +138,7 @@ struct EvaluateLoRA: AsyncParsableCommand {
         print("+" + String(repeating: "=", count: 46) + "+")
         print("| LoRA: \(result.context.name.prefix(38).padding(toLength: 38, withPad: " ", startingAt: 0)) |")
         print("| Trigger: \(result.triggerWord.padding(toLength: 35, withPad: " ", startingAt: 0)) |")
-        print("| Scene: \(pad(result.sceneScore))/10  Style: \(pad(result.styleScore))/10                  |")
+        print("| Scene: \(pad4(result.sceneScore))/100  Style: \(pad4(result.styleScore))/100              |")
         print("|                                              |")
         print("| Steps: \(pad4(rec.steps))   Rank: \(pad(rec.rank))   LR: \(rec.learningRate)      |")
         print("| Timestep: \(rec.timestepSampling.padding(toLength: 10, withPad: " ", startingAt: 0))  Layers: \(rec.targetLayers.padding(toLength: 10, withPad: " ", startingAt: 0))   |")
@@ -165,8 +165,8 @@ struct EvaluateLoRA: AsyncParsableCommand {
         \(result.prompt)
 
         Comparison Scores:
-          Scene: \(result.sceneScore)/10 — \(result.sceneReason)
-          Style: \(result.styleScore)/10 — \(result.styleReason)
+          Scene: \(result.sceneScore)/100 — \(result.sceneReason)
+          Style: \(result.styleScore)/100 — \(result.styleReason)
 
         Recommended Training Parameters:
           Steps: \(rec.steps)
