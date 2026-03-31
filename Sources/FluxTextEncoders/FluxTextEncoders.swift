@@ -434,6 +434,7 @@ public final class FluxTextEncoders: @unchecked Sendable {
         image: CGImage,
         prompt: String,
         systemPrompt: String? = nil,
+        enableThinking: Bool = true,
         maxTokens: Int = 512,
         temperature: Float = 0.7,
         onToken: ((String) -> Bool)? = nil
@@ -443,6 +444,7 @@ public final class FluxTextEncoders: @unchecked Sendable {
         }
         return try vlm.generate(
             image: image, prompt: prompt, systemPrompt: systemPrompt,
+            enableThinking: enableThinking,
             maxTokens: maxTokens, temperature: temperature,
             onToken: onToken
         )
@@ -471,6 +473,7 @@ public final class FluxTextEncoders: @unchecked Sendable {
     public func generateWithQwen35(
         prompt: String,
         systemPrompt: String? = nil,
+        enableThinking: Bool = true,
         maxTokens: Int = 512,
         temperature: Float = 0.7,
         onToken: ((String) -> Bool)? = nil
@@ -480,6 +483,7 @@ public final class FluxTextEncoders: @unchecked Sendable {
         }
         return try vlm.generate(
             image: nil, prompt: prompt, systemPrompt: systemPrompt,
+            enableThinking: enableThinking,
             maxTokens: maxTokens, temperature: temperature,
             onToken: onToken
         )
@@ -527,6 +531,7 @@ public final class FluxTextEncoders: @unchecked Sendable {
             image: image,
             prompt: prompt,
             systemPrompt: Self.fluxImageDescriptionSystemPrompt,
+            enableThinking: false,
             maxTokens: maxTokens,
             temperature: 0,
             onToken: onToken
@@ -603,6 +608,7 @@ public final class FluxTextEncoders: @unchecked Sendable {
             images: [reference, generated],
             prompt: "Compare these two images.",
             systemPrompt: Self.fluxImageComparisonSystemPrompt,
+            enableThinking: false,
             maxTokens: 300,
             temperature: 0,
             onToken: onToken

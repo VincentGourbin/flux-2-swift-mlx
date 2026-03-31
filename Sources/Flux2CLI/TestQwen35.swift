@@ -35,6 +35,9 @@ struct TestQwen35: AsyncParsableCommand {
     @Option(name: .long, help: "Maximum tokens to generate")
     var maxTokens: Int = 512
 
+    @Flag(name: .long, help: "Disable thinking mode (faster, direct response)")
+    var noThink: Bool = false
+
     @Option(name: .long, help: "Temperature (0 = greedy)")
     var temperature: Float = 0.7
 
@@ -137,6 +140,7 @@ struct TestQwen35: AsyncParsableCommand {
                 image: img,
                 prompt: prompt,
                 systemPrompt: effectiveSystemPrompt,
+                enableThinking: !noThink,
                 maxTokens: maxTokens,
                 temperature: temperature
             ) { token in
@@ -148,6 +152,7 @@ struct TestQwen35: AsyncParsableCommand {
             result = try FluxTextEncoders.shared.generateWithQwen35(
                 prompt: prompt,
                 systemPrompt: effectiveSystemPrompt,
+                enableThinking: !noThink,
                 maxTokens: maxTokens,
                 temperature: temperature
             ) { token in
