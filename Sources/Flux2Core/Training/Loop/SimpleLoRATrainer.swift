@@ -357,6 +357,19 @@ public final class SimpleLoRATrainer {
         if startStep == 0 && !config.validationPrompts.isEmpty {
             try await generateBaselineImages()
 
+            // Score baseline images with VLM (step 0 evaluation)
+            if config.vlmScoringEnabled && !vlmReferenceImages.isEmpty {
+                let baselineDir = config.outputDir.appendingPathComponent("baseline")
+                if let scores = await scoreValidationImagesWithVLM(
+                    checkpointDir: baselineDir,
+                    step: 0
+                ) {
+                    trainingState?.recordVLMScore(scores)
+                    logVLMScores(scores)
+                    print("  Baseline VLM score: \(scores.compositeScore)/100")
+                }
+            }
+
             // CRITICAL: Baseline generation unloads the text encoder to save memory.
             // We need to ensure it's reloaded before DOP setup which needs to encode
             // preservation captions. The textEncoder closure will reload on demand,
@@ -799,8 +812,28 @@ public final class SimpleLoRATrainer {
         }
 
         // Save final weights
+        let finalStep = currentStep
         let finalPath = config.outputDir.appendingPathComponent("lora_final.safetensors")
         try saveLoRAWeights(from: transformer, to: finalPath)
+
+        // Score final checkpoint if it wasn't already scored (not a multiple of saveEveryNSteps)
+        if config.vlmScoringEnabled && !vlmReferenceImages.isEmpty {
+            let lastScoredStep = trainingState?.vlmScoreHistory.last?.step ?? 0
+            if finalStep != lastScoredStep && finalStep > 0 {
+                // Generate + score validation for the final step
+                let finalCheckpointDir = config.outputDir.appendingPathComponent("checkpoint_\(String(format: "%06d", finalStep))")
+                if FileManager.default.fileExists(atPath: finalCheckpointDir.path) {
+                    if let scores = await scoreValidationImagesWithVLM(
+                        checkpointDir: finalCheckpointDir,
+                        step: finalStep
+                    ) {
+                        trainingState?.recordVLMScore(scores)
+                        logVLMScores(scores)
+                    }
+                }
+            }
+        }
+
         print()
         print("Training complete!")
         print("Final weights saved to: \(finalPath.path)")
