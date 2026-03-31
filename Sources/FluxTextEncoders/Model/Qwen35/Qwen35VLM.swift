@@ -235,14 +235,18 @@ public class Qwen35VLM {
             formatted += "<|vision_end|>"
         }
 
-        // Append /no_think to disable thinking mode (saves tokens and time)
-        if !enableThinking {
-            formatted += prompt + " /no_think"
-        } else {
-            formatted += prompt
-        }
+        formatted += prompt
         formatted += "<|im_end|>\n"
         formatted += "<|im_start|>assistant\n"
+
+        // Qwen3.5 thinking control via chat template (NOT /no_think which is Qwen3 only)
+        // enable_thinking=false: add empty <think></think> to skip reasoning
+        // enable_thinking=true: add opening <think> to let model reason
+        if !enableThinking {
+            formatted += "<think>\n\n</think>\n\n"
+        } else {
+            formatted += "<think>\n"
+        }
 
         return tokenizer.encode(text: formatted)
     }
