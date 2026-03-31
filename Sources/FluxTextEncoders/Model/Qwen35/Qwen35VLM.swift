@@ -185,11 +185,23 @@ public class Qwen35VLM {
         }
 
         let totalTime = Date().timeIntervalSince(startTime)
-        var outputText = tokenizer.decode(tokens: generatedTokens)
+        let rawText = tokenizer.decode(tokens: generatedTokens)
+        var outputText = rawText
 
-        // Strip thinking tags and everything before </think>
-        if let thinkEnd = outputText.range(of: "</think>") {
-            outputText = String(outputText[thinkEnd.upperBound...])
+        // Strip thinking tags — but preserve JSON content
+        // If the response contains a JSON object, extract it regardless of position
+        if let jsonStart = rawText.lastIndex(of: "{"), let jsonEnd = rawText.lastIndex(of: "}"), jsonStart < jsonEnd {
+            // There's a JSON object — check if it's a score JSON
+            let jsonCandidate = String(rawText[jsonStart...jsonEnd])
+            if jsonCandidate.contains("score") {
+                // It's a score JSON — use it directly (don't strip it away)
+                outputText = jsonCandidate
+            } else if let thinkEnd = rawText.range(of: "</think>") {
+                outputText = String(rawText[thinkEnd.upperBound...])
+            }
+        } else if let thinkEnd = rawText.range(of: "</think>") {
+            // No JSON found — strip thinking as before
+            outputText = String(rawText[thinkEnd.upperBound...])
         }
         // Strip end-of-turn token
         outputText = outputText.replacingOccurrences(of: "<|im_end|>", with: "")
