@@ -2096,6 +2096,10 @@ public final class SimpleLoRATrainer {
                     temperature: 0
                 )
 
+                // Debug: print raw VLM response for diagnosis
+                print("    [VLM Raw] ref=\(refImage.lastPathComponent) val=\(imageName)")
+                print("    [VLM Raw] response: \(result.text.prefix(500))")
+
                 let (sceneScore, styleScore, sceneReason, styleReason) = parseVLMScores(result.text)
 
                 // Compare vs baseline if enabled
@@ -2115,6 +2119,7 @@ public final class SimpleLoRATrainer {
                             maxTokens: 300,
                             temperature: 0
                         )
+                        print("    [VLM Raw baseline] response: \(blResult.text.prefix(500))")
                         let (blScene, blStyle, _, _) = parseVLMScores(blResult.text)
                         baselineScene = blScene
                         baselineStyle = blStyle
