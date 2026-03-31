@@ -2092,6 +2092,7 @@ public final class SimpleLoRATrainer {
                     images: [refCG, valCG],
                     prompt: "Compare these two images for LoRA training evaluation.",
                     systemPrompt: Self.vlmTrainingScoringPrompt,
+                    enableThinking: false,
                     maxTokens: 300,
                     temperature: 0
                 )
@@ -2116,6 +2117,7 @@ public final class SimpleLoRATrainer {
                             images: [refCG, blCG],
                             prompt: "Compare these two images for LoRA training evaluation.",
                             systemPrompt: Self.vlmTrainingScoringPrompt,
+                            enableThinking: false,
                             maxTokens: 300,
                             temperature: 0
                         )

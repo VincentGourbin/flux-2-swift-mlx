@@ -247,6 +247,7 @@ public class LoRAEvaluator {
             images: [referenceImage, baselineImage],
             prompt: "Compare these two images for LoRA training evaluation.",
             systemPrompt: comparisonSystemPrompt,
+            enableThinking: false,
             maxTokens: 300,
             temperature: 0
         )

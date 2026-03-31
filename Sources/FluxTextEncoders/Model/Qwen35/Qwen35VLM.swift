@@ -106,6 +106,7 @@ public class Qwen35VLM {
         image: CGImage?,
         prompt: String,
         systemPrompt: String? = nil,
+        enableThinking: Bool = true,
         maxTokens: Int = 512,
         temperature: Float = 0.7,
         topP: Float = 0.9,
@@ -114,6 +115,7 @@ public class Qwen35VLM {
         let images: [CGImage] = image.map { [$0] } ?? []
         return try generateMultiImage(
             images: images, prompt: prompt, systemPrompt: systemPrompt,
+            enableThinking: enableThinking,
             maxTokens: maxTokens, temperature: temperature, topP: topP, onToken: onToken
         )
     }
@@ -123,6 +125,7 @@ public class Qwen35VLM {
         images: [CGImage],
         prompt: String,
         systemPrompt: String? = nil,
+        enableThinking: Bool = true,
         maxTokens: Int = 512,
         temperature: Float = 0.7,
         topP: Float = 0.9,
@@ -135,7 +138,7 @@ public class Qwen35VLM {
         let tokenCounts = imageResults.map { $0.numTokens }
 
         // Build token sequence with N vision blocks
-        let tokenIds = buildTokenSequence(prompt: prompt, systemPrompt: systemPrompt, imageTokenCounts: tokenCounts)
+        let tokenIds = buildTokenSequence(prompt: prompt, systemPrompt: systemPrompt, enableThinking: enableThinking, imageTokenCounts: tokenCounts)
         var inputIds = MLXArray(tokenIds.map { Int32($0) }).reshaped([1, tokenIds.count])
 
         // Build merged embeddings (text + vision)
@@ -220,7 +223,7 @@ public class Qwen35VLM {
     // MARK: - Private
 
     /// Build token sequence for N images + text prompt
-    private func buildTokenSequence(prompt: String, systemPrompt: String? = nil, imageTokenCounts: [Int]) -> [Int] {
+    private func buildTokenSequence(prompt: String, systemPrompt: String? = nil, enableThinking: Bool = true, imageTokenCounts: [Int]) -> [Int] {
         let sysMsg = systemPrompt ?? "You are a helpful assistant."
         var formatted = "<|im_start|>system\n\(sysMsg)<|im_end|>\n"
         formatted += "<|im_start|>user\n"
@@ -232,7 +235,12 @@ public class Qwen35VLM {
             formatted += "<|vision_end|>"
         }
 
-        formatted += prompt
+        // Append /no_think to disable thinking mode (saves tokens and time)
+        if !enableThinking {
+            formatted += prompt + " /no_think"
+        } else {
+            formatted += prompt
+        }
         formatted += "<|im_end|>\n"
         formatted += "<|im_start|>assistant\n"
 
