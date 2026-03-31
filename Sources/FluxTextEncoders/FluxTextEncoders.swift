@@ -631,27 +631,39 @@ public final class FluxTextEncoders: @unchecked Sendable {
 
     /// Parse comparison result from VLM output (JSON or regex fallback)
     private func parseComparisonResult(_ text: String) -> FluxImageComparison {
-        // Try JSON extraction first
-        if let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}") {
-            let jsonStr = String(text[start...end])
+        // Strip thinking tags first
+        var cleanText = text
+        if let thinkEnd = text.range(of: "</think>") {
+            cleanText = String(text[thinkEnd.upperBound...])
+        }
+        cleanText = cleanText.replacingOccurrences(of: "<|im_end|>", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
 
-            struct ComparisonJSON: Decodable {
-                let scene_score: Int?
-                let style_score: Int?
-                let scene_reason: String?
-                let style_reason: String?
-            }
+        // Try JSON extraction from cleaned text, then raw text
+        struct ComparisonJSON: Decodable {
+            let scene_score: Int?
+            let style_score: Int?
+            let scene_reason: String?
+            let style_reason: String?
+        }
 
-            if let data = jsonStr.data(using: .utf8),
-               let parsed = try? JSONDecoder().decode(ComparisonJSON.self, from: data),
-               parsed.scene_score != nil {
-                return FluxImageComparison(
-                    sceneScore: parsed.scene_score ?? -1,
-                    styleScore: parsed.style_score ?? -1,
-                    sceneReason: parsed.scene_reason ?? "",
-                    styleReason: parsed.style_reason ?? "",
-                    rawResponse: text
-                )
+        let textVariants = [cleanText, text]
+        for variant in textVariants {
+            // Try last { to } (more likely to be the score JSON, not thinking block JSON)
+            if let start = variant.lastIndex(of: "{"), let end = variant.lastIndex(of: "}"), start < end {
+                let jsonStr = String(variant[start...end])
+
+                if let data = jsonStr.data(using: .utf8),
+                   let parsed = try? JSONDecoder().decode(ComparisonJSON.self, from: data),
+                   parsed.scene_score != nil {
+                    return FluxImageComparison(
+                        sceneScore: parsed.scene_score ?? -1,
+                        styleScore: parsed.style_score ?? -1,
+                        sceneReason: parsed.scene_reason ?? "",
+                        styleReason: parsed.style_reason ?? "",
+                        rawResponse: text
+                    )
+                }
             }
         }
 

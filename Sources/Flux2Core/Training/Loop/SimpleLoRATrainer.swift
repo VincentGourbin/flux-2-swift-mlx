@@ -2144,8 +2144,43 @@ public final class SimpleLoRATrainer {
 
     /// Parse VLM response for scores (0-100 scale, JSON + regex fallback)
     private func parseVLMScores(_ text: String) -> (scene: Int, style: Int, sceneReason: String, styleReason: String) {
-        // Try JSON extraction first
-        if let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}") {
+        // Strip thinking tags first: remove everything before </think>
+        var cleanText = text
+        if let thinkEnd = text.range(of: "</think>") {
+            cleanText = String(text[thinkEnd.upperBound...])
+        }
+        // Also strip <|im_end|> and similar tokens
+        cleanText = cleanText.replacingOccurrences(of: "<|im_end|>", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Try JSON extraction from cleaned text
+        if let start = cleanText.firstIndex(of: "{"), let end = cleanText.lastIndex(of: "}") {
+            let jsonStr = String(cleanText[start...end])
+
+            struct ScoreJSON: Decodable {
+                let scene_score: Int?
+                let style_score: Int?
+                let scene_reason: String?
+                let style_reason: String?
+            }
+
+            if let data = jsonStr.data(using: .utf8),
+               let parsed = try? JSONDecoder().decode(ScoreJSON.self, from: data),
+               let scene = parsed.scene_score, let style = parsed.style_score {
+                print("    [VLM Parse] JSON success: scene=\(scene), style=\(style)")
+                return (
+                    scene: min(100, max(0, scene)),
+                    style: min(100, max(0, style)),
+                    sceneReason: parsed.scene_reason ?? "",
+                    styleReason: parsed.style_reason ?? ""
+                )
+            } else {
+                print("    [VLM Parse] JSON failed on: \(jsonStr.prefix(100))...")
+            }
+        }
+
+        // Also try from raw text (in case thinking block contains the JSON)
+        if let start = text.lastIndex(of: "{"), let end = text.lastIndex(of: "}"), start < end {
             let jsonStr = String(text[start...end])
 
             struct ScoreJSON: Decodable {
@@ -2158,6 +2193,7 @@ public final class SimpleLoRATrainer {
             if let data = jsonStr.data(using: .utf8),
                let parsed = try? JSONDecoder().decode(ScoreJSON.self, from: data),
                let scene = parsed.scene_score, let style = parsed.style_score {
+                print("    [VLM Parse] JSON success (from raw): scene=\(scene), style=\(style)")
                 return (
                     scene: min(100, max(0, scene)),
                     style: min(100, max(0, style)),
@@ -2167,18 +2203,30 @@ public final class SimpleLoRATrainer {
             }
         }
 
-        // Regex fallback: look for "scene.*N/100" or "scene_score: N" patterns
+        // Regex fallback: multiple patterns for robustness
         let sceneScore = extractScore100(from: text, keyword: "scene")
         let styleScore = extractScore100(from: text, keyword: "style")
-        return (scene: sceneScore, style: styleScore, sceneReason: "", styleReason: "")
+
+        if sceneScore >= 0 || styleScore >= 0 {
+            print("    [VLM Parse] Regex fallback: scene=\(sceneScore), style=\(styleScore)")
+        } else {
+            print("    [VLM Parse] FAILED - no scores found in: \(text.prefix(200))...")
+        }
+
+        return (scene: max(0, sceneScore), style: max(0, styleScore), sceneReason: "", styleReason: "")
     }
 
     /// Extract a 0-100 score from text using regex patterns
     private func extractScore100(from text: String, keyword: String) -> Int {
         let patterns = [
-            "\(keyword)[^0-9]*?(\\d+)/100",
-            "\(keyword)_score[^0-9]*?(\\d+)",
-            "\(keyword)[^0-9]*?(\\d+)\\s*/\\s*100"
+            // JSON-like: "scene_score": 75 or "scene_score":75
+            "\(keyword)_score\"?\\s*:?\\s*(\\d+)",
+            // Prose: "Scene: 75/100" or "scene 75/100"
+            "\(keyword)[^0-9]*?(\\d+)\\s*/\\s*100",
+            // Prose: "Scene: 75" or "scene score: 75"
+            "\(keyword)[^0-9]*?(\\d{2,3})\\b",
+            // "75 for scene" pattern
+            "(\\d{2,3})\\s*(?:for|/100)\\s*\(keyword)"
         ]
         let lower = text.lowercased()
         for pattern in patterns {
@@ -2186,8 +2234,8 @@ public final class SimpleLoRATrainer {
                let match = regex.firstMatch(in: lower, range: NSRange(lower.startIndex..., in: lower)),
                match.numberOfRanges > 1,
                let range = Range(match.range(at: 1), in: lower) {
-                if let value = Int(lower[range]) {
-                    return min(100, max(0, value))
+                if let value = Int(lower[range]), value >= 0 && value <= 100 {
+                    return value
                 }
             }
         }
