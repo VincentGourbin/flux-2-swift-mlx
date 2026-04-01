@@ -2097,9 +2097,8 @@ public final class SimpleLoRATrainer {
                     temperature: 0
                 )
 
-                // Debug: print raw VLM response for diagnosis
-                print("    [VLM Raw] ref=\(refImage.lastPathComponent) val=\(imageName)")
-                print("    [VLM Raw] response: \(result.text.prefix(500))")
+                Flux2Debug.log("[VLM] ref=\(refImage.lastPathComponent) val=\(imageName)")
+                Flux2Debug.log("[VLM] response: \(result.text.prefix(200))")
 
                 let (sceneScore, styleScore, sceneReason, styleReason) = parseVLMScores(result.text)
 
@@ -2121,7 +2120,7 @@ public final class SimpleLoRATrainer {
                             maxTokens: 300,
                             temperature: 0
                         )
-                        print("    [VLM Raw baseline] response: \(blResult.text.prefix(500))")
+                        Flux2Debug.log("[VLM] baseline response: \(blResult.text.prefix(200))")
                         let (blScene, blStyle, _, _) = parseVLMScores(blResult.text)
                         baselineScene = blScene
                         baselineStyle = blStyle
@@ -2207,7 +2206,7 @@ public final class SimpleLoRATrainer {
             if let data = jsonStr.data(using: .utf8),
                let parsed = try? JSONDecoder().decode(ScoreJSON.self, from: data),
                let scene = parsed.scene_score, let style = parsed.style_score {
-                print("    [VLM Parse] JSON success: scene=\(scene), style=\(style)")
+                Flux2Debug.log("[VLM] Parsed: scene=\(scene), style=\(style)")
                 return (
                     scene: min(100, max(0, scene)),
                     style: min(100, max(0, style)),
@@ -2215,7 +2214,7 @@ public final class SimpleLoRATrainer {
                     styleReason: parsed.style_reason ?? ""
                 )
             } else {
-                print("    [VLM Parse] JSON failed on: \(jsonStr.prefix(100))...")
+                Flux2Debug.log("[VLM] JSON parse failed: \(jsonStr.prefix(100))")
             }
         }
 
@@ -2233,7 +2232,7 @@ public final class SimpleLoRATrainer {
             if let data = jsonStr.data(using: .utf8),
                let parsed = try? JSONDecoder().decode(ScoreJSON.self, from: data),
                let scene = parsed.scene_score, let style = parsed.style_score {
-                print("    [VLM Parse] JSON success (from raw): scene=\(scene), style=\(style)")
+                Flux2Debug.log("[VLM] Parsed (raw): scene=\(scene), style=\(style)")
                 return (
                     scene: min(100, max(0, scene)),
                     style: min(100, max(0, style)),
@@ -2248,9 +2247,9 @@ public final class SimpleLoRATrainer {
         let styleScore = extractScore100(from: text, keyword: "style")
 
         if sceneScore >= 0 || styleScore >= 0 {
-            print("    [VLM Parse] Regex fallback: scene=\(sceneScore), style=\(styleScore)")
+            Flux2Debug.log("[VLM] Regex fallback: scene=\(sceneScore), style=\(styleScore)")
         } else {
-            print("    [VLM Parse] FAILED - no scores found in: \(text.prefix(200))...")
+            print("  Warning: VLM score parsing failed")
         }
 
         return (scene: max(0, sceneScore), style: max(0, styleScore), sceneReason: "", styleReason: "")

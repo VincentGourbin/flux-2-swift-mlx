@@ -276,25 +276,14 @@ public class Qwen35VisionEncoder: Module {
         // 2. Add interpolated 2D position embeddings (also in merge order)
         let posEmb = interpolatePositionEmbeddings(gridH: gridH, gridW: gridW)
         eval(posEmb)
-        print("[Swift-ViT] posEmb: \(posEmb.shape), mean=\(MLX.mean(posEmb).item(Float.self)), norm=\(MLX.sqrt(MLX.mean(posEmb*posEmb)).item(Float.self))")
-        print("[Swift-ViT] posEmb first5: \(posEmb.reshaped([-1])[0..<5].asArray(Float.self))")
         hidden = hidden + posEmb.reshaped([1, -1, config.hiddenSize])
 
         // 3. Rotary 2D position embeddings (in merge order)
         let rotaryEmb = compute2DRotaryEmb(gridH: gridH, gridW: gridW, mergeSize: mergeSize)
-        eval(rotaryEmb)
-        print("[Swift-ViT] rotary: \(rotaryEmb.shape), mean=\(MLX.mean(rotaryEmb).item(Float.self))")
-        print("[Swift-ViT] rotary patch[0] first8: \(rotaryEmb[0][0..<8].asArray(Float.self))")
-        print("[Swift-ViT] rotary patch[1] full: \(rotaryEmb[1].asArray(Float.self))")
-        print("[Swift-ViT] rotary patch[2] first8: \(rotaryEmb[2][0..<8].asArray(Float.self))")
 
         // 4. Transformer blocks
-        for (i, block) in blocks.enumerated() {
+        for block in blocks {
             hidden = block(hidden, rotaryPosEmb: rotaryEmb)
-            if i == 0 {
-                eval(hidden)
-                print("[Swift-ViT] after block 0: mean=\(MLX.mean(hidden).item(Float.self)), norm=\(MLX.sqrt(MLX.mean(hidden*hidden)).item(Float.self))")
-            }
         }
 
         // 5. Spatial merger (patches already in merge order)

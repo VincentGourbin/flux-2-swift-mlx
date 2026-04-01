@@ -329,9 +329,8 @@ extension Qwen35VLM {
                 ?? remapped.removeValue(forKey: "pos_embed.weight")
             if let posEmbed = posEmbed {
                 visionEncoder.posEmbedStorage = posEmbed
-                print("[Qwen3.5-Vision] Set pos_embed: \(posEmbed.shape)")
             } else {
-                print("[Qwen3.5-Vision] WARNING: pos_embed not found!")
+                print("[Qwen3.5] WARNING: pos_embed not found in vision weights")
             }
 
             // Handle class_token if present
@@ -340,15 +339,12 @@ extension Qwen35VLM {
             // patch_embed.proj is now a native Conv3d — weights [1024, 2, 16, 16, 3] load directly
             // No reshape needed
 
-            print("[Qwen3.5-Vision] Remapped \(remapped.count) weight keys, sample: \(remapped.keys.sorted().prefix(5))")
             let visionParams = ModuleParameters.unflattened(remapped)
             do {
                 try visionEncoder.update(parameters: visionParams, verify: .noUnusedKeys)
-                print("[Qwen3.5-Vision] Weights applied successfully (strict)")
             } catch {
-                print("[Qwen3.5-Vision] Warning: \(error)")
+                FluxDebug.log("[Qwen3.5] Vision weight loading warning: \(error)")
                 try visionEncoder.update(parameters: visionParams, verify: .none)
-                print("[Qwen3.5-Vision] Weights applied (relaxed)")
             }
             eval(visionEncoder)
         }
