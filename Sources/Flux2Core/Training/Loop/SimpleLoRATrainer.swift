@@ -2065,10 +2065,11 @@ public final class SimpleLoRATrainer {
             print("  VLM scoring validation images...")
             fflush(stdout)
 
-            // Score ALL validation prompts (trigger + non-trigger) for meaningful baseline scores
-            let scorablePrompts = Array(config.validationPrompts.enumerated())
+            // Score non-trigger prompts (VLM reference) for the composite score
+            // These use the same methodology as the pre-training evaluation
+            let scorablePrompts = config.validationPrompts.enumerated().filter { !$0.element.applyTrigger }
             guard !scorablePrompts.isEmpty else {
-                print("    No validation prompts to score")
+                print("    No non-trigger (reference) prompts to score")
                 return nil
             }
             guard !vlmReferenceImages.isEmpty else {
