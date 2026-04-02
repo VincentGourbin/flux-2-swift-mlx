@@ -816,19 +816,45 @@ public final class SimpleLoRATrainer {
         let finalPath = config.outputDir.appendingPathComponent("lora_final.safetensors")
         try saveLoRAWeights(from: transformer, to: finalPath)
 
-        // Score final checkpoint if it wasn't already scored (not a multiple of saveEveryNSteps)
-        if config.vlmScoringEnabled && !vlmReferenceImages.isEmpty {
+        // Score final checkpoint if it wasn't already scored
+        if config.vlmScoringEnabled && !vlmReferenceImages.isEmpty && finalStep > 0 {
             let lastScoredStep = trainingState?.vlmScoreHistory.last?.step ?? 0
-            if finalStep != lastScoredStep && finalStep > 0 {
-                // Generate + score validation for the final step
+            if finalStep != lastScoredStep {
                 let finalCheckpointDir = config.outputDir.appendingPathComponent("checkpoint_\(String(format: "%06d", finalStep))")
-                if FileManager.default.fileExists(atPath: finalCheckpointDir.path) {
-                    if let scores = await scoreValidationImagesWithVLM(
-                        checkpointDir: finalCheckpointDir,
-                        step: finalStep
-                    ) {
-                        trainingState?.recordVLMScore(scores)
-                        logVLMScores(scores)
+                let fm = FileManager.default
+
+                // Create checkpoint directory + copy LoRA weights if not already a checkpoint step
+                if !fm.fileExists(atPath: finalCheckpointDir.path) {
+                    try fm.createDirectory(at: finalCheckpointDir, withIntermediateDirectories: true)
+                    let checkpointLoRAPath = finalCheckpointDir.appendingPathComponent("lora.safetensors")
+                    try fm.copyItem(at: finalPath, to: checkpointLoRAPath)
+                }
+
+                // Generate validation images if not already generated
+                let sampleImage = finalCheckpointDir.appendingPathComponent("prompt_0_trigger_512x512.png")
+                let sampleNotrigger = finalCheckpointDir.appendingPathComponent("prompt_0_notrigger_512x512.png")
+                if !fm.fileExists(atPath: sampleImage.path) && !fm.fileExists(atPath: sampleNotrigger.path) {
+                    let checkpointPath = finalCheckpointDir.appendingPathComponent("lora.safetensors")
+                    if fm.fileExists(atPath: checkpointPath.path) && !config.validationPrompts.isEmpty {
+                        try await generateValidationImages(
+                            loraCheckpointPath: checkpointPath,
+                            checkpointDir: finalCheckpointDir,
+                            step: finalStep
+                        )
+                    }
+                }
+
+                // Score with VLM
+                if let scores = await scoreValidationImagesWithVLM(
+                    checkpointDir: finalCheckpointDir,
+                    step: finalStep
+                ) {
+                    trainingState?.recordVLMScore(scores)
+                    logVLMScores(scores)
+
+                    if config.vlmScoringBestCheckpoint,
+                       scores.compositeScore >= (trainingState?.bestVLMScore ?? 0) {
+                        try saveBestCheckpoint(from: finalCheckpointDir)
                     }
                 }
             }
@@ -2039,10 +2065,10 @@ public final class SimpleLoRATrainer {
             print("  VLM scoring validation images...")
             fflush(stdout)
 
-            // Filter to trigger-enabled prompts only (non-trigger = DOP test, not relevant for scoring)
-            let scorablePrompts = config.validationPrompts.enumerated().filter { $0.element.applyTrigger }
+            // Score ALL validation prompts (trigger + non-trigger) for meaningful baseline scores
+            let scorablePrompts = Array(config.validationPrompts.enumerated())
             guard !scorablePrompts.isEmpty else {
-                print("    No trigger-enabled prompts to score")
+                print("    No validation prompts to score")
                 return nil
             }
             guard !vlmReferenceImages.isEmpty else {
@@ -2064,7 +2090,7 @@ public final class SimpleLoRATrainer {
 
             for (index, promptConfig) in scorablePrompts {
                 // Find the validation image (prefer 512 for faster VLM scoring)
-                let triggerSuffix = "_trigger"
+                let triggerSuffix = promptConfig.applyTrigger ? "_trigger" : "_notrigger"
                 let i2iSuffix = promptConfig.referenceImage != nil ? "_i2i" : ""
                 let resolution = promptConfig.is512 ? "512x512" : "1024x1024"
                 let imageName = "prompt_\(index)\(triggerSuffix)\(i2iSuffix)_\(resolution).png"
@@ -2134,7 +2160,8 @@ public final class SimpleLoRATrainer {
                     sceneReason: sceneReason,
                     styleReason: styleReason,
                     baselineSceneScore: baselineScene,
-                    baselineStyleScore: baselineStyle
+                    baselineStyleScore: baselineStyle,
+                    isTriggered: promptConfig.applyTrigger
                 ))
             }
 

@@ -176,6 +176,7 @@ extension LoRARecommendation {
               apply_trigger: false
               is_512: true
               is_1024: false
+              is_vlm_generated: true
           every_n_steps: \(checkpointEvery)
           seed: 42
           steps: 4
