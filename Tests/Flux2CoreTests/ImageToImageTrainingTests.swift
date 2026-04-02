@@ -92,7 +92,8 @@ final class ImageToImageConfigTests: XCTestCase {
             is1024: false,
             applyTrigger: true,
             seed: 42,
-            referenceImage: refURL
+            referenceImage: refURL,
+            isVLMGenerated: true
         )
 
         let encoder = JSONEncoder()
@@ -106,6 +107,7 @@ final class ImageToImageConfigTests: XCTestCase {
         XCTAssertEqual(decoded.applyTrigger, true)
         XCTAssertEqual(decoded.seed, 42)
         XCTAssertEqual(decoded.referenceImage, refURL)
+        XCTAssertTrue(decoded.isVLMGenerated)
     }
 
     func testValidationPromptCodableNilReferenceImage() throws {
@@ -120,6 +122,31 @@ final class ImageToImageConfigTests: XCTestCase {
         )
 
         XCTAssertNil(decoded.referenceImage)
+        XCTAssertFalse(decoded.isVLMGenerated)
+    }
+
+    func testValidationPromptIsVLMGeneratedDefault() {
+        let prompt = LoRATrainingConfig.ValidationPromptConfig(prompt: "a cat")
+        XCTAssertFalse(prompt.isVLMGenerated)
+    }
+
+    func testValidationPromptBackwardCompatNoIsVLMGenerated() throws {
+        // Old JSON without is_vlm_generated field should decode with default false
+        let oldJson = """
+        {
+            "prompt": "a portrait",
+            "is_512": true,
+            "is_1024": false,
+            "apply_trigger": true
+        }
+        """
+        let data = oldJson.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(
+            LoRATrainingConfig.ValidationPromptConfig.self, from: data
+        )
+        XCTAssertEqual(decoded.prompt, "a portrait")
+        XCTAssertTrue(decoded.applyTrigger)
+        XCTAssertFalse(decoded.isVLMGenerated)
     }
 
     // MARK: - Presets remain T2I
@@ -224,6 +251,7 @@ final class SimpleLoRAConfigI2ITests: XCTestCase {
         )
 
         XCTAssertEqual(prompt.referenceImage, refURL)
+        XCTAssertFalse(prompt.isVLMGenerated)
     }
 
     func testSimpleLoRAConfigValidationPromptNoReferenceImage() {
@@ -235,6 +263,19 @@ final class SimpleLoRAConfigI2ITests: XCTestCase {
         )
 
         XCTAssertNil(prompt.referenceImage)
+        XCTAssertFalse(prompt.isVLMGenerated)
+    }
+
+    func testSimpleLoRAConfigValidationPromptVLMGenerated() {
+        let prompt = SimpleLoRAConfig.ValidationPromptConfig(
+            prompt: "sks, young man with glasses",
+            is512: true,
+            applyTrigger: false,
+            isVLMGenerated: true
+        )
+
+        XCTAssertTrue(prompt.isVLMGenerated)
+        XCTAssertFalse(prompt.applyTrigger)
     }
 }
 

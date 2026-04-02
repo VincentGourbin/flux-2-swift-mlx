@@ -15,10 +15,12 @@ public struct VLMPromptScore: Codable, Sendable {
     public let styleReason: String
     public let baselineSceneScore: Int? // 0-100 vs baseline (nil if no baseline)
     public let baselineStyleScore: Int?
+    public let isTriggered: Bool       // Whether this prompt had the trigger word applied
 
     public init(promptIndex: Int, sceneScore: Int, styleScore: Int,
                 sceneReason: String, styleReason: String,
-                baselineSceneScore: Int? = nil, baselineStyleScore: Int? = nil) {
+                baselineSceneScore: Int? = nil, baselineStyleScore: Int? = nil,
+                isTriggered: Bool = true) {
         self.promptIndex = promptIndex
         self.sceneScore = sceneScore
         self.styleScore = styleScore
@@ -26,6 +28,19 @@ public struct VLMPromptScore: Codable, Sendable {
         self.styleReason = styleReason
         self.baselineSceneScore = baselineSceneScore
         self.baselineStyleScore = baselineStyleScore
+        self.isTriggered = isTriggered
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        promptIndex = try container.decode(Int.self, forKey: .promptIndex)
+        sceneScore = try container.decode(Int.self, forKey: .sceneScore)
+        styleScore = try container.decode(Int.self, forKey: .styleScore)
+        sceneReason = try container.decode(String.self, forKey: .sceneReason)
+        styleReason = try container.decode(String.self, forKey: .styleReason)
+        baselineSceneScore = try container.decodeIfPresent(Int.self, forKey: .baselineSceneScore)
+        baselineStyleScore = try container.decodeIfPresent(Int.self, forKey: .baselineStyleScore)
+        isTriggered = try container.decodeIfPresent(Bool.self, forKey: .isTriggered) ?? true
     }
 }
 

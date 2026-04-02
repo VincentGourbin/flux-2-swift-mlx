@@ -733,7 +733,8 @@ struct TrainLoRA: AsyncParsableCommand {
                 is1024: loraPrompt.is1024,
                 applyTrigger: loraPrompt.applyTrigger,
                 seed: loraPrompt.seed,
-                referenceImage: loraPrompt.referenceImage
+                referenceImage: loraPrompt.referenceImage,
+                isVLMGenerated: loraPrompt.isVLMGenerated
             )
         }
         simpleConfig.validationEveryNSteps = config.validationEveryNSteps
