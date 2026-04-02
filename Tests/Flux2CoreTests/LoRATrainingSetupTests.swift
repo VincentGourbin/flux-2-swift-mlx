@@ -84,6 +84,25 @@ final class LoRATrainingSetupTests: XCTestCase {
         XCTAssertTrue(yaml.contains("\\\"blue\\\""))
     }
 
+    func testYAMLWithVLMScoringContainsIsVLMGenerated() {
+        let rec = LoRARecommendation(
+            steps: 500, rank: 32, alpha: 32.0, learningRate: 1e-4,
+            warmupSteps: 50, timestepSampling: "balanced", lossWeighting: "bell_shaped",
+            targetLayers: "all", useDOP: false, dopClass: nil,
+            useGradientCheckpointing: false, summary: "Test"
+        )
+
+        let yaml = rec.toYAMLWithVLMScoring(
+            model: .klein4B,
+            triggerWord: "sks",
+            validationPrompt: "sks, a portrait",
+            referenceImagePath: "/ref.png"
+        )
+
+        XCTAssertTrue(yaml.contains("is_vlm_generated: true"))
+        XCTAssertTrue(yaml.contains("apply_trigger: false"))
+    }
+
     // MARK: - LoRA Training Setup Struct
 
     func testLoRATrainingSetupCreation() {
@@ -131,13 +150,15 @@ final class LoRATrainingSetupTests: XCTestCase {
             sceneReason: "Similar but different person",
             styleReason: "Same photographic style",
             baselineSceneScore: 45,
-            baselineStyleScore: 85
+            baselineStyleScore: 85,
+            isTriggered: false
         )
 
         XCTAssertEqual(score.sceneScore, 65)
         XCTAssertEqual(score.styleScore, 70)
         XCTAssertEqual(score.baselineSceneScore, 45)
         XCTAssertEqual(score.baselineStyleScore, 85)
+        XCTAssertFalse(score.isTriggered)
     }
 
     func testVLMScoreRecordComposite() {

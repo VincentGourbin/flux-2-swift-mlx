@@ -313,7 +313,8 @@ final class TrainingControlTests: XCTestCase {
             sceneReason: "Good subject match",
             styleReason: "Color palette matches",
             baselineSceneScore: 15,
-            baselineStyleScore: 20
+            baselineStyleScore: 20,
+            isTriggered: false
         )
 
         let encoder = JSONEncoder()
@@ -327,6 +328,38 @@ final class TrainingControlTests: XCTestCase {
         XCTAssertEqual(decoded.styleReason, "Color palette matches")
         XCTAssertEqual(decoded.baselineSceneScore, 15)
         XCTAssertEqual(decoded.baselineStyleScore, 20)
+        XCTAssertFalse(decoded.isTriggered)
+    }
+
+    func testVLMPromptScoreIsTriggeredDefault() throws {
+        // isTriggered defaults to true for backward compatibility
+        let score = VLMPromptScore(
+            promptIndex: 0, sceneScore: 50, styleScore: 60,
+            sceneReason: "", styleReason: ""
+        )
+        XCTAssertTrue(score.isTriggered)
+
+        // Round-trip preserves default
+        let data = try JSONEncoder().encode(score)
+        let decoded = try JSONDecoder().decode(VLMPromptScore.self, from: data)
+        XCTAssertTrue(decoded.isTriggered)
+    }
+
+    func testVLMPromptScoreBackwardCompatNoisTriggered() throws {
+        // Old JSON without isTriggered field should decode with default true
+        let oldJson = """
+        {
+            "promptIndex": 0,
+            "sceneScore": 55,
+            "styleScore": 65,
+            "sceneReason": "OK",
+            "styleReason": "OK"
+        }
+        """
+        let data = oldJson.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(VLMPromptScore.self, from: data)
+        XCTAssertEqual(decoded.sceneScore, 55)
+        XCTAssertTrue(decoded.isTriggered)  // default when missing
     }
 
     func testVLMScoreRecordCodable() throws {
