@@ -28,6 +28,7 @@ struct Flux2CLI: AsyncParsableCommand {
             ImageToImage.self,
             Download.self,
             Info.self,
+            Profile.self,
             VLMTest.self,
             CompareEncoders.self,
             TestVLGeneration.self,

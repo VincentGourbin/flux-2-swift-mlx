@@ -109,8 +109,13 @@ public class Flux2Profiler: @unchecked Sendable {
 
     public var isEnabled: Bool = false
 
+    /// Optional profiling session for rich data collection (Chrome Trace, memory timeline)
+    public var activeSession: ProfilingSession? = nil
+
     private var timings: [TimingEntry] = []
     private var stepTimes: [TimeInterval] = []
+    private var stepCount: Int = 0
+    private var totalSteps: Int = 0
     private var activeTimers: [String: Date] = [:]
     private let queue = DispatchQueue(label: "com.flux2.profiler", attributes: .concurrent)
 
@@ -127,9 +132,19 @@ public class Flux2Profiler: @unchecked Sendable {
         isEnabled = false
     }
 
+    /// Set the total step count for denoising (used by session for step labeling)
+    public func setTotalSteps(_ total: Int) {
+        queue.async(flags: .barrier) {
+            self.totalSteps = total
+            self.stepCount = 0
+        }
+    }
+
     /// Start timing an operation
     public func start(_ name: String) {
         guard isEnabled else { return }
+        let category = ProfilingSession.inferCategory(name)
+        activeSession?.beginPhase(name, category: category)
         queue.async(flags: .barrier) {
             self.activeTimers[name] = Date()
         }
@@ -139,6 +154,8 @@ public class Flux2Profiler: @unchecked Sendable {
     public func end(_ name: String) {
         guard isEnabled else { return }
         let endTime = Date()
+        let category = ProfilingSession.inferCategory(name)
+        activeSession?.endPhase(name, category: category)
         queue.async(flags: .barrier) {
             guard let startTime = self.activeTimers[name] else { return }
             self.activeTimers.removeValue(forKey: name)
@@ -173,6 +190,14 @@ public class Flux2Profiler: @unchecked Sendable {
         guard isEnabled else { return }
         queue.async(flags: .barrier) {
             self.stepTimes.append(duration)
+            self.stepCount += 1
+            let currentStep = self.stepCount
+            let total = self.totalSteps
+            self.activeSession?.recordDenoisingStep(
+                index: currentStep,
+                total: total,
+                durationUs: UInt64(duration * 1_000_000)
+            )
         }
     }
 
@@ -204,6 +229,8 @@ public class Flux2Profiler: @unchecked Sendable {
             self.timings.removeAll()
             self.activeTimers.removeAll()
             self.stepTimes.removeAll()
+            self.stepCount = 0
+            self.totalSteps = 0
         }
     }
 
