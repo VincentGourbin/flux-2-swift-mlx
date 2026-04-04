@@ -65,23 +65,26 @@ Single profiled generation with Chrome Trace export. This is the default subcomm
 #### Example
 
 ```bash
-flux2 profile run "a cat sitting on a windowsill" \
+flux2 profile run "A red rose on a wooden table, soft morning light" \
   --model klein-4b \
   --width 512 --height 512 \
   --per-step-memory \
-  --output-dir ./my_profile \
-  --seed 42
+  --output-dir ./profile_results
 ```
 
 Output files:
 
 ```
-my_profile/
+profile_results/
   klein-4b_qint8_trace.json    # Chrome Trace (open in Perfetto)
   profiled_output.png           # Generated image
 ```
 
-Console output includes a formatted report:
+A ready-to-use example trace and image are included in [`docs/examples/profiling_output/`](profiling_output/):
+- [`klein-4b_qint8_trace.json`](profiling_output/klein-4b_qint8_trace.json) -- open in [Perfetto UI](https://ui.perfetto.dev/)
+- [`profiled_output.png`](profiling_output/profiled_output.png) -- the generated image
+
+Console output (real run on M2 Ultra 96GB, Klein 4B qint8, 512x512, 4 steps):
 
 ```
 Profiling: Flux.2 Klein 4B 8bit/qint8
@@ -93,43 +96,55 @@ Step 1/4... Step 2/4... Step 3/4... Step 4/4
 
   Model: klein-4b  Quant: 8bit/qint8
   Image: 512x512  Steps: 4
-  Device: gpu  RAM: 96GB
+  Device: applegpu_g15s  RAM: 96GB
 
   PHASE TIMINGS
   ──────────────────────────────────────────────────────
-  1. Load Text Encoder           2.31s   18.2% ███
-  2. Text Encoding               0.85s    6.7% █
-  3. Unload Text Encoder         0.12s    0.9%
-  4. Load Transformer            1.94s   15.3% ███
-  5. Load VAE                    0.41s    3.2%
-  6. Denoising (4 steps)         6.82s   53.8% ██████████
-  7. VAE Decode                  0.18s    1.4%
-  8. Post-processing             0.05s    0.4%
+  1. Load Text Encoder            1.83s   18.1% ███
+  2. Text Encoding               631.0ms   6.2% █
+  3. Unload Text Encoder          31.0ms   0.3%
+  4. Load Transformer             1.14s   11.3% ██
+  5. Load VAE                     43.2ms   0.4%
+  6. Denoising Loop               5.96s   58.9% ███████████
+  7. VAE Decode                  470.9ms   4.7%
+  8. Post-processing               6.9ms   0.1%
   ──────────────────────────────────────────────────────
-  TOTAL                         12.68s   100.0%
+  TOTAL                          10.12s  100.0%
 
   DENOISING STEP STATISTICS
   ──────────────────────────────────────────────────────
   Steps: 4
-  Average:  1705.3ms  Std:   42.1ms
-  Min:      1652.8ms  Max:   1771.2ms
+  Average:    1.49s   Std:     3.5ms
+  Min:    1.49s   Max:    1.49s
 
   Estimated for different step counts:
-    10 steps:   17.05s
-    20 steps:   34.11s
-    28 steps:   47.75s
-    50 steps:   85.27s
+    10 steps:   14.89s
+    20 steps:   29.77s
+    28 steps:   41.68s
+    50 steps: 1m 14.4s
 
   MEMORY
   ──────────────────────────────────────────────────────
-  Peak MLX Active: 8234.2 MB
-  Peak Process: 9812.7 MB
+  Peak MLX Active: 4510.1 MB
+  Peak Process: 9025.8 MB
 
   Memory Timeline:
-    begin:1. Load Text Encoder         MLX:     0.0 MB
-    end:1. Load Text Encoder           MLX:  4102.3 MB
-    begin:6. Denoising (4 steps)       MLX:  8234.2 MB
-    end:7. VAE Decode                  MLX:  5128.1 MB
+    begin:1. Load Text Encoder          MLX:     0.0 MB
+    end:1. Load Text Encoder            MLX:  4495.1 MB
+    begin:2. Text Encoding              MLX:  4495.1 MB
+    end:2. Text Encoding                MLX:  4510.1 MB
+    begin:3. Unload Text Encoder        MLX:  4510.1 MB
+    end:3. Unload Text Encoder          MLX:    15.0 MB
+    begin:4. Load Transformer           MLX:    15.0 MB
+    end:4. Load Transformer             MLX:  3942.0 MB
+    begin:5. Load VAE                   MLX:  3942.0 MB
+    end:5. Load VAE                     MLX:  4102.3 MB
+    begin:6. Denoising Loop             MLX:  4102.8 MB
+    end:6. Denoising Loop               MLX:  4104.9 MB
+    begin:7. VAE Decode                 MLX:  4105.9 MB
+    end:7. VAE Decode                   MLX:  4236.9 MB
+    begin:8. Post-processing            MLX:  4236.9 MB
+    end:8. Post-processing              MLX:  4108.9 MB
 ```
 
 ---

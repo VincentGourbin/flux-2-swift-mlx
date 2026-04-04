@@ -1,0 +1,657 @@
+{
+  "traceEvents" : [
+    {
+      "args" : {
+        "name" : "Flux2 Pipeline (klein-4b)"
+      },
+      "name" : "process_name",
+      "ph" : "M",
+      "pid" : 1,
+      "tid" : 0
+    },
+    {
+      "args" : {
+        "name" : "Text Encoding"
+      },
+      "name" : "thread_name",
+      "ph" : "M",
+      "pid" : 1,
+      "tid" : 1
+    },
+    {
+      "args" : {
+        "name" : "Transformer"
+      },
+      "name" : "thread_name",
+      "ph" : "M",
+      "pid" : 1,
+      "tid" : 2
+    },
+    {
+      "args" : {
+        "name" : "VAE"
+      },
+      "name" : "thread_name",
+      "ph" : "M",
+      "pid" : 1,
+      "tid" : 3
+    },
+    {
+      "args" : {
+        "name" : "Post-processing"
+      },
+      "name" : "thread_name",
+      "ph" : "M",
+      "pid" : 1,
+      "tid" : 4
+    },
+    {
+      "args" : {
+        "name" : "Memory"
+      },
+      "name" : "thread_name",
+      "ph" : "M",
+      "pid" : 1,
+      "tid" : 5
+    },
+    {
+      "args" : {
+        "name" : "eval() Syncs"
+      },
+      "name" : "thread_name",
+      "ph" : "M",
+      "pid" : 1,
+      "tid" : 6
+    },
+    {
+      "args" : {
+        "mlx_active_mb" : "0.0",
+        "mlx_cache_mb" : "0.0",
+        "mlx_peak_mb" : "0.0",
+        "process_mb" : "5.6"
+      },
+      "cat" : "text_encoder_load",
+      "name" : "1. Load Text Encoder",
+      "ph" : "B",
+      "pid" : 1,
+      "tid" : 1,
+      "ts" : 22971
+    },
+    {
+      "args" : {
+        "mlx_active_mb" : "4495.1",
+        "mlx_cache_mb" : "1483.8",
+        "mlx_peak_mb" : "5978.8",
+        "process_mb" : "6077.4"
+      },
+      "cat" : "text_encoder_load",
+      "name" : "1. Load Text Encoder",
+      "ph" : "E",
+      "pid" : 1,
+      "tid" : 1,
+      "ts" : 1851358
+    },
+    {
+      "args" : {
+        "mlx_active_mb" : "4495.1",
+        "mlx_cache_mb" : "1483.8",
+        "mlx_peak_mb" : "5978.8",
+        "process_mb" : "6077.4"
+      },
+      "cat" : "text_encoding",
+      "name" : "2. Text Encoding",
+      "ph" : "B",
+      "pid" : 1,
+      "tid" : 1,
+      "ts" : 1851372
+    },
+    {
+      "args" : {
+        "mlx_active_mb" : "4510.1",
+        "mlx_cache_mb" : "15.0",
+        "mlx_peak_mb" : "5978.8",
+        "process_mb" : "5211.0"
+      },
+      "cat" : "text_encoding",
+      "name" : "2. Text Encoding",
+      "ph" : "E",
+      "pid" : 1,
+      "tid" : 1,
+      "ts" : 2482347
+    },
+    {
+      "args" : {
+        "mlx_active_mb" : "4510.1",
+        "mlx_cache_mb" : "15.0",
+        "mlx_peak_mb" : "5978.8",
+        "process_mb" : "5211.0"
+      },
+      "cat" : "text_encoder_unload",
+      "name" : "3. Unload Text Encoder",
+      "ph" : "B",
+      "pid" : 1,
+      "tid" : 1,
+      "ts" : 2482372
+    },
+    {
+      "args" : {
+        "mlx_active_mb" : "15.0",
+        "mlx_cache_mb" : "0.0",
+        "mlx_peak_mb" : "5978.8",
+        "process_mb" : "2977.2"
+      },
+      "cat" : "text_encoder_unload",
+      "name" : "3. Unload Text Encoder",
+      "ph" : "E",
+      "pid" : 1,
+      "tid" : 1,
+      "ts" : 2513420
+    },
+    {
+      "args" : {
+        "mlx_active_mb" : "15.0",
+        "mlx_cache_mb" : "0.0",
+        "mlx_peak_mb" : "5978.8",
+        "process_mb" : "2974.7"
+      },
+      "cat" : "transformer_load",
+      "name" : "4. Load Transformer",
+      "ph" : "B",
+      "pid" : 1,
+      "tid" : 2,
+      "ts" : 2513453
+    },
+    {
+      "args" : {
+        "mlx_active_mb" : "3942.0",
+        "mlx_cache_mb" : "0.0",
+        "mlx_peak_mb" : "9145.5",
+        "process_mb" : "6441.3"
+      },
+      "cat" : "transformer_load",
+      "name" : "4. Load Transformer",
+      "ph" : "E",
+      "pid" : 1,
+      "tid" : 2,
+      "ts" : 3656869
+    },
+    {
+      "args" : {
+        "mlx_active_mb" : "3942.0",
+        "mlx_cache_mb" : "0.0",
+        "mlx_peak_mb" : "9145.5",
+        "process_mb" : "6441.3"
+      },
+      "cat" : "vae_load",
+      "name" : "5. Load VAE",
+      "ph" : "B",
+      "pid" : 1,
+      "tid" : 3,
+      "ts" : 3656880
+    },
+    {
+      "args" : {
+        "mlx_active_mb" : "4102.3",
+        "mlx_cache_mb" : "0.0",
+        "mlx_peak_mb" : "9145.5",
+        "process_mb" : "5737.5"
+      },
+      "cat" : "vae_load",
+      "name" : "5. Load VAE",
+      "ph" : "E",
+      "pid" : 1,
+      "tid" : 3,
+      "ts" : 3700031
+    },
+    {
+      "args" : {
+        "mlx_active_mb" : "4102.8",
+        "mlx_cache_mb" : "0.0",
+        "mlx_peak_mb" : "9145.5",
+        "process_mb" : "5702.1"
+      },
+      "cat" : "denoising_loop",
+      "name" : "6. Denoising Loop",
+      "ph" : "B",
+      "pid" : 1,
+      "tid" : 2,
+      "ts" : 3704748
+    },
+    {
+      "args" : {
+        "mlx_active_mb" : "4105.4",
+        "mlx_cache_mb" : "2357.2",
+        "mlx_peak_mb" : "9145.5",
+        "process_mb" : "6666.0",
+        "step" : 1,
+        "total_steps" : 4
+      },
+      "cat" : "denoising_step",
+      "dur" : 1490729,
+      "name" : "Step 1\/4",
+      "ph" : "X",
+      "pid" : 1,
+      "tid" : 2,
+      "ts" : 3704797
+    },
+    {
+      "args" : {
+        "mlx_active_mb" : "4105.4",
+        "mlx_cache_mb" : "2355.0",
+        "mlx_peak_mb" : "9145.5",
+        "process_mb" : "6663.1",
+        "step" : 2,
+        "total_steps" : 4
+      },
+      "cat" : "denoising_step",
+      "dur" : 1493357,
+      "name" : "Step 2\/4",
+      "ph" : "X",
+      "pid" : 1,
+      "tid" : 2,
+      "ts" : 5203044
+    },
+    {
+      "args" : {
+        "mlx_active_mb" : "4105.4",
+        "mlx_cache_mb" : "2355.0",
+        "mlx_peak_mb" : "9145.5",
+        "process_mb" : "6663.3",
+        "step" : 3,
+        "total_steps" : 4
+      },
+      "cat" : "denoising_step",
+      "dur" : 1485028,
+      "name" : "Step 3\/4",
+      "ph" : "X",
+      "pid" : 1,
+      "tid" : 2,
+      "ts" : 6696427
+    },
+    {
+      "args" : {
+        "mlx_active_mb" : "4105.4",
+        "mlx_cache_mb" : "2355.0",
+        "mlx_peak_mb" : "9145.5",
+        "process_mb" : "6663.3",
+        "step" : 4,
+        "total_steps" : 4
+      },
+      "cat" : "denoising_step",
+      "dur" : 1485603,
+      "name" : "Step 4\/4",
+      "ph" : "X",
+      "pid" : 1,
+      "tid" : 2,
+      "ts" : 8181504
+    },
+    {
+      "args" : {
+        "mlx_active_mb" : "4104.9",
+        "mlx_cache_mb" : "2355.5",
+        "mlx_peak_mb" : "9145.5",
+        "process_mb" : "6663.3"
+      },
+      "cat" : "denoising_loop",
+      "name" : "6. Denoising Loop",
+      "ph" : "E",
+      "pid" : 1,
+      "tid" : 2,
+      "ts" : 9667152
+    },
+    {
+      "args" : {
+        "mlx_active_mb" : "4105.9",
+        "mlx_cache_mb" : "2354.5",
+        "mlx_peak_mb" : "9145.5",
+        "process_mb" : "6663.3"
+      },
+      "cat" : "vae_decode",
+      "name" : "7. VAE Decode",
+      "ph" : "B",
+      "pid" : 1,
+      "tid" : 3,
+      "ts" : 9671017
+    },
+    {
+      "args" : {
+        "mlx_active_mb" : "4236.9",
+        "mlx_cache_mb" : "2484.8",
+        "mlx_peak_mb" : "9405.4",
+        "process_mb" : "9018.9"
+      },
+      "cat" : "vae_decode",
+      "name" : "7. VAE Decode",
+      "ph" : "E",
+      "pid" : 1,
+      "tid" : 3,
+      "ts" : 10141931
+    },
+    {
+      "args" : {
+        "mlx_active_mb" : "4236.9",
+        "mlx_cache_mb" : "2484.8",
+        "mlx_peak_mb" : "9405.4",
+        "process_mb" : "9018.9"
+      },
+      "cat" : "post_process",
+      "name" : "8. Post-processing",
+      "ph" : "B",
+      "pid" : 1,
+      "tid" : 4,
+      "ts" : 10141950
+    },
+    {
+      "args" : {
+        "mlx_active_mb" : "4108.9",
+        "mlx_cache_mb" : "2419.6",
+        "mlx_peak_mb" : "9405.4",
+        "process_mb" : "9025.8"
+      },
+      "cat" : "post_process",
+      "name" : "8. Post-processing",
+      "ph" : "E",
+      "pid" : 1,
+      "tid" : 4,
+      "ts" : 10148854
+    },
+    {
+      "args" : {
+        "MLX Active (MB)" : 0,
+        "MLX Cache (MB)" : 0,
+        "MLX Peak (MB)" : 0,
+        "Process (MB)" : 5.5999999999999996
+      },
+      "cat" : "memory",
+      "name" : "Memory",
+      "ph" : "C",
+      "pid" : 1,
+      "tid" : 5,
+      "ts" : 22971
+    },
+    {
+      "args" : {
+        "MLX Active (MB)" : 4495.1000000000004,
+        "MLX Cache (MB)" : 1483.8,
+        "MLX Peak (MB)" : 5978.8000000000002,
+        "Process (MB)" : 6077.3999999999996
+      },
+      "cat" : "memory",
+      "name" : "Memory",
+      "ph" : "C",
+      "pid" : 1,
+      "tid" : 5,
+      "ts" : 1851358
+    },
+    {
+      "args" : {
+        "MLX Active (MB)" : 4495.1000000000004,
+        "MLX Cache (MB)" : 1483.8,
+        "MLX Peak (MB)" : 5978.8000000000002,
+        "Process (MB)" : 6077.3999999999996
+      },
+      "cat" : "memory",
+      "name" : "Memory",
+      "ph" : "C",
+      "pid" : 1,
+      "tid" : 5,
+      "ts" : 1851372
+    },
+    {
+      "args" : {
+        "MLX Active (MB)" : 4510.1000000000004,
+        "MLX Cache (MB)" : 15,
+        "MLX Peak (MB)" : 5978.8000000000002,
+        "Process (MB)" : 5211
+      },
+      "cat" : "memory",
+      "name" : "Memory",
+      "ph" : "C",
+      "pid" : 1,
+      "tid" : 5,
+      "ts" : 2482347
+    },
+    {
+      "args" : {
+        "MLX Active (MB)" : 4510.1000000000004,
+        "MLX Cache (MB)" : 15,
+        "MLX Peak (MB)" : 5978.8000000000002,
+        "Process (MB)" : 5211
+      },
+      "cat" : "memory",
+      "name" : "Memory",
+      "ph" : "C",
+      "pid" : 1,
+      "tid" : 5,
+      "ts" : 2482372
+    },
+    {
+      "args" : {
+        "MLX Active (MB)" : 15,
+        "MLX Cache (MB)" : 0,
+        "MLX Peak (MB)" : 5978.8000000000002,
+        "Process (MB)" : 2977.1999999999998
+      },
+      "cat" : "memory",
+      "name" : "Memory",
+      "ph" : "C",
+      "pid" : 1,
+      "tid" : 5,
+      "ts" : 2513420
+    },
+    {
+      "args" : {
+        "MLX Active (MB)" : 15,
+        "MLX Cache (MB)" : 0,
+        "MLX Peak (MB)" : 5978.8000000000002,
+        "Process (MB)" : 2974.6999999999998
+      },
+      "cat" : "memory",
+      "name" : "Memory",
+      "ph" : "C",
+      "pid" : 1,
+      "tid" : 5,
+      "ts" : 2513453
+    },
+    {
+      "args" : {
+        "MLX Active (MB)" : 3942,
+        "MLX Cache (MB)" : 0,
+        "MLX Peak (MB)" : 9145.5,
+        "Process (MB)" : 6441.3000000000002
+      },
+      "cat" : "memory",
+      "name" : "Memory",
+      "ph" : "C",
+      "pid" : 1,
+      "tid" : 5,
+      "ts" : 3656869
+    },
+    {
+      "args" : {
+        "MLX Active (MB)" : 3942,
+        "MLX Cache (MB)" : 0,
+        "MLX Peak (MB)" : 9145.5,
+        "Process (MB)" : 6441.3000000000002
+      },
+      "cat" : "memory",
+      "name" : "Memory",
+      "ph" : "C",
+      "pid" : 1,
+      "tid" : 5,
+      "ts" : 3656880
+    },
+    {
+      "args" : {
+        "MLX Active (MB)" : 4102.3000000000002,
+        "MLX Cache (MB)" : 0,
+        "MLX Peak (MB)" : 9145.5,
+        "Process (MB)" : 5737.5
+      },
+      "cat" : "memory",
+      "name" : "Memory",
+      "ph" : "C",
+      "pid" : 1,
+      "tid" : 5,
+      "ts" : 3700031
+    },
+    {
+      "args" : {
+        "MLX Active (MB)" : 4102.8000000000002,
+        "MLX Cache (MB)" : 0,
+        "MLX Peak (MB)" : 9145.5,
+        "Process (MB)" : 5702.1000000000004
+      },
+      "cat" : "memory",
+      "name" : "Memory",
+      "ph" : "C",
+      "pid" : 1,
+      "tid" : 5,
+      "ts" : 3704748
+    },
+    {
+      "args" : {
+        "MLX Active (MB)" : 4105.3999999999996,
+        "MLX Cache (MB)" : 2357.1999999999998,
+        "MLX Peak (MB)" : 9145.5,
+        "Process (MB)" : 6666
+      },
+      "cat" : "memory",
+      "name" : "Memory",
+      "ph" : "C",
+      "pid" : 1,
+      "tid" : 5,
+      "ts" : 5195526
+    },
+    {
+      "args" : {
+        "MLX Active (MB)" : 4105.3999999999996,
+        "MLX Cache (MB)" : 2355,
+        "MLX Peak (MB)" : 9145.5,
+        "Process (MB)" : 6663.1000000000004
+      },
+      "cat" : "memory",
+      "name" : "Memory",
+      "ph" : "C",
+      "pid" : 1,
+      "tid" : 5,
+      "ts" : 6696401
+    },
+    {
+      "args" : {
+        "MLX Active (MB)" : 4105.3999999999996,
+        "MLX Cache (MB)" : 2355,
+        "MLX Peak (MB)" : 9145.5,
+        "Process (MB)" : 6663.3000000000002
+      },
+      "cat" : "memory",
+      "name" : "Memory",
+      "ph" : "C",
+      "pid" : 1,
+      "tid" : 5,
+      "ts" : 8181455
+    },
+    {
+      "args" : {
+        "MLX Active (MB)" : 4105.3999999999996,
+        "MLX Cache (MB)" : 2355,
+        "MLX Peak (MB)" : 9145.5,
+        "Process (MB)" : 6663.3000000000002
+      },
+      "cat" : "memory",
+      "name" : "Memory",
+      "ph" : "C",
+      "pid" : 1,
+      "tid" : 5,
+      "ts" : 9667107
+    },
+    {
+      "args" : {
+        "MLX Active (MB)" : 4104.8999999999996,
+        "MLX Cache (MB)" : 2355.5,
+        "MLX Peak (MB)" : 9145.5,
+        "Process (MB)" : 6663.3000000000002
+      },
+      "cat" : "memory",
+      "name" : "Memory",
+      "ph" : "C",
+      "pid" : 1,
+      "tid" : 5,
+      "ts" : 9667152
+    },
+    {
+      "args" : {
+        "MLX Active (MB)" : 4105.8999999999996,
+        "MLX Cache (MB)" : 2354.5,
+        "MLX Peak (MB)" : 9145.5,
+        "Process (MB)" : 6663.3000000000002
+      },
+      "cat" : "memory",
+      "name" : "Memory",
+      "ph" : "C",
+      "pid" : 1,
+      "tid" : 5,
+      "ts" : 9671017
+    },
+    {
+      "args" : {
+        "MLX Active (MB)" : 4236.8999999999996,
+        "MLX Cache (MB)" : 2484.8000000000002,
+        "MLX Peak (MB)" : 9405.3999999999996,
+        "Process (MB)" : 9018.8999999999996
+      },
+      "cat" : "memory",
+      "name" : "Memory",
+      "ph" : "C",
+      "pid" : 1,
+      "tid" : 5,
+      "ts" : 10141931
+    },
+    {
+      "args" : {
+        "MLX Active (MB)" : 4236.8999999999996,
+        "MLX Cache (MB)" : 2484.8000000000002,
+        "MLX Peak (MB)" : 9405.3999999999996,
+        "Process (MB)" : 9018.8999999999996
+      },
+      "cat" : "memory",
+      "name" : "Memory",
+      "ph" : "C",
+      "pid" : 1,
+      "tid" : 5,
+      "ts" : 10141950
+    },
+    {
+      "args" : {
+        "MLX Active (MB)" : 4108.8999999999996,
+        "MLX Cache (MB)" : 2419.5999999999999,
+        "MLX Peak (MB)" : 9405.3999999999996,
+        "Process (MB)" : 9025.7999999999993
+      },
+      "cat" : "memory",
+      "name" : "Memory",
+      "ph" : "C",
+      "pid" : 1,
+      "tid" : 5,
+      "ts" : 10148854
+    },
+    {
+      "args" : {
+        "device" : "applegpu_g15s",
+        "image_size" : "512x512",
+        "model" : "klein-4b",
+        "quantization" : "8bit\/qint8",
+        "ram_gb" : 96,
+        "session_id" : "B02FF44B-2F57-43D8-93E9-D16120EB661E",
+        "steps" : 4
+      },
+      "cat" : "metadata",
+      "name" : "Session Info",
+      "ph" : "i",
+      "pid" : 1,
+      "s" : "g",
+      "tid" : 0,
+      "ts" : 0
+    }
+  ]
+}
