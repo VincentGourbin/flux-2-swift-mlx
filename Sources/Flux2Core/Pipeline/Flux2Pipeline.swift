@@ -1044,6 +1044,7 @@ public class Flux2Pipeline: @unchecked Sendable {
 
             let effectiveSteps = scheduler.sigmas.count - 1
             Flux2Debug.log("Starting I2I denoising loop (\(effectiveSteps) steps)...")
+            profiler.setTotalSteps(effectiveSteps)
 
             // Guidance tensor (nil for Klein models which don't use guidance embeddings)
             let guidanceTensor: MLXArray? = model.usesGuidanceEmbeds ? MLXArray([guidance]) : nil
@@ -1302,6 +1303,7 @@ public class Flux2Pipeline: @unchecked Sendable {
 
         let effectiveSteps = scheduler.sigmas.count - 1
         Flux2Debug.log("Starting denoising loop (\(effectiveSteps) steps)...")
+        profiler.setTotalSteps(effectiveSteps)
 
         // OPTIMIZATION: Create guidance tensor ONCE before the loop
         // Klein models don't use guidance embeddings
