@@ -14,8 +14,12 @@ public struct VAEConfig: Codable, Sendable {
     /// Number of latent channels (32 for Flux.2, vs 4 for Flux.1)
     public var latentChannels: Int
 
-    /// Channel multipliers for each block
+    /// Channel multipliers for each block (encoder)
     public var blockOutChannels: [Int]
+
+    /// Channel multipliers for decoder blocks (if different from encoder)
+    /// Used by the small-decoder variant: [96, 192, 384, 384] vs standard [128, 256, 512, 512]
+    public var decoderBlockOutChannels: [Int]?
 
     /// Number of ResNet blocks per level
     public var layersPerBlock: Int
@@ -43,6 +47,7 @@ public struct VAEConfig: Codable, Sendable {
         outChannels: Int = 3,
         latentChannels: Int = 32,
         blockOutChannels: [Int] = [128, 256, 512, 512],
+        decoderBlockOutChannels: [Int]? = nil,
         layersPerBlock: Int = 2,
         activationFunction: String = "silu",
         normEps: Float = 1e-6,
@@ -55,6 +60,7 @@ public struct VAEConfig: Codable, Sendable {
         self.outChannels = outChannels
         self.latentChannels = latentChannels
         self.blockOutChannels = blockOutChannels
+        self.decoderBlockOutChannels = decoderBlockOutChannels
         self.layersPerBlock = layersPerBlock
         self.activationFunction = activationFunction
         self.normEps = normEps
@@ -67,6 +73,13 @@ public struct VAEConfig: Codable, Sendable {
     /// Default Flux.2 VAE configuration
     public static let flux2Dev = VAEConfig()
 
+    /// Flux.2 Small Decoder configuration
+    /// Standard encoder [128, 256, 512, 512] + distilled decoder [96, 192, 384, 384]
+    /// ~1.4x faster decoding, ~1.4x less VRAM, minimal quality loss
+    public static let flux2SmallDecoder = VAEConfig(
+        decoderBlockOutChannels: [96, 192, 384, 384]
+    )
+
     // MARK: - Codable
 
     enum CodingKeys: String, CodingKey {
@@ -74,6 +87,7 @@ public struct VAEConfig: Codable, Sendable {
         case outChannels = "out_channels"
         case latentChannels = "latent_channels"
         case blockOutChannels = "block_out_channels"
+        case decoderBlockOutChannels = "decoder_block_out_channels"
         case layersPerBlock = "layers_per_block"
         case activationFunction = "act_fn"
         case normEps = "norm_eps"
@@ -89,6 +103,7 @@ public struct VAEConfig: Codable, Sendable {
         outChannels = try container.decodeIfPresent(Int.self, forKey: .outChannels) ?? 3
         latentChannels = try container.decodeIfPresent(Int.self, forKey: .latentChannels) ?? 32
         blockOutChannels = try container.decodeIfPresent([Int].self, forKey: .blockOutChannels) ?? [128, 256, 512, 512]
+        decoderBlockOutChannels = try container.decodeIfPresent([Int].self, forKey: .decoderBlockOutChannels)
         layersPerBlock = try container.decodeIfPresent(Int.self, forKey: .layersPerBlock) ?? 2
         activationFunction = try container.decodeIfPresent(String.self, forKey: .activationFunction) ?? "silu"
         normEps = try container.decodeIfPresent(Float.self, forKey: .normEps) ?? 1e-6
@@ -105,12 +120,24 @@ public struct VAEConfig: Codable, Sendable {
         try container.encode(outChannels, forKey: .outChannels)
         try container.encode(latentChannels, forKey: .latentChannels)
         try container.encode(blockOutChannels, forKey: .blockOutChannels)
+        try container.encodeIfPresent(decoderBlockOutChannels, forKey: .decoderBlockOutChannels)
         try container.encode(layersPerBlock, forKey: .layersPerBlock)
         try container.encode(activationFunction, forKey: .activationFunction)
         try container.encode(normEps, forKey: .normEps)
         try container.encode(normNumGroups, forKey: .normNumGroups)
         try container.encode(scalingFactor, forKey: .scalingFactor)
         try container.encode(useBatchNorm, forKey: .useBatchNorm)
+    }
+
+    /// Effective channel widths for the decoder
+    /// Returns decoderBlockOutChannels if set, otherwise falls back to blockOutChannels
+    public var effectiveDecoderChannels: [Int] {
+        decoderBlockOutChannels ?? blockOutChannels
+    }
+
+    /// Whether this config uses a small (distilled) decoder
+    public var isSmallDecoder: Bool {
+        decoderBlockOutChannels != nil
     }
 
     /// Load configuration from a JSON file
@@ -125,7 +152,8 @@ extension VAEConfig: CustomStringConvertible {
         """
         VAEConfig(
             channels: \(inChannels) -> latent \(latentChannels) -> \(outChannels),
-            blocks: \(blockOutChannels),
+            encoder: \(blockOutChannels),
+            decoder: \(effectiveDecoderChannels),
             batchNorm: \(useBatchNorm),
             patch: \(patchSize)
         )

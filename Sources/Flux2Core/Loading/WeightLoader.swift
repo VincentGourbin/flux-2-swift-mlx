@@ -38,9 +38,15 @@ public class Flux2WeightLoader {
         return allWeights
     }
 
-    /// Load weights from URL
+    /// Load weights from URL (directory or single file)
     public static func loadWeights(from url: URL) throws -> [String: MLXArray] {
-        try loadWeights(from: url.path)
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue {
+            // Single file — load directly
+            Flux2Debug.log("Loading weights from single file: \(url.lastPathComponent)")
+            return try loadArrays(url: url)
+        }
+        return try loadWeights(from: url.path)
     }
 
     // MARK: - Transformer Weight Mapping

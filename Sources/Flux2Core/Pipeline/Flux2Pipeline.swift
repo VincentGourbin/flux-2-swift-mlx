@@ -86,6 +86,9 @@ public class Flux2Pipeline: @unchecked Sendable {
     /// Diffusion transformer
     private var transformer: Flux2Transformer2DModel?
 
+    /// VAE variant (standard or small-decoder)
+    public let vaeVariant: ModelRegistry.VAEVariant
+
     /// VAE decoder
     private var vae: AutoencoderKLFlux2?
 
@@ -128,10 +131,12 @@ public class Flux2Pipeline: @unchecked Sendable {
         model: Flux2Model = .dev,
         quantization: Flux2QuantizationConfig = .balanced,
         memoryOptimization: MemoryOptimizationConfig? = nil,
+        vaeVariant: ModelRegistry.VAEVariant = .standard,
         hfToken: String? = nil
     ) {
         self.model = model
         self.quantization = quantization
+        self.vaeVariant = vaeVariant
         self.memoryOptimization = memoryOptimization ?? MemoryOptimizationConfig.recommended(
             forRAMGB: Flux2MemoryManager.shared.physicalMemoryGB
         )
@@ -423,27 +428,46 @@ public class Flux2Pipeline: @unchecked Sendable {
     private func loadVAE() async throws {
         guard vae == nil else { return }
 
-        Flux2Debug.log("Loading VAE...")
+        Flux2Debug.log("Loading VAE (\(vaeVariant.displayName))...")
 
-        guard let modelPath = Flux2ModelDownloader.findModelPath(for: .vae(.standard)) else {
-            throw Flux2Error.modelNotLoaded("VAE weights not found")
+        guard let modelPath = Flux2ModelDownloader.findModelPath(for: .vae(vaeVariant)) else {
+            throw Flux2Error.modelNotLoaded("VAE weights not found for variant: \(vaeVariant.rawValue)")
         }
 
-        // VAE files are in 'vae' subdirectory
+        // VAE files may be in 'vae' subdirectory (standard variant from Klein 4B repo)
         let vaePath = modelPath.appendingPathComponent("vae")
         let weightsPath = FileManager.default.fileExists(atPath: vaePath.path) ? vaePath : modelPath
 
-        // Create model
-        vae = AutoencoderKLFlux2()
+        // Load config from JSON if available, otherwise use variant preset
+        let configURL = weightsPath.appendingPathComponent("config.json")
+        let vaeConfig: VAEConfig
+        if FileManager.default.fileExists(atPath: configURL.path) {
+            vaeConfig = try VAEConfig.load(from: configURL)
+            Flux2Debug.log("VAE config loaded from config.json (decoder channels: \(vaeConfig.effectiveDecoderChannels))")
+        } else {
+            vaeConfig = vaeVariant.vaeConfig
+            Flux2Debug.log("VAE using preset config for \(vaeVariant.rawValue)")
+        }
 
-        // Load weights
-        let weights = try Flux2WeightLoader.loadWeights(from: weightsPath)
+        // Create model with appropriate config
+        vae = AutoencoderKLFlux2(config: vaeConfig)
+
+        // Load weights — prefer diffusion_pytorch_model.safetensors (standard diffusers file)
+        // to avoid conflicts when directory contains multiple safetensors files
+        let standardWeightsFile = weightsPath.appendingPathComponent("diffusion_pytorch_model.safetensors")
+        let weights: [String: MLXArray]
+        if FileManager.default.fileExists(atPath: standardWeightsFile.path) {
+            Flux2Debug.log("Loading VAE weights from diffusion_pytorch_model.safetensors")
+            weights = try Flux2WeightLoader.loadWeights(from: standardWeightsFile)
+        } else {
+            weights = try Flux2WeightLoader.loadWeights(from: weightsPath)
+        }
         try Flux2WeightLoader.applyVAEWeights(weights, to: vae!)
 
         // Ensure weights are evaluated
         eval(vae!.parameters())
 
-        Flux2Debug.log("VAE loaded successfully")
+        Flux2Debug.log("VAE loaded successfully (\(vaeVariant.displayName), decoder: \(vaeConfig.effectiveDecoderChannels))")
     }
 
     /// Unload transformer to free memory
@@ -1817,7 +1841,7 @@ extension Flux2Pipeline {
         // Text encoder is handled by MistralCore/FluxTextEncoders, skip check here
 
         // Check VAE
-        let hasVAE = Flux2ModelDownloader.isDownloaded(.vae(.standard))
+        let hasVAE = Flux2ModelDownloader.isDownloaded(.vae(vaeVariant))
 
         return hasTransformer && hasVAE
     }
@@ -1834,8 +1858,8 @@ extension Flux2Pipeline {
 
         // Text encoder is handled by MistralCore/FluxTextEncoders
 
-        if !Flux2ModelDownloader.isDownloaded(.vae(.standard)) {
-            missing.append(.vae(.standard))
+        if !Flux2ModelDownloader.isDownloaded(.vae(vaeVariant)) {
+            missing.append(.vae(vaeVariant))
         }
 
         return missing

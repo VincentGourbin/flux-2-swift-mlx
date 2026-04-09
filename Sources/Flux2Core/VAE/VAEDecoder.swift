@@ -8,11 +8,12 @@ import MLXNN
 /// VAE Decoder for Flux.2
 ///
 /// Decodes latent representations back to RGB images.
+/// Supports both standard and small-decoder variants.
 /// Architecture:
-/// - Initial conv: latent_channels -> 512
+/// - Initial conv: latent_channels -> last_decoder_channel
 /// - Mid block with attention
 /// - Up blocks with ResNet blocks and upsampling
-/// - Final conv: 128 -> 3
+/// - Final conv: first_decoder_channel -> 3
 public class VAEDecoder: Module, @unchecked Sendable {
     let config: VAEConfig
 
@@ -25,19 +26,20 @@ public class VAEDecoder: Module, @unchecked Sendable {
     public init(config: VAEConfig = .flux2Dev) {
         self.config = config
 
-        let blockOutChannels = config.blockOutChannels  // [128, 256, 512, 512]
-        let reversedChannels = blockOutChannels.reversed()  // [512, 512, 256, 128]
+        // Use decoder-specific channels if available (small-decoder variant)
+        let decoderChannels = config.effectiveDecoderChannels  // e.g. [96, 192, 384, 384]
+        let reversedChannels = decoderChannels.reversed()
 
         // Initial convolution
         self.convIn = Conv2d(
             inputChannels: config.latentChannels,
-            outputChannels: blockOutChannels.last!,
+            outputChannels: decoderChannels.last!,
             kernelSize: 3,
             padding: 1
         )
 
         // Mid block
-        let midChannels = blockOutChannels.last!
+        let midChannels = decoderChannels.last!
         self.midBlock = (
             resnet1: ResnetBlock2D(inChannels: midChannels, numGroups: config.normNumGroups),
             attention: AttentionBlock(channels: midChannels, numGroups: config.normNumGroups),
@@ -77,9 +79,9 @@ public class VAEDecoder: Module, @unchecked Sendable {
         self.upBlocks = blocks
 
         // Output
-        self.convNormOut = GroupNorm(numGroups: config.normNumGroups, numChannels: blockOutChannels[0])
+        self.convNormOut = GroupNorm(numGroups: config.normNumGroups, numChannels: decoderChannels[0])
         self.convOut = Conv2d(
-            inputChannels: blockOutChannels[0],
+            inputChannels: decoderChannels[0],
             outputChannels: config.outChannels,
             kernelSize: 3,
             padding: 1
