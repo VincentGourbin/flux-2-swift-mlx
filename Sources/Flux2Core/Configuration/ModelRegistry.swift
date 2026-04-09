@@ -309,42 +309,78 @@ public enum ModelRegistry {
         }
     }
 
-    /// VAE variant (only one available)
+    /// VAE variant
     public enum VAEVariant: String, CaseIterable, Sendable {
         case standard = "standard"
+        case smallDecoder = "small-decoder"
+
+        public var displayName: String {
+            switch self {
+            case .standard: return "Standard VAE"
+            case .smallDecoder: return "Small Decoder VAE"
+            }
+        }
 
         public var huggingFaceRepo: String {
-            // VAE is downloaded from Klein 4B repo (NOT gated)
-            // Same VAE weights as all Flux.2 models
-            "black-forest-labs/FLUX.2-klein-4B"
+            switch self {
+            case .standard:
+                // VAE is downloaded from Klein 4B repo (NOT gated)
+                return "black-forest-labs/FLUX.2-klein-4B"
+            case .smallDecoder:
+                return "black-forest-labs/FLUX.2-small-decoder"
+            }
         }
 
         /// Subfolder within the HuggingFace repo
-        public var huggingFaceSubfolder: String {
-            "vae"
+        public var huggingFaceSubfolder: String? {
+            switch self {
+            case .standard: return "vae"
+            case .smallDecoder: return nil  // Files at repo root
+            }
         }
 
         /// Full HuggingFace URL for the model
         public var huggingFaceURL: String {
-            "https://huggingface.co/\(huggingFaceRepo)/tree/main/\(huggingFaceSubfolder)"
+            if let subfolder = huggingFaceSubfolder {
+                return "https://huggingface.co/\(huggingFaceRepo)/tree/main/\(subfolder)"
+            }
+            return "https://huggingface.co/\(huggingFaceRepo)"
         }
 
-        public var estimatedSizeGB: Int { 3 }
+        public var estimatedSizeGB: Int {
+            switch self {
+            case .standard: return 3
+            case .smallDecoder: return 1  // ~250MB (encoder+decoder) or ~112MB (decoder only)
+            }
+        }
+
+        /// VAE config for this variant
+        public var vaeConfig: VAEConfig {
+            switch self {
+            case .standard: return .flux2Dev
+            case .smallDecoder: return .flux2SmallDecoder
+            }
+        }
 
         /// Whether this model requires accepting a license on HuggingFace before downloading
         public var isGated: Bool {
-            // VAE is downloaded from Klein 4B repo which is NOT gated
-            false
+            false  // Both VAE variants are public
         }
 
-        /// License information (inherits from FLUX.2 Dev)
+        /// License information
         public var license: String {
-            "FLUX.2 Non-Commercial"
+            switch self {
+            case .standard: return "FLUX.2 Non-Commercial"
+            case .smallDecoder: return "Apache 2.0"
+            }
         }
 
         /// Whether this model can be used commercially
         public var isCommercialUseAllowed: Bool {
-            false  // VAE inherits FLUX.2 Dev non-commercial license
+            switch self {
+            case .standard: return false
+            case .smallDecoder: return true  // Apache 2.0
+            }
         }
     }
 
@@ -362,8 +398,8 @@ public enum ModelRegistry {
                 return "Flux.2 Transformer (\(variant.rawValue))"
             case .textEncoder(let variant):
                 return "Mistral Small 3.2 (\(variant.rawValue))"
-            case .vae:
-                return "Flux.2 VAE"
+            case .vae(let variant):
+                return "Flux.2 \(variant.displayName)"
             }
         }
 
@@ -381,8 +417,8 @@ public enum ModelRegistry {
                 return "flux2-transformer-\(variant.rawValue)"
             case .textEncoder(let variant):
                 return "mistral-small-3.2-\(variant.rawValue)"
-            case .vae:
-                return "flux2-vae"
+            case .vae(let variant):
+                return "flux2-vae-\(variant.rawValue)"
             }
         }
     }
@@ -431,10 +467,17 @@ public enum ModelRegistry {
             return modelsDirectory
                 .appendingPathComponent("lmstudio-community")
                 .appendingPathComponent("Mistral-Small-3.2-24B-Instruct-2506-MLX-\(variant.rawValue)")
-        case .vae:
+        case .vae(let variant):
+            let dirName: String
+            switch variant {
+            case .standard:
+                dirName = "FLUX.2-klein-4B-vae"
+            case .smallDecoder:
+                dirName = "FLUX.2-small-decoder"
+            }
             return modelsDirectory
                 .appendingPathComponent("black-forest-labs")
-                .appendingPathComponent("FLUX.2-klein-4B-vae")
+                .appendingPathComponent(dirName)
         }
     }
 

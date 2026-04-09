@@ -33,6 +33,9 @@ final class Flux2CoreTests: XCTestCase {
 
         XCTAssertEqual(config.latentChannels, 32)
         XCTAssertEqual(config.blockOutChannels, [128, 256, 512, 512])
+        XCTAssertNil(config.decoderBlockOutChannels)
+        XCTAssertEqual(config.effectiveDecoderChannels, [128, 256, 512, 512])
+        XCTAssertFalse(config.isSmallDecoder)
         XCTAssertTrue(config.useBatchNorm)
     }
 
@@ -421,8 +424,17 @@ final class ModelRegistryTests: XCTestCase {
     }
 
     func testVAEVariants() {
-        let vae = ModelRegistry.VAEVariant.standard
-        XCTAssertFalse(vae.huggingFaceRepo.isEmpty)
+        let standard = ModelRegistry.VAEVariant.standard
+        XCTAssertFalse(standard.huggingFaceRepo.isEmpty)
+        XCTAssertEqual(standard.huggingFaceSubfolder, "vae")
+
+        let smallDecoder = ModelRegistry.VAEVariant.smallDecoder
+        XCTAssertEqual(smallDecoder.rawValue, "small-decoder")
+        XCTAssertEqual(smallDecoder.huggingFaceRepo, "black-forest-labs/FLUX.2-small-decoder")
+        XCTAssertNil(smallDecoder.huggingFaceSubfolder)
+        XCTAssertEqual(smallDecoder.estimatedSizeGB, 1)
+        XCTAssertTrue(smallDecoder.isCommercialUseAllowed)
+        XCTAssertTrue(smallDecoder.license.contains("Apache"))
     }
 
     func testRecommendedConfigForRAM() {
@@ -467,8 +479,9 @@ final class ModelRegistryTests: XCTestCase {
     }
 
     func testVAEVariantIsGated() {
-        // VAE is downloaded from Klein 4B repo which is NOT gated
+        // Both VAE variants are NOT gated
         XCTAssertFalse(ModelRegistry.VAEVariant.standard.isGated)
+        XCTAssertFalse(ModelRegistry.VAEVariant.smallDecoder.isGated)
     }
 
     // MARK: - HuggingFace URL Tests
@@ -486,9 +499,13 @@ final class ModelRegistryTests: XCTestCase {
     }
 
     func testVAEVariantHuggingFaceURL() {
-        let vae = ModelRegistry.VAEVariant.standard
-        XCTAssertTrue(vae.huggingFaceURL.starts(with: "https://huggingface.co/"))
-        XCTAssertTrue(vae.huggingFaceURL.contains(vae.huggingFaceRepo))
+        let standard = ModelRegistry.VAEVariant.standard
+        XCTAssertTrue(standard.huggingFaceURL.starts(with: "https://huggingface.co/"))
+        XCTAssertTrue(standard.huggingFaceURL.contains(standard.huggingFaceRepo))
+
+        let smallDecoder = ModelRegistry.VAEVariant.smallDecoder
+        XCTAssertTrue(smallDecoder.huggingFaceURL.starts(with: "https://huggingface.co/"))
+        XCTAssertTrue(smallDecoder.huggingFaceURL.contains("FLUX.2-small-decoder"))
     }
 
     func testTextEncoderVariantHuggingFaceRepoValues() {
@@ -523,9 +540,13 @@ final class ModelRegistryTests: XCTestCase {
     }
 
     func testVAEVariantLicense() {
-        // VAE inherits FLUX.2 Dev non-commercial license
+        // Standard VAE inherits FLUX.2 Dev non-commercial license
         XCTAssertTrue(ModelRegistry.VAEVariant.standard.license.contains("Non-Commercial"))
         XCTAssertFalse(ModelRegistry.VAEVariant.standard.isCommercialUseAllowed)
+
+        // Small decoder is Apache 2.0
+        XCTAssertTrue(ModelRegistry.VAEVariant.smallDecoder.license.contains("Apache"))
+        XCTAssertTrue(ModelRegistry.VAEVariant.smallDecoder.isCommercialUseAllowed)
     }
 
     // MARK: - Default Parameters Tests
@@ -629,6 +650,89 @@ final class VAEConfigExtendedTests: XCTestCase {
 
         XCTAssertGreaterThan(config.normNumGroups, 0)
         XCTAssertGreaterThan(config.normEps, 0)
+    }
+
+    func testVAEConfigSmallDecoder() {
+        let config = VAEConfig.flux2SmallDecoder
+
+        // Encoder channels unchanged
+        XCTAssertEqual(config.blockOutChannels, [128, 256, 512, 512])
+
+        // Decoder channels are smaller
+        XCTAssertEqual(config.decoderBlockOutChannels, [96, 192, 384, 384])
+        XCTAssertEqual(config.effectiveDecoderChannels, [96, 192, 384, 384])
+        XCTAssertTrue(config.isSmallDecoder)
+
+        // Rest of config unchanged
+        XCTAssertEqual(config.latentChannels, 32)
+        XCTAssertEqual(config.inChannels, 3)
+        XCTAssertEqual(config.outChannels, 3)
+    }
+
+    func testVAEConfigSmallDecoderCodable() throws {
+        // Simulate the HuggingFace config.json with decoder_block_out_channels
+        let json = """
+        {
+            "in_channels": 3,
+            "out_channels": 3,
+            "latent_channels": 32,
+            "block_out_channels": [128, 256, 512, 512],
+            "decoder_block_out_channels": [96, 192, 384, 384],
+            "layers_per_block": 2,
+            "act_fn": "silu",
+            "norm_num_groups": 32
+        }
+        """.data(using: .utf8)!
+
+        let config = try JSONDecoder().decode(VAEConfig.self, from: json)
+        XCTAssertEqual(config.blockOutChannels, [128, 256, 512, 512])
+        XCTAssertEqual(config.decoderBlockOutChannels, [96, 192, 384, 384])
+        XCTAssertEqual(config.effectiveDecoderChannels, [96, 192, 384, 384])
+        XCTAssertTrue(config.isSmallDecoder)
+    }
+
+    func testVAEConfigStandardCodableNoDecoderChannels() throws {
+        // Standard config without decoder_block_out_channels
+        let json = """
+        {
+            "in_channels": 3,
+            "out_channels": 3,
+            "latent_channels": 32,
+            "block_out_channels": [128, 256, 512, 512],
+            "layers_per_block": 2
+        }
+        """.data(using: .utf8)!
+
+        let config = try JSONDecoder().decode(VAEConfig.self, from: json)
+        XCTAssertNil(config.decoderBlockOutChannels)
+        XCTAssertEqual(config.effectiveDecoderChannels, [128, 256, 512, 512])
+        XCTAssertFalse(config.isSmallDecoder)
+    }
+
+    func testVAEVariantConfig() {
+        // Each VAE variant should return appropriate config
+        let standardConfig = ModelRegistry.VAEVariant.standard.vaeConfig
+        XCTAssertFalse(standardConfig.isSmallDecoder)
+
+        let smallDecoderConfig = ModelRegistry.VAEVariant.smallDecoder.vaeConfig
+        XCTAssertTrue(smallDecoderConfig.isSmallDecoder)
+        XCTAssertEqual(smallDecoderConfig.effectiveDecoderChannels, [96, 192, 384, 384])
+    }
+
+    func testVAEComponentDisplayName() {
+        let standard = ModelRegistry.ModelComponent.vae(.standard)
+        XCTAssertTrue(standard.displayName.contains("Standard"))
+
+        let smallDecoder = ModelRegistry.ModelComponent.vae(.smallDecoder)
+        XCTAssertTrue(smallDecoder.displayName.contains("Small Decoder"))
+    }
+
+    func testVAEComponentLocalDirectoryName() {
+        let standard = ModelRegistry.ModelComponent.vae(.standard)
+        XCTAssertEqual(standard.localDirectoryName, "flux2-vae-standard")
+
+        let smallDecoder = ModelRegistry.ModelComponent.vae(.smallDecoder)
+        XCTAssertEqual(smallDecoder.localDirectoryName, "flux2-vae-small-decoder")
     }
 }
 

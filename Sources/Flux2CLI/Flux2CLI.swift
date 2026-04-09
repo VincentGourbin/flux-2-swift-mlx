@@ -103,6 +103,9 @@ struct TextToImage: AsyncParsableCommand {
     @Option(name: .long, help: "LoRA config JSON file (alternative to --lora, includes scheduler overrides)")
     var loraConfigPath: String?
 
+    @Option(name: .long, help: "VAE variant: standard (default), small-decoder (distilled, ~1.4x faster)")
+    var vaeVariant: String = "standard"
+
     @Option(name: .long, help: "Memory profile: auto (default), conservative, balanced, performance")
     var memoryProfile: String = "auto"
 
@@ -257,8 +260,13 @@ struct TextToImage: AsyncParsableCommand {
         }
         print()
 
+        // Parse VAE variant
+        guard let vaeVar = ModelRegistry.VAEVariant(rawValue: vaeVariant) else {
+            throw ValidationError("Invalid VAE variant: \(vaeVariant). Use standard or small-decoder")
+        }
+
         // Create pipeline with HuggingFace token
-        let pipeline = Flux2Pipeline(model: modelVariant, quantization: quantConfig, hfToken: token)
+        let pipeline = Flux2Pipeline(model: modelVariant, quantization: quantConfig, vaeVariant: vaeVar, hfToken: token)
 
         // Set memory profile
         switch memoryProfile.lowercased() {
@@ -418,6 +426,9 @@ struct ImageToImage: AsyncParsableCommand {
     @Option(name: .long, help: "LoRA config JSON file (alternative to --lora, includes scheduler overrides)")
     var loraConfigPath: String?
 
+    @Option(name: .long, help: "VAE variant: standard (default), small-decoder (distilled, ~1.4x faster)")
+    var vaeVariant: String = "standard"
+
     @Option(name: .long, help: "Memory profile: auto (default), conservative, balanced, performance")
     var memoryProfile: String = "auto"
 
@@ -575,8 +586,13 @@ struct ImageToImage: AsyncParsableCommand {
             }
         }
 
+        // Parse VAE variant
+        guard let vaeVar = ModelRegistry.VAEVariant(rawValue: vaeVariant) else {
+            throw ValidationError("Invalid VAE variant: \(vaeVariant). Use standard or small-decoder")
+        }
+
         // Create pipeline with HuggingFace token
-        let pipeline = Flux2Pipeline(model: modelVariant, quantization: quantConfig, hfToken: token)
+        let pipeline = Flux2Pipeline(model: modelVariant, quantization: quantConfig, vaeVariant: vaeVar, hfToken: token)
 
         // Set memory profile
         switch memoryProfile.lowercased() {
@@ -688,6 +704,9 @@ struct Download: AsyncParsableCommand {
     @Flag(name: .long, help: "Only download VAE")
     var vaeOnly: Bool = false
 
+    @Option(name: .long, help: "VAE variant to download: standard (default), small-decoder")
+    var vaeVariant: String = "standard"
+
     @Option(name: .long, help: "Custom models directory (for sandboxed apps or custom storage)")
     var modelsDir: String?
 
@@ -697,6 +716,11 @@ struct Download: AsyncParsableCommand {
 
         // Get token from environment if not provided
         let token = hfToken ?? ProcessInfo.processInfo.environment["HF_TOKEN"]
+
+        // Parse VAE variant
+        guard let vaeVar = ModelRegistry.VAEVariant(rawValue: vaeVariant) else {
+            throw ValidationError("Invalid VAE variant: \(vaeVariant). Use standard or small-decoder")
+        }
 
         // Parse model variant
         guard let modelVariant = Flux2Model(rawValue: model) else {
@@ -719,8 +743,8 @@ struct Download: AsyncParsableCommand {
         let downloader = Flux2ModelDownloader(hfToken: token)
 
         if vaeOnly {
-            print("Downloading VAE...")
-            let component = ModelRegistry.ModelComponent.vae(.standard)
+            print("Downloading \(vaeVar.displayName)...")
+            let component = ModelRegistry.ModelComponent.vae(vaeVar)
             try await downloadComponent(downloader, component)
             return
         }
@@ -749,9 +773,9 @@ struct Download: AsyncParsableCommand {
             try await downloadComponent(downloader, component)
         }
 
-        // Always download VAE (shared between all models)
-        print("Downloading VAE...")
-        let vaeComponent = ModelRegistry.ModelComponent.vae(.standard)
+        // Always download VAE
+        print("Downloading \(vaeVar.displayName)...")
+        let vaeComponent = ModelRegistry.ModelComponent.vae(vaeVar)
         try await downloadComponent(downloader, vaeComponent)
 
         print()
@@ -827,9 +851,11 @@ struct Info: ParsableCommand {
             print("  [\(status)] \(component.displayName)")
         }
 
-        let vaeComponent = ModelRegistry.ModelComponent.vae(.standard)
-        let vaeStatus = ModelRegistry.isDownloaded(vaeComponent) ? "✓" : "✗"
-        print("  [\(vaeStatus)] \(vaeComponent.displayName)")
+        for variant in ModelRegistry.VAEVariant.allCases {
+            let component = ModelRegistry.ModelComponent.vae(variant)
+            let status = ModelRegistry.isDownloaded(component) ? "✓" : "✗"
+            print("  [\(status)] \(component.displayName)")
+        }
     }
 }
 

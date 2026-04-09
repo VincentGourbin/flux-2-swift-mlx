@@ -49,7 +49,9 @@ class ModelManager: ObservableObject {
     @Published var downloadedTransformers: Set<String> = []  // Stores TransformerVariant.rawValue
     @Published var transformerSizes: [String: Int64] = [:]
     @Published var isVAEDownloaded = false
+    @Published var isSmallDecoderDownloaded = false
     @Published var vaeSize: Int64 = 0
+    @Published var smallDecoderSize: Int64 = 0
 
     // MARK: - Download State
     @Published var isDownloading = false
@@ -307,13 +309,22 @@ class ModelManager: ObservableObject {
         downloadedTransformers = downloaded
         transformerSizes = sizes
 
-        // Check VAE
+        // Check VAE (standard)
         let vaeComponent = ModelRegistry.ModelComponent.vae(.standard)
         isVAEDownloaded = Flux2ModelDownloader.isDownloaded(vaeComponent)
         if isVAEDownloaded, let path = Flux2ModelDownloader.findModelPath(for: vaeComponent) {
             vaeSize = calculateDirectorySize(at: path)
         } else {
             vaeSize = 0
+        }
+
+        // Check VAE (small-decoder)
+        let smallDecoderComponent = ModelRegistry.ModelComponent.vae(.smallDecoder)
+        isSmallDecoderDownloaded = Flux2ModelDownloader.isDownloaded(smallDecoderComponent)
+        if isSmallDecoderDownloaded, let path = Flux2ModelDownloader.findModelPath(for: smallDecoderComponent) {
+            smallDecoderSize = calculateDirectorySize(at: path)
+        } else {
+            smallDecoderSize = 0
         }
 
         memoryStats = MemoryStats.current
@@ -362,12 +373,12 @@ class ModelManager: ObservableObject {
     }
 
     /// Download VAE
-    func downloadVAE() async {
+    func downloadVAE(variant: ModelRegistry.VAEVariant = .standard) async {
         guard !isDownloading else { return }
 
         isDownloading = true
         downloadProgress = 0
-        downloadMessage = "Starting VAE download..."
+        downloadMessage = "Starting \(variant.displayName) download..."
 
         do {
             let downloader = Flux2ModelDownloader(
@@ -375,7 +386,7 @@ class ModelManager: ObservableObject {
                     ?? UserDefaults.standard.string(forKey: "hfToken")
             )
 
-            let component = ModelRegistry.ModelComponent.vae(.standard)
+            let component = ModelRegistry.ModelComponent.vae(variant)
             _ = try await downloader.download(component) { progress, message in
                 Task { @MainActor in
                     self.downloadProgress = progress
@@ -383,23 +394,32 @@ class ModelManager: ObservableObject {
                 }
             }
 
-            isVAEDownloaded = true
+            switch variant {
+            case .standard: isVAEDownloaded = true
+            case .smallDecoder: isSmallDecoderDownloaded = true
+            }
             refreshDownloadedDiffusionModels()
-            downloadMessage = "VAE download complete!"
+            downloadMessage = "\(variant.displayName) download complete!"
 
         } catch {
-            errorMessage = "VAE download failed: \(error.localizedDescription)"
+            errorMessage = "\(variant.displayName) download failed: \(error.localizedDescription)"
         }
 
         isDownloading = false
     }
 
     /// Delete VAE
-    func deleteVAE() throws {
-        let component = ModelRegistry.ModelComponent.vae(.standard)
+    func deleteVAE(variant: ModelRegistry.VAEVariant = .standard) throws {
+        let component = ModelRegistry.ModelComponent.vae(variant)
         try Flux2ModelDownloader.delete(component)
-        isVAEDownloaded = false
-        vaeSize = 0
+        switch variant {
+        case .standard:
+            isVAEDownloaded = false
+            vaeSize = 0
+        case .smallDecoder:
+            isSmallDecoderDownloaded = false
+            smallDecoderSize = 0
+        }
         refreshDownloadedDiffusionModels()
     }
 

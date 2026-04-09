@@ -25,6 +25,7 @@ A native Swift implementation of [Flux.2](https://blackforestlabs.ai/) image gen
 - **MLX Acceleration**: Optimized for Apple Silicon (M1/M2/M3/M4) using MLX
 - **Multiple Models**: Dev (32B), Klein 4B, and Klein 9B variants
 - **Quantized Models**: On-the-fly quantization (qint8/int4) for all models — Dev fits in ~17GB at int4
+- **Small Decoder VAE**: Optional distilled decoder (~13% faster decode, Apache 2.0) — drop-in `--vae-variant small-decoder`
 - **Text-to-Image**: Generate images from text prompts
 - **Image-to-Image**: Transform images with text prompts and configurable strength
 - **Multi-Image Conditioning**: Combine elements from up to 3 reference images
@@ -98,12 +99,12 @@ The models are downloaded automatically from HuggingFace on first run.
 **For Dev (32B):**
 - Text Encoder: Mistral Small 3.2 (~25GB 8-bit)
 - Transformer: Flux.2 Dev (~33GB qint8, ~17GB int4)
-- VAE: Flux.2 VAE (~3GB)
+- VAE: Flux.2 VAE (~3GB) or [Small Decoder](docs/examples/small-decoder/) (~250MB, Apache 2.0)
 
 **For Klein 4B/9B:**
 - Text Encoder: Qwen3-4B or Qwen3-8B (~4-8GB 8-bit)
 - Transformer: Klein 4B (~4-7GB) or Klein 9B (~5-17GB depending on quantization)
-- VAE: Flux.2 VAE (~3GB)
+- VAE: Flux.2 VAE (~3GB) or [Small Decoder](docs/examples/small-decoder/) (~250MB, Apache 2.0)
 
 Models are cached in `~/Library/Caches/models/` by default (configurable via `--models-dir` or `ModelRegistry.customModelsDirectory` for sandboxed apps).
 
@@ -199,6 +200,20 @@ flux2 t2i "a cat" --model dev --transformer-quant int4
 
 See [Quantization Benchmark](docs/examples/quantization-benchmark/) for detailed measurements and visual comparison.
 
+## Small Decoder VAE
+
+Drop-in distilled VAE decoder from Black Forest Labs — smaller channels (`[96, 192, 384, 384]` vs `[128, 256, 512, 512]`), ~13% faster decode, Apache 2.0 license.
+
+```bash
+# Download
+flux2 download --vae-only --vae-variant small-decoder
+
+# Use with any model
+flux2 t2i "a cat" --model klein-4b --vae-variant small-decoder
+```
+
+See [Small Decoder Benchmark](docs/examples/small-decoder/) for measured performance and visual comparison.
+
 ## Documentation
 
 ### Guides
@@ -221,6 +236,7 @@ See [Quantization Benchmark](docs/examples/quantization-benchmark/) for detailed
 | [Examples Gallery](docs/examples/) | Overview of all examples with sample outputs |
 | [Model Comparison](docs/examples/comparison.md) | Dev vs Klein 4B vs Klein 9B — performance, quality, when to use each |
 | [Quantization Benchmark](docs/examples/quantization-benchmark/) | Measured memory, speed, and visual quality for bf16/qint8/int4 |
+| [Small Decoder VAE](docs/examples/small-decoder/) | Distilled decoder benchmark — ~13% faster decode, visual comparison, Apache 2.0 |
 | [Flux.2 Dev Examples](docs/examples/flux2-dev/) | T2I, I2I, multi-image conditioning, VLM image interpretation |
 | [Flux.2 Klein 4B Examples](docs/examples/flux2-klein-4b/) | Fast T2I, multiple resolutions, quantization comparison |
 | [Flux.2 Klein 9B Examples](docs/examples/flux2-klein-9b/) | T2I, multiple resolutions, prompt upsampling |

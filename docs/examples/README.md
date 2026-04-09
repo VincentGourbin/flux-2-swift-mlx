@@ -56,6 +56,11 @@ For detailed comparison, see [**Model Comparison**](comparison.md).
   - When to use each model
   - Recommended workflows
 
+- **[Small Decoder VAE](small-decoder/README.md)**
+  - Distilled VAE decoder (~13% faster decode, Apache 2.0)
+  - Visual comparison vs standard VAE
+  - Usage and when to use
+
 ---
 
 ## Sample Outputs

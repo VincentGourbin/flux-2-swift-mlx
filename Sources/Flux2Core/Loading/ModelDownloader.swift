@@ -106,9 +106,8 @@ public class Flux2ModelDownloader: @unchecked Sendable {
         case .textEncoder:
             // Text encoder uses MistralCore's download system
             return "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
-        case .vae:
-            // Use Klein 4B distilled repo (not gated, same VAE as all Flux.2 models)
-            return "black-forest-labs/FLUX.2-klein-4B"
+        case .vae(let variant):
+            return variant.huggingFaceRepo
         }
     }
 
@@ -243,8 +242,8 @@ public class Flux2ModelDownloader: @unchecked Sendable {
         switch component {
         case .transformer(let variant):
             return variant.huggingFaceSubfolder
-        case .vae:
-            return "vae"
+        case .vae(let variant):
+            return variant.huggingFaceSubfolder
         case .textEncoder:
             return nil
         }
