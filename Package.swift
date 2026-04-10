@@ -19,7 +19,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.2.0"),
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.1.6"),
         .package(url: "https://github.com/jpsim/Yams", from: "5.1.0"),
-        .package(url: "https://github.com/VincentGourbin/swift-mlx-profiler", from: "1.1.0"),
+        .package(url: "https://github.com/VincentGourbin/swift-mlx-profiler", from: "1.1.1"),
     ],
     targets: [
         // MARK: - Libraries
