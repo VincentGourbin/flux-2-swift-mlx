@@ -804,10 +804,9 @@ public final class FluxTextEncoders: @unchecked Sendable {
     /// Log memory for inference debugging (only when detailed profiling is enabled)
     private func logInferenceMemory(_ label: String) {
         guard FluxProfiler.shared.isEnabled || ProcessInfo.processInfo.environment["VLM_DEBUG"] != nil else { return }
-        let snapshot = FluxProfiler.snapshot()
-        let mlxMB = Double(snapshot.mlxActive) / (1024 * 1024)
-        let procMB = Double(snapshot.processFootprint) / (1024 * 1024)
-        print("[VLM-INF] \(label): MLX=\(String(format: "%.1f", mlxMB))MB, Process=\(String(format: "%.1f", procMB))MB")
+        let mem = SystemMetrics.mlxMemory()
+        let procMB = Double(SystemMetrics.processFootprint()) / (1024 * 1024)
+        print("[VLM-INF] \(label): MLX=\(String(format: "%.1f", mem.activeMB))MB, Process=\(String(format: "%.1f", procMB))MB")
         fflush(stdout)
     }
 

@@ -139,7 +139,7 @@ struct ModelStatusBar: View {
             Color(NSColor.controlBackgroundColor)
         )
         .onAppear {
-            FluxProfiler.shared.isEnabled = detailedProfiling
+            if detailedProfiling { FluxProfiler.shared.enable() } else { FluxProfiler.shared.disable() }
         }
     }
 
@@ -182,7 +182,7 @@ struct ModelStatusBar: View {
             .toggleStyle(.checkbox)
             .font(.caption)
             .onChange(of: detailedProfiling) { _, newValue in
-                FluxProfiler.shared.isEnabled = newValue
+                if newValue { FluxProfiler.shared.enable() } else { FluxProfiler.shared.disable() }
             }
             .help("Enable detailed profiling and memory logging")
 
@@ -377,7 +377,7 @@ struct ModelStatusBar: View {
             .toggleStyle(.checkbox)
             .font(.caption)
             .onChange(of: detailedProfiling) { _, newValue in
-                FluxProfiler.shared.isEnabled = newValue
+                if newValue { FluxProfiler.shared.enable() } else { FluxProfiler.shared.disable() }
             }
 
         Text("Manage models in Models tab")
