@@ -121,10 +121,11 @@ struct ProfileRun: AsyncParsableCommand {
         )
 
         let session = ProfilingSession(config: config)
-        session.modelVariant = modelVariant.rawValue
-        session.quantization = "\(options.textQuant)/\(options.transformerQuant)"
-        session.imageSize = "\(options.width)x\(options.height)"
-        session.steps = actualSteps
+        session.title = "FLUX.2 PROFILING REPORT"
+        session.metadata["model"] = modelVariant.rawValue
+        session.metadata["quant"] = "\(options.textQuant)/\(options.transformerQuant)"
+        session.metadata["resolution"] = "\(options.width)x\(options.height)"
+        session.metadata["steps"] = String(actualSteps)
 
         // Attach session to profiler
         let profiler = Flux2Profiler.shared
@@ -230,10 +231,11 @@ struct ProfileBenchmark: AsyncParsableCommand {
             // Create session for this run
             let config = ProfilingConfig(trackMemory: true, trackPerStepMemory: false)
             let session = ProfilingSession(config: config)
-            session.modelVariant = modelVariant.rawValue
-            session.quantization = "\(options.textQuant)/\(options.transformerQuant)"
-            session.imageSize = "\(options.width)x\(options.height)"
-            session.steps = actualSteps
+            session.title = "FLUX.2 PROFILING REPORT"
+            session.metadata["model"] = modelVariant.rawValue
+            session.metadata["quant"] = "\(options.textQuant)/\(options.transformerQuant)"
+            session.metadata["resolution"] = "\(options.width)x\(options.height)"
+            session.metadata["steps"] = String(actualSteps)
 
             profiler.enable()
             profiler.activeSession = session
@@ -366,10 +368,11 @@ struct ProfileCompare: AsyncParsableCommand {
             for runIdx in 0..<runs {
                 let config = ProfilingConfig(trackMemory: true, trackPerStepMemory: false)
                 let session = ProfilingSession(config: config)
-                session.modelVariant = modelVariant.rawValue
-                session.quantization = "\(textQuant)/\(transformerQuant.rawValue)"
-                session.imageSize = "\(width)x\(height)"
-                session.steps = actualSteps
+                session.title = "FLUX.2 PROFILING REPORT"
+                session.metadata["model"] = modelVariant.rawValue
+                session.metadata["quant"] = "\(textQuant)/\(transformerQuant.rawValue)"
+                session.metadata["resolution"] = "\(width)x\(height)"
+                session.metadata["steps"] = String(actualSteps)
 
                 profiler.enable()
                 profiler.activeSession = session

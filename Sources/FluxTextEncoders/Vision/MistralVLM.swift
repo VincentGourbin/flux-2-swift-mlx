@@ -577,10 +577,9 @@ public class MistralVLM: Module {
 /// Helper to log memory usage at key points (only when VLM_DEBUG is set)
 private func logMemory(_ label: String) {
     guard vlmDebug else { return }
-    let snapshot = FluxProfiler.snapshot()
-    let mlxMB = Double(snapshot.mlxActive) / (1024 * 1024)
-    let procMB = Double(snapshot.processFootprint) / (1024 * 1024)
-    print("[VLM-MEM] \(label): MLX=\(String(format: "%.1f", mlxMB))MB, Process=\(String(format: "%.1f", procMB))MB")
+    let mem = SystemMetrics.mlxMemory()
+    let procMB = Double(SystemMetrics.processFootprint()) / (1024 * 1024)
+    print("[VLM-MEM] \(label): MLX=\(String(format: "%.1f", mem.activeMB))MB, Process=\(String(format: "%.1f", procMB))MB")
     fflush(stdout)
 }
 

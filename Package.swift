@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "Flux2Swift",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v15)],
     products: [
         // Libraries
         .library(name: "FluxTextEncoders", targets: ["FluxTextEncoders"]),
@@ -19,6 +19,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.2.0"),
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.1.6"),
         .package(url: "https://github.com/jpsim/Yams", from: "5.1.0"),
+        .package(url: "https://github.com/VincentGourbin/swift-mlx-profiler", from: "1.1.0"),
     ],
     targets: [
         // MARK: - Libraries
@@ -30,6 +31,7 @@ let package = Package(
                 .product(name: "MLXRandom", package: "mlx-swift"),
                 .product(name: "MLXFast", package: "mlx-swift"),
                 .product(name: "Transformers", package: "swift-transformers"),
+                .product(name: "MLXProfiler", package: "swift-mlx-profiler"),
             ]
         ),
         .target(
@@ -42,6 +44,7 @@ let package = Package(
                 .product(name: "MLXFast", package: "mlx-swift"),
                 .product(name: "MLXOptimizers", package: "mlx-swift"),
                 .product(name: "Transformers", package: "swift-transformers"),
+                .product(name: "MLXProfiler", package: "swift-mlx-profiler"),
             ]
         ),
         // MARK: - CLI Tools

@@ -94,8 +94,7 @@ struct Generate: AsyncParsableCommand {
         let core = FluxTextEncoders.shared
 
         // Enable profiling if requested
-        FluxProfiler.shared.isEnabled = genOptions.profile
-        FluxProfiler.shared.reset()
+        if genOptions.profile { FluxProfiler.shared.enable() }
 
         // Load model
         print("Loading model...")
@@ -135,8 +134,8 @@ struct Generate: AsyncParsableCommand {
 
         // Print detailed profiling if enabled
         if genOptions.profile {
-            let summary = FluxProfiler.shared.summary()
-            print("\n" + summary.description)
+            let metrics = FluxProfiler.shared.getMetrics()
+            print("\n" + metrics.summary)
         }
     }
 }
@@ -159,7 +158,7 @@ struct Chat: AsyncParsableCommand {
         let core = FluxTextEncoders.shared
 
         // Enable profiling if requested
-        FluxProfiler.shared.isEnabled = genOptions.profile
+        if genOptions.profile { FluxProfiler.shared.enable() }
 
         // Load model
         print("Loading model...")
@@ -674,8 +673,7 @@ struct Vision: AsyncParsableCommand {
         let core = FluxTextEncoders.shared
 
         // Enable profiling if requested
-        FluxProfiler.shared.isEnabled = genOptions.profile
-        FluxProfiler.shared.reset()
+        if genOptions.profile { FluxProfiler.shared.enable() }
 
         // Verify image exists
         guard FileManager.default.fileExists(atPath: imagePath) else {
@@ -726,8 +724,8 @@ struct Vision: AsyncParsableCommand {
 
         // Print detailed profiling if enabled
         if genOptions.profile {
-            let summary = FluxProfiler.shared.summary()
-            print("\n" + summary.description)
+            let metrics = FluxProfiler.shared.getMetrics()
+            print("\n" + metrics.summary)
         }
     }
 }
