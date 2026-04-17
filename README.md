@@ -5,6 +5,7 @@ A native Swift implementation of [Flux.2](https://blackforestlabs.ai/) image gen
 [![FluxForge Studio on the App Store](https://img.shields.io/badge/App_Store-FluxForge_Studio-0D96F6?logo=apple&logoColor=white)](https://apps.apple.com/us/app/fluxforge-studio/id6758351212) [![Website](https://img.shields.io/badge/Website-fluxforge.vinceforge.com-blue)](https://fluxforge.vinceforge.com)
 
 <a href="https://www.buymeacoffee.com/fluxforgestudio"><img src="https://img.buymeacoffee.com/button-api/?text=Buy me a coffee&emoji=&slug=fluxforgestudio&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff" /></a>
+[![Hypercommit](https://img.shields.io/badge/Hypercommit-DB2475)](https://hypercommit.com/flux-2-swift-mlx)
 
 ## Downloads
 
