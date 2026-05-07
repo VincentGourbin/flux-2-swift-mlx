@@ -1754,7 +1754,8 @@ public final class SimpleLoRATrainer {
         let inferenceQuantization: Flux2QuantizationConfig = .balanced
         let pipeline = Flux2Pipeline(
             model: inferenceModel,
-            quantization: inferenceQuantization
+            quantization: inferenceQuantization,
+            vaeVariant: .smallDecoder
         )
 
         // Generate images for each validation prompt
@@ -1867,7 +1868,8 @@ public final class SimpleLoRATrainer {
         let inferenceQuantization: Flux2QuantizationConfig = .balanced
         var pipeline: Flux2Pipeline? = Flux2Pipeline(
             model: inferenceModel,
-            quantization: inferenceQuantization
+            quantization: inferenceQuantization,
+            vaeVariant: .smallDecoder
         )
 
         // Load LoRA from checkpoint we just saved
