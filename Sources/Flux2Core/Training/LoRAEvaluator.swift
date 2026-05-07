@@ -182,7 +182,12 @@ public class LoRAEvaluator {
         // === Step 3: Generate baseline image with base model ===
         onProgress?("[3/5] Generating baseline image (\(width)x\(height), seed=\(seed))...")
 
-        let pipeline = Flux2Pipeline(model: model, quantization: quantization, hfToken: hfToken)
+        let pipeline = Flux2Pipeline(
+            model: model,
+            quantization: quantization,
+            vaeVariant: .smallDecoder,
+            hfToken: hfToken
+        )
 
         let steps = model.defaultSteps
         let guidance = model.defaultGuidance
