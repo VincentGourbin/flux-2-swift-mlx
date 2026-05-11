@@ -1877,6 +1877,13 @@ extension Flux2Pipeline {
         guidance: Float = 1.0,
         seed: UInt64? = nil
     ) async throws -> CGImage {
+        // `loadModels()`이 download만 끝내고 모델 인스턴스(vae/transformer/textEncoder)는
+        // inference 시점에 lazy load되는 패턴이다. 기존 `generate(...)`도 같은 순서로
+        // load → 사용 한다 — 그 흐름을 그대로 따라간다.
+        try await loadTextEncoder()
+        try await loadTransformer()
+        try await loadVAE()
+
         guard let vae = vae else { throw Flux2Error.modelNotLoaded("VAE") }
         guard let transformer = transformer else { throw Flux2Error.modelNotLoaded("Transformer") }
 
@@ -1945,15 +1952,17 @@ extension Flux2Pipeline {
                 sample: packedOutputLatents
             )
 
-            if sigmaNext > 0 {
-                let freshNoise = MLXRandom.normal(packedOutputLatents.shape)
-                let originalNoised = scheduler.scaleNoise(
-                    sample: imageLatentsPacked,
-                    sigma: sigmaNext,
-                    noise: freshNoise
-                )
-                packedOutputLatents = (1 - maskPacked) * originalNoised + maskPacked * packedOutputLatents
-            }
+            // RePaint per-step blending — **마지막 step도 포함**.
+            // sigmaNext = 0이면 scaleNoise = (1-0)*image + 0*noise = image → mask 외부가 원본 image
+            // latent로 강제 복원되어 보존된다. 이전 버전은 sigmaNext > 0 가드로 마지막 step blending을
+            // 건너뛰어 mask 외부도 fully denoised 결과로 덮였음(=hallucination).
+            let freshNoise = MLXRandom.normal(packedOutputLatents.shape)
+            let originalNoised = scheduler.scaleNoise(
+                sample: imageLatentsPacked,
+                sigma: sigmaNext,
+                noise: freshNoise
+            )
+            packedOutputLatents = (1 - maskPacked) * originalNoised + maskPacked * packedOutputLatents
             eval(packedOutputLatents)
         }
 
