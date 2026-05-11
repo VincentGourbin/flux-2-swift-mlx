@@ -1840,3 +1840,203 @@ extension Flux2Pipeline {
     }
 }
 
+// MARK: - Masked Inpainting (PawworksAI fork addition)
+//
+// FLUX.2 has no dedicated Fill checkpoint (as of 2026-05), so diffusers'
+// `FluxFillPipeline` channel-cat conditioning approach is not applicable — it
+// assumes a fine-tuned model with extra transformer input channels.
+//
+// Instead this implementation uses the RePaint / SD-inpainting trick:
+// at each denoising step the region OUTSIDE the mask is forced back to the
+// original image latents (re-noised to the current sigma), so only the inside-
+// mask region accumulates new content. Works with any base FLUX.2 transformer
+// without retraining.
+//
+// When a FLUX.2-Fill checkpoint ships, prefer that path — it gives higher
+// fidelity by attending to the masked region as conditioning rather than
+// overwriting it post-hoc.
+
+extension Flux2Pipeline {
+    /// Inpaint the masked region of an image using FLUX.2 + RePaint-style per-step blending.
+    ///
+    /// - Parameters:
+    ///   - prompt: Text describing the desired content for the masked region.
+    ///   - image: Input image. Region outside the mask is preserved.
+    ///   - mask: Grayscale mask, same dimensions as `image` (will be resized otherwise).
+    ///           White (255) = inpaint, black (0) = keep. Soft values are honored.
+    ///   - steps: Denoising step count. Klein distilled uses 4 by default.
+    ///   - guidance: Guidance scale. Klein typically 1.0.
+    ///   - seed: Random seed; `nil` for fresh randomness.
+    /// - Returns: Inpainted CGImage at the resolved target dimensions
+    ///   (multiple of 32, scaled down if input > 1024² area).
+    public func generateMaskedInpainting(
+        prompt: String,
+        image: CGImage,
+        mask: CGImage,
+        steps: Int = 4,
+        guidance: Float = 1.0,
+        seed: UInt64? = nil
+    ) async throws -> CGImage {
+        guard let vae = vae else { throw Flux2Error.modelNotLoaded("VAE") }
+        guard let transformer = transformer else { throw Flux2Error.modelNotLoaded("Transformer") }
+
+        let (targetH, targetW) = Self.resolveInpaintDimensions(width: image.width, height: image.height)
+
+        let (textEmbeddings, _) = try encodeTextForCurrentModel(prompt: prompt)
+
+        let imagePreprocessed = preprocessImageForVAE(image, targetHeight: targetH, targetWidth: targetW)
+        let imageRawLatents = vae.encode(imagePreprocessed, samplePosterior: false)
+        var imagePatchified = LatentUtils.packLatentsToPatchified(imageRawLatents)
+        imagePatchified = LatentUtils.normalizeLatentsWithBatchNorm(
+            imagePatchified,
+            runningMean: vae.batchNormRunningMean,
+            runningVar: vae.batchNormRunningVar
+        )
+        eval(imagePatchified)
+        let imageLatentsPacked = LatentUtils.packPatchifiedToSequence(imagePatchified)
+
+        let maskPacked = preprocessMaskForLatentBlending(
+            mask: mask,
+            targetHeight: targetH,
+            targetWidth: targetW
+        )
+
+        if let seed = seed { MLXRandom.seed(seed) }
+        let noiseLatentsPatchified = LatentUtils.generatePatchifiedLatents(
+            batchSize: 1,
+            height: targetH,
+            width: targetW,
+            latentChannels: 32,
+            patchSize: 2,
+            seed: nil
+        )
+        var packedOutputLatents = LatentUtils.packPatchifiedToSequence(noiseLatentsPatchified)
+
+        let textLength = textEmbeddings.shape[1]
+        let (textIds, imgIds, _) = LatentUtils.combinePositionIDs(
+            textLength: textLength,
+            height: targetH,
+            width: targetW
+        )
+
+        let imageSeqLen = packedOutputLatents.shape[1]
+        scheduler.setTimesteps(numInferenceSteps: steps, imageSeqLen: imageSeqLen, strength: 1.0)
+        let sigmas = scheduler.sigmas
+
+        let guidanceTensor = MLXArray([guidance])
+
+        for stepIdx in 0..<(sigmas.count - 1) {
+            let sigma = sigmas[stepIdx]
+            let sigmaNext = sigmas[stepIdx + 1]
+            let t = MLXArray([sigma])
+
+            let noisePred = transformer.callAsFunction(
+                hiddenStates: packedOutputLatents,
+                encoderHiddenStates: textEmbeddings,
+                timestep: t,
+                guidance: guidanceTensor,
+                imgIds: imgIds,
+                txtIds: textIds
+            )
+
+            packedOutputLatents = scheduler.step(
+                modelOutput: noisePred,
+                timestep: sigma,
+                sample: packedOutputLatents
+            )
+
+            if sigmaNext > 0 {
+                let freshNoise = MLXRandom.normal(packedOutputLatents.shape)
+                let originalNoised = scheduler.scaleNoise(
+                    sample: imageLatentsPacked,
+                    sigma: sigmaNext,
+                    noise: freshNoise
+                )
+                packedOutputLatents = (1 - maskPacked) * originalNoised + maskPacked * packedOutputLatents
+            }
+            eval(packedOutputLatents)
+        }
+
+        var finalPatchified = LatentUtils.unpackSequenceToPatchified(
+            packedOutputLatents,
+            height: targetH,
+            width: targetW
+        )
+        finalPatchified = LatentUtils.denormalizeLatentsWithBatchNorm(
+            finalPatchified,
+            runningMean: vae.batchNormRunningMean,
+            runningVar: vae.batchNormRunningVar
+        )
+        let finalLatents = LatentUtils.unpatchifyLatents(finalPatchified)
+        eval(finalLatents)
+        let decoded = vae.decode(finalLatents)
+        eval(decoded)
+        guard let outputImage = postprocessVAEOutput(decoded) else {
+            throw Flux2Error.generationFailed("Failed to convert inpainted VAE output to CGImage")
+        }
+        return outputImage
+    }
+
+    // MARK: Inpainting helpers
+
+    private static func resolveInpaintDimensions(width: Int, height: Int) -> (height: Int, width: Int) {
+        let multipleOf = 32
+        let maxArea = 1024 * 1024
+        var w = width
+        var h = height
+        let pixelCount = w * h
+        if pixelCount > maxArea {
+            let scale = sqrt(Double(maxArea) / Double(pixelCount))
+            w = Int(Double(w) * scale)
+            h = Int(Double(h) * scale)
+        }
+        w = max(multipleOf, (w / multipleOf) * multipleOf)
+        h = max(multipleOf, (h / multipleOf) * multipleOf)
+        return (height: h, width: w)
+    }
+
+    private func encodeTextForCurrentModel(prompt: String) throws -> (embeddings: MLXArray, usedPrompt: String) {
+        switch model {
+        case .dev:
+            guard let textEncoder = textEncoder else {
+                throw Flux2Error.modelNotLoaded("Dev text encoder (Mistral)")
+            }
+            return try textEncoder.encodeWithPrompt(prompt, upsample: false)
+        case .klein4B, .klein4BBase, .klein9B, .klein9BBase, .klein9BKV:
+            guard let kleinEncoder = kleinEncoder else {
+                throw Flux2Error.modelNotLoaded("Klein text encoder (Qwen3)")
+            }
+            return try kleinEncoder.encodeWithPrompt(prompt, upsample: false)
+        }
+    }
+
+    /// Convert a grayscale mask CGImage to packed sequence form `[1, seq, 1]` aligned with the
+    /// patchified latent grid. Broadcasts naturally against `[1, seq, 128]` latents at blend time.
+    /// Soft mask values in [0, 1] are preserved — caller can pre-binarize if desired.
+    private func preprocessMaskForLatentBlending(
+        mask: CGImage,
+        targetHeight: Int,
+        targetWidth: Int
+    ) -> MLXArray {
+        let latentH = targetHeight / 16
+        let latentW = targetWidth / 16
+        let bytesPerRow = latentW
+        var pixels = [UInt8](repeating: 0, count: latentH * latentW)
+        let colorSpace = CGColorSpaceCreateDeviceGray()
+        let context = CGContext(
+            data: &pixels,
+            width: latentW,
+            height: latentH,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.none.rawValue
+        )!
+        context.interpolationQuality = .high
+        context.draw(mask, in: CGRect(x: 0, y: 0, width: latentW, height: latentH))
+
+        let floats = pixels.map { Float($0) / 255.0 }
+        return MLXArray(floats).reshaped([1, latentH * latentW, 1])
+    }
+}
+
