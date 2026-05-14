@@ -3,6 +3,7 @@
 
 import Foundation
 import MLX
+import os.lock
 
 /// Compute empirical mu for Flux.2 time shifting
 /// Ported from diffusers: https://github.com/huggingface/diffusers/blob/main/src/diffusers/pipelines/flux2/pipeline_flux2.py
@@ -32,6 +33,22 @@ public func computeEmpiricalMu(imageSeqLen: Int, numSteps: Int) -> Float {
 /// Implements the flow matching ODE solver with Euler steps.
 /// Based on diffusers FlowMatchEulerDiscreteScheduler
 public class FlowMatchEulerScheduler: @unchecked Sendable {
+
+  // MARK: - Telemetry Seam
+
+  private let _telemetryLock = OSAllocatedUnfairLock<(any Flux2TelemetryReporter)?>(
+    initialState: nil)
+
+  public func setTelemetry(_ reporter: (any Flux2TelemetryReporter)?) {
+    _telemetryLock.withLock { state in
+      state = reporter
+    }
+  }
+
+  public func currentTelemetry() -> (any Flux2TelemetryReporter)? {
+    _telemetryLock.withLock { $0 }
+  }
+
   /// Number of training timesteps
   public let numTrainTimesteps: Int
 

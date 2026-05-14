@@ -4,6 +4,7 @@
 import Foundation
 import MLX
 import MLXNN
+import os.lock
 
 /// Flux.2 Diffusion Transformer (DiT) Model
 ///
@@ -20,6 +21,22 @@ import MLXNN
 /// 5. Single-stream blocks: concatenate and process together
 /// 6. Final norm and projection: [B, H*W, 6144] -> [B, H*W, 128]
 public class Flux2Transformer2DModel: Module, @unchecked Sendable {
+
+  // MARK: - Telemetry Seam
+
+  private let _telemetryLock = OSAllocatedUnfairLock<(any Flux2TelemetryReporter)?>(
+    initialState: nil)
+
+  public func setTelemetry(_ reporter: (any Flux2TelemetryReporter)?) {
+    _telemetryLock.withLock { state in
+      state = reporter
+    }
+  }
+
+  public func currentTelemetry() -> (any Flux2TelemetryReporter)? {
+    _telemetryLock.withLock { $0 }
+  }
+
   let config: Flux2TransformerConfig
 
   /// Memory optimization settings for periodic graph evaluation

@@ -4,6 +4,7 @@
 import Foundation
 import MLX
 import MLXNN
+import os.lock
 
 /// Applies LoRA weights to a base linear layer
 ///
@@ -53,6 +54,24 @@ public class LoRALinear: Module, @unchecked Sendable {
 
 /// Manages multiple LoRA adapters and their application to a transformer
 public class LoRAManager: @unchecked Sendable {
+
+  // MARK: - Telemetry Seam
+  // Added in B5 (iteration 03) to support weightLoadComplete emission for LoRA.
+  // Flux2Pipeline.setTelemetry propagates the reporter here via LoRAManager.setTelemetry.
+
+  private let _telemetryLock = OSAllocatedUnfairLock<(any Flux2TelemetryReporter)?>(
+    initialState: nil)
+
+  public func setTelemetry(_ reporter: (any Flux2TelemetryReporter)?) {
+    _telemetryLock.withLock { state in
+      state = reporter
+    }
+  }
+
+  public func currentTelemetry() -> (any Flux2TelemetryReporter)? {
+    _telemetryLock.withLock { $0 }
+  }
+
   /// Loaded LoRA loaders
   private var loaders: [LoRALoader] = []
 
@@ -67,6 +86,11 @@ public class LoRAManager: @unchecked Sendable {
   /// - Returns: LoRA info after loading
   @discardableResult
   public func loadLoRA(_ config: LoRAConfig) throws -> LoRAInfo {
+    // P5-verified: paramCount uses LoRAInfo.numParameters which is computed
+    // in LoRALoader.parseAndMapWeights as totalParams (loraA.size + loraB.size per pair).
+    // MLXArray.size is confirmed at MLX/MLXArray.swift:49 (mlx_array_size).
+    let loadStart = Date()
+
     let loader = LoRALoader(config: config)
     try loader.load()
 
@@ -87,6 +111,18 @@ public class LoRAManager: @unchecked Sendable {
     }
 
     Flux2Debug.log("[LoRA] Registered \(config.name) with \(info.numLayers) layers")
+
+    // Emit weightLoadComplete on success path only (errorThrown precedes any throw — B11).
+    let loadDuration = Date().timeIntervalSince(loadStart)
+    if let telemetry = currentTelemetry() {
+      Task {
+        await telemetry.capture(
+          .weightLoadComplete(
+            component: .lora,
+            paramCount: info.numParameters,
+            durationSeconds: loadDuration))
+      }
+    }
 
     return info
   }

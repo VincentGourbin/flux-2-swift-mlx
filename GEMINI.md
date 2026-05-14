@@ -57,6 +57,16 @@ Discover available simulators with `xcrun simctl list devices available` if a di
 
 See [AGENTS.md](./AGENTS.md) § App Group configuration (required).
 
+## 4a. Telemetry Chokepoint Convention
+
+When adding or reviewing instrumentation in this repo *or* in any sibling library (`SwiftTuberia`, `Produciesta`, `Vinetas`, etc.), follow the cross-library chokepoint pattern in [AGENTS.md §11](./AGENTS.md#11-telemetry-chokepoint-convention-cross-library). Shared event names (`pipelineInit`, `weightLoadComplete`, `<phase>Complete`, `<loop>LoopStart` / `<loop>LoopEnd`, `numericalAnomaly`, `errorThrown`, `generationCancelled`) and snake_case sink phases (`<lib>_<noun>_<lifecycle>`) let a single Vinetas-style adapter route events from every library uniformly.
+
+This repo's [REQUIREMENTS-instrumentation.md](./REQUIREMENTS-instrumentation.md) is the reference implementation.
+
+Two non-negotiable rules from §11:
+- **Boundaries, not internals.** Per-step / per-block / per-attention-head events are deferred until a real anomaly points the agent at the region.
+- **`errorThrown` precedes every `throw`.** No exceptions.
+
 ## 5. Gemini-Specific Critical Rules
 
 In addition to the universal rules in [AGENTS.md §10](AGENTS.md#10-universal-critical-rules):
@@ -67,4 +77,4 @@ In addition to the universal rules in [AGENTS.md §10](AGENTS.md#10-universal-cr
 
 ---
 
-**Last updated**: 2026-05-08 (v3.1.1)
+**Last updated**: 2026-05-14 (v3.2.0) — added §4a pointer to telemetry chokepoint convention

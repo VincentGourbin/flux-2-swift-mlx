@@ -4,13 +4,40 @@
 import Foundation
 import MLX
 import MLXNN
+import os.lock
 
 /// Utilities for loading Flux.2 model weights from safetensors files
 public class Flux2WeightLoader {
 
+  // MARK: - Telemetry Seam
+  //
+  // `Flux2WeightLoader` has no instance state — every public entry point is a
+  // `static` method. To preserve the cross-library seam shape (per
+  // AGENTS.md §11 / REQUIREMENTS-instrumentation.md), the lock + setters are
+  // also `static`. Callers (e.g. `Flux2Pipeline.setTelemetry`) invoke
+  // `Flux2WeightLoader.setTelemetry(reporter)` directly.
+
+  private static let _telemetryLock = OSAllocatedUnfairLock<(any Flux2TelemetryReporter)?>(
+    initialState: nil)
+
+  public static func setTelemetry(_ reporter: (any Flux2TelemetryReporter)?) {
+    _telemetryLock.withLock { state in
+      state = reporter
+    }
+  }
+
+  public static func currentTelemetry() -> (any Flux2TelemetryReporter)? {
+    _telemetryLock.withLock { $0 }
+  }
+
   /// Load all weights from a model directory
   /// - Parameter modelPath: Path to directory containing safetensors files
   /// - Returns: Dictionary of weight name to MLXArray
+  ///
+  /// Note: weightLoadComplete telemetry is emitted by component-specific callers:
+  ///   - Transformer weights: emitted by loadQuantizedTransformer (below)
+  ///   - VAE weights: emitted by Flux2Pipeline after applyVAEWeights completes (B4 scope)
+  /// This function is a generic data loader and does not know its component context.
   public static func loadWeights(from modelPath: String) throws -> [String: MLXArray] {
     let fm = FileManager.default
     let contents = try fm.contentsOfDirectory(atPath: modelPath)
@@ -695,12 +722,30 @@ public class Flux2WeightLoader {
     from modelPath: String,
     quantization: TransformerQuantization
   ) throws -> [String: MLXArray] {
+    // P5-verified: paramCount uses weights.values.reduce(0){$0+$1.size} which calls
+    // MLXArray.size (mlx_array_size) — confirmed in MLX/MLXArray.swift line 49.
+    let loadStart = Date()
+
     let weights = try loadWeights(from: modelPath)
 
     // For qint8, weights may already be quantized in safetensors
     // If not, we need to quantize them here
     if quantization != .bf16 {
       Flux2Debug.log("Loading \(quantization.rawValue) quantized weights")
+    }
+
+    // Emit weightLoadComplete for transformer on success path only.
+    // VAE weights use the generic loadWeights path; their emit is in Flux2Pipeline (B4 scope).
+    let paramCount = weights.values.reduce(0) { $0 + $1.size }
+    let loadDuration = Date().timeIntervalSince(loadStart)
+    if let telemetry = currentTelemetry() {
+      Task {
+        await telemetry.capture(
+          .weightLoadComplete(
+            component: .transformer,
+            paramCount: paramCount,
+            durationSeconds: loadDuration))
+      }
     }
 
     return weights

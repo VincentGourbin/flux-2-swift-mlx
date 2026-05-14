@@ -6,6 +6,7 @@ import FluxTextEncoders
 import Foundation
 import MLX
 import MLXNN
+import os.lock
 
 #if canImport(AppKit)
   import AppKit
@@ -18,6 +19,21 @@ import MLXNN
 /// Uses Mistral Small 3.2 to extract hidden states from layers [10, 20, 30]
 /// producing embeddings with shape [1, 512, 15360] for Flux.2 conditioning.
 public class Flux2TextEncoder: @unchecked Sendable {
+
+  // MARK: - Telemetry Seam
+
+  private let _telemetryLock = OSAllocatedUnfairLock<(any Flux2TelemetryReporter)?>(
+    initialState: nil)
+
+  public func setTelemetry(_ reporter: (any Flux2TelemetryReporter)?) {
+    _telemetryLock.withLock { state in
+      state = reporter
+    }
+  }
+
+  public func currentTelemetry() -> (any Flux2TelemetryReporter)? {
+    _telemetryLock.withLock { $0 }
+  }
 
   /// Quantization level
   public let quantization: MistralQuantization
@@ -38,6 +54,12 @@ public class Flux2TextEncoder: @unchecked Sendable {
   /// - Parameter modelPath: Path to model directory (or nil to auto-download)
   @MainActor
   public func load(from modelPath: URL? = nil) async throws {
+    // P5-verified: paramCount uses an architectural constant because the underlying
+    // MistralForCausalLM module is private inside FluxTextEncoders.shared.
+    // Flux2TextEncoder wraps Mistral Small 3.2 (24B); maps to .textEncoderDev
+    // per B2's WeightComponent consolidation (no .textEncoderMistral case exists).
+    let loadStart = Date()
+
     Flux2Debug.log("Loading Mistral text encoder (\(quantization.displayName))...")
 
     // Map our quantization to MistralCore's variant
@@ -63,6 +85,16 @@ public class Flux2TextEncoder: @unchecked Sendable {
     }
 
     Flux2Debug.log("Mistral text encoder loaded successfully")
+
+    // Emit weightLoadComplete on success path only (errorThrown precedes any throw — B11).
+    let loadDuration = Date().timeIntervalSince(loadStart)
+    if let telemetry = currentTelemetry() {
+      await telemetry.capture(
+        .weightLoadComplete(
+          component: .textEncoderDev,  // Mistral/Flux2TextEncoder → .textEncoderDev (no .textEncoderMistral case)
+          paramCount: 24_000_000_000,  // Mistral Small 3.2: 24B parameters
+          durationSeconds: loadDuration))
+    }
   }
 
   // MARK: - Prompt Upsampling
@@ -73,6 +105,13 @@ public class Flux2TextEncoder: @unchecked Sendable {
   /// - Returns: Enhanced prompt with more visual details
   public func upsamplePrompt(_ prompt: String) throws -> String {
     guard FluxTextEncoders.shared.isModelLoaded else {
+      Task { [weak self] in
+        await self?.currentTelemetry()?.capture(
+          .errorThrown(
+            phase: .textEncoderFailed,
+            errorDescription: "Text encoder not loaded"
+          ))
+      }
       throw Flux2Error.modelNotLoaded("Text encoder not loaded")
     }
 
@@ -404,6 +443,13 @@ public class Flux2TextEncoder: @unchecked Sendable {
     embeddings: MLXArray, usedPrompt: String
   ) {
     guard FluxTextEncoders.shared.isModelLoaded else {
+      Task { [weak self] in
+        await self?.currentTelemetry()?.capture(
+          .errorThrown(
+            phase: .textEncoderFailed,
+            errorDescription: "Text encoder not loaded"
+          ))
+      }
       throw Flux2Error.modelNotLoaded("Text encoder not loaded")
     }
 
@@ -458,6 +504,13 @@ extension Flux2TextEncoder {
   /// - Returns: Stacked embeddings [B, 512, 15360]
   public func encodeBatch(_ prompts: [String], upsample: Bool = false) throws -> MLXArray {
     guard !prompts.isEmpty else {
+      Task { [weak self] in
+        await self?.currentTelemetry()?.capture(
+          .errorThrown(
+            phase: .invalidConfiguration,
+            errorDescription: "Empty prompt list"
+          ))
+      }
       throw Flux2Error.invalidConfiguration("Empty prompt list")
     }
 

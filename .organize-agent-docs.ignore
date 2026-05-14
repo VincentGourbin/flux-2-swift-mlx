@@ -1,0 +1,8 @@
+# Files at the repo root that organize-agent-docs would otherwise classify
+# as ambiguous or extraneous, but are intentionally kept at root because
+# they are referenced as authoritative from FOUNDATIONAL files (AGENTS.md,
+# CLAUDE.md, GEMINI.md, README.md). Treat as FOUNDATIONAL-by-reference.
+
+REQUIREMENTS-instrumentation.md
+TESTING_REQUIREMENTS.md
+SKILL.md

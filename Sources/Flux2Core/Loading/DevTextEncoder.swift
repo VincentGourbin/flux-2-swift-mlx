@@ -5,6 +5,7 @@ import FluxTextEncoders
 import Foundation
 import MLX
 import MLXNN
+import os.lock
 
 /// Wrapper for Mistral text encoding for Flux.2 Dev models
 ///
@@ -13,6 +14,21 @@ import MLXNN
 ///
 /// This is similar to KleinTextEncoder but for Dev model which uses Mistral instead of Qwen3.
 public class DevTextEncoder: @unchecked Sendable {
+
+  // MARK: - Telemetry Seam
+
+  private let _telemetryLock = OSAllocatedUnfairLock<(any Flux2TelemetryReporter)?>(
+    initialState: nil)
+
+  public func setTelemetry(_ reporter: (any Flux2TelemetryReporter)?) {
+    _telemetryLock.withLock { state in
+      state = reporter
+    }
+  }
+
+  public func currentTelemetry() -> (any Flux2TelemetryReporter)? {
+    _telemetryLock.withLock { $0 }
+  }
 
   /// Quantization level for Mistral
   public let quantization: MistralQuantization
@@ -36,6 +52,11 @@ public class DevTextEncoder: @unchecked Sendable {
   /// - Parameter modelPath: Path to model directory (or nil to auto-download)
   @MainActor
   public func load(from modelPath: URL? = nil) async throws {
+    // P5-verified: paramCount uses an architectural constant because the underlying
+    // MistralForCausalLM module is private inside FluxTextEncoders.shared.
+    // Mistral Small 3.2 has 24B parameters regardless of quantization.
+    let loadStart = Date()
+
     Flux2Debug.log("Loading Dev text encoder (Mistral, \(quantization.displayName))...")
 
     if let path = modelPath {
@@ -52,6 +73,16 @@ public class DevTextEncoder: @unchecked Sendable {
     }
 
     Flux2Debug.log("Dev text encoder loaded successfully")
+
+    // Emit weightLoadComplete on success path only (errorThrown precedes any throw — B11).
+    let loadDuration = Date().timeIntervalSince(loadStart)
+    if let telemetry = currentTelemetry() {
+      await telemetry.capture(
+        .weightLoadComplete(
+          component: .textEncoderDev,
+          paramCount: 24_000_000_000,  // Mistral Small 3.2: 24B parameters
+          durationSeconds: loadDuration))
+    }
   }
 
   /// Map MistralQuantization to ModelVariant
@@ -75,6 +106,13 @@ public class DevTextEncoder: @unchecked Sendable {
   /// - Returns: Embeddings tensor with shape [1, 512, 15360]
   public func encode(_ prompt: String) throws -> MLXArray {
     guard FluxTextEncoders.shared.isModelLoaded else {
+      Task { [weak self] in
+        await self?.currentTelemetry()?.capture(
+          .errorThrown(
+            phase: .textEncoderFailed,
+            errorDescription: "Dev text encoder not loaded"
+          ))
+      }
       throw Flux2Error.modelNotLoaded("Dev text encoder not loaded")
     }
 

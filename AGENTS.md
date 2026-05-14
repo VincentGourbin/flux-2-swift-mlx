@@ -172,6 +172,7 @@ The upstream `VincentGourbin/flux-2-swift-mlx` does publish App and CLI binaries
 - [docs/Flux2App.md](docs/Flux2App.md) — Demo app guide
 - [docs/missions/](docs/missions/) — Active mission supervisor state
 - [docs/complete/](docs/complete/) — Archived mission briefs and execution plans
+- [REQUIREMENTS-instrumentation.md](REQUIREMENTS-instrumentation.md) — Telemetry event surface for flux; reference implementation of the §11 cross-library chokepoint convention
 
 ---
 
@@ -191,6 +192,97 @@ These apply to every agent. Agent-specific rules live in [CLAUDE.md](CLAUDE.md) 
 
 ---
 
+## 11. Telemetry Chokepoint Convention (cross-library)
+
+This section describes the **shared instrumentation pattern** used across the intrusive-memory ML stack (`SwiftTuberia`, `flux-2-swift-mlx`, `Produciesta`, `Vinetas`, and downstream libraries that own diffusion / transformer / audio kernels). Other libraries adopting this pattern should mirror the chokepoint names below with their own short prefix so a single Vinetas-style adapter can route every event without per-library special cases.
+
+**Core principle.** Instrument *boundaries*, not internals. One event when each major phase starts, one when it ends, plus a single side-channel signal when something goes numerically wrong at exit. Per-step / per-block / per-head detail is **deferred until a real failure points the agent at the region**. The default cost of telemetry stays near zero so it ships enabled by default.
+
+### 11.1 Canonical chokepoint catalog
+
+Every ML library in this ecosystem should emit (at minimum) the following boundary categories. Replace `flux` with the library's short prefix.
+
+| Category | Event case (PascalCase) | Adapter sink phase (snake_case) | Memory snapshot? |
+|---|---|---|---|
+| **Lifecycle — construct** | `pipelineInit` | `<lib>_pipeline_init` | no |
+| **Lifecycle — tear down** | `pipelineDispose` | `<lib>_pipeline_dispose` | no |
+| **Resource load — complete** | `weightLoadComplete(component:)` | `<lib>_weight_load_complete_<component>` | **yes** |
+| **Configuration — runtime configured for one run** | `schedulerConfigured` | `<lib>_scheduler_configured` | no |
+| **Single-shot compute — complete** | `<phase>Complete(...stat...)` (e.g. `textEncodeComplete`, `vaeDecodeComplete`) | `<lib>_<phase>_complete[_<subkind>]` | **yes** for the terminal-output phase only |
+| **Sustained compute loop — enter** | `<loop>LoopStart(variant:totalSteps:...)` | `<lib>_<loop>_loop_start` | **yes** |
+| **Sustained compute loop — exit** | `<loop>LoopEnd(variant:totalSteps:completedSteps:finalStat:...)` | `<lib>_<loop>_loop_end` | **yes** |
+| **Side-channel — numerical anomaly** | `numericalAnomaly(phase:kind:stat:)` | `<lib>_anomaly_<kind>` | no |
+| **Side-channel — error** | `errorThrown(phase:errorDescription:)` | `<lib>_error_<phase>` | no |
+| **Side-channel — cancellation** | `generationCancelled(stepIndex:)` | `<lib>_cancelled` | no |
+
+`flux-2-swift-mlx` uses the prefix **`flux`** and instantiates this catalog as: `pipelineInit`, `pipelineDispose`, `weightLoadComplete`, `textEncodeComplete`, `schedulerConfigured`, `denoiseLoopStart`, `denoiseLoopEnd`, `vaeDecodeComplete`, `numericalAnomaly`, `errorThrown`, `generationCancelled`. The full event surface and emission spec live in [REQUIREMENTS-instrumentation.md](REQUIREMENTS-instrumentation.md).
+
+### 11.2 Naming rules
+
+- **Event case names**: PascalCase noun + lifecycle suffix. Lifecycle suffix is one of: `Init`, `Dispose`, `Configured`, `Start`, `End`, `Complete`. Prefer `Complete` for single-shot operations; reserve `Start`/`End` for sustained loops where you genuinely need both boundaries.
+- **Adapter sink phase strings**: lowercase snake_case `<lib>_<noun>_<lifecycle>`. Subkind suffixes via underscore: `<lib>_weight_load_complete_<component>`, `<lib>_anomaly_<kind>`, `<lib>_error_<phase>`.
+- **Library prefix**: short, lowercase, no underscores. Canonical assignments: `flux` (this repo), `tuberia` (SwiftTuberia), `produciesta` (Produciesta), `vinetas` (Vinetas host), `secuencia` (SwiftSecuencia), `acervo` (SwiftAcervo).
+- **Don't pair `Start` + `Complete`.** Pick one. Durations are carried on the closing event (`durationSeconds`). The only valid `Start`+`End` pairing is for **sustained loops** where the loop body itself is not instrumented and the host needs an explicit memory snapshot at both edges.
+- **Don't invent per-step events at this layer.** Per-step / per-block / per-attention-head detail is a *follow-up iteration* triggered by a real anomaly, not part of the baseline surface.
+
+### 11.3 Stat sampling discipline
+
+- Each boundary `*Complete` / `*End` event that carries a tensor stat samples it **exactly once** via the shared `TuberiaTensorStat.sample(...)` (from SwiftTuberia ≥ 0.7.0). Do not define a per-library variant.
+- A boundary that samples a stat **must** also feed it through an anomaly check helper: if `hasNaN || hasInf || max.magnitude > TuberiaTensorStat.defaultOutOfRangeThreshold` or `(mean.magnitude < 1e-6 && std < 1e-6)`, emit a `numericalAnomaly` side-channel event alongside the boundary event. One signal, not a per-step stream.
+- Total stat samples per request through the entire stack should remain **single-digit** in the happy path. Flux's clean T2I generate samples three (text-encode output, denoise-loop final latent, VAE output). Other libraries should target similar counts.
+
+### 11.4 Side-channel discipline
+
+- **`errorThrown` fires immediately before every `throw`.** No exceptions. If a library has 14 throw sites, it has 14 emission sites. The `phase:` field discriminates them.
+- **`numericalAnomaly` fires alongside the boundary event whose stat triggered it**, not in place of it. The boundary still emits; the anomaly is additive context.
+- **`generationCancelled` fires at every cancellation check.** `stepIndex` is optional (`Int?`) — pre-loop check sites pass `nil`; in-loop sites pass the current index.
+
+### 11.5 Reporter / setter shape
+
+Every top-level type that owns kernel work exposes:
+
+```swift
+public func setTelemetry(_ reporter: (any <Lib>TelemetryReporter)?)
+```
+
+backed by an `OSAllocatedUnfairLock<(any <Lib>TelemetryReporter)?>` (because most of these types are `@unchecked Sendable` classes that can't safely hold a plain mutable property). The reporter protocol is:
+
+```swift
+public protocol <Lib>TelemetryReporter: Sendable {
+    func capture(_ event: <Lib>TelemetryEvent) async
+}
+
+public struct Noop<Lib>TelemetryReporter: <Lib>TelemetryReporter {
+    public init() {}
+    public func capture(_ event: <Lib>TelemetryEvent) async {}
+}
+```
+
+Hosts (Vinetas) call `setTelemetry` exactly once on the top-level type; that type is responsible for propagating the reporter to every owned subcomponent (text encoders, schedulers, weight loaders, transformers, VAEs, etc.). Subcomponents do not expose setters to the host directly.
+
+### 11.6 Adapter routing (host side, e.g. Vinetas)
+
+Host adapters use an **exhaustive switch with no `default:` arm** so adding an event in any library forces a host-side update. Memory-snapshot routing (per Vinetas `docs/INSTRUMENTATION_PLAN.md` §3.1):
+
+- Route through `captureWithMemorySnapshot`: every `weightLoadComplete`, every `*LoopStart` / `*LoopEnd`, and the terminal-output `*Complete` event (e.g. `vaeDecodeComplete` in flux).
+- Route through plain `capture`: everything else (lifecycle, configuration, single-shot non-terminal completes, side-channels).
+
+### 11.7 What goes in REQUIREMENTS-instrumentation.md per library
+
+Each library that adopts this pattern should ship a `REQUIREMENTS-instrumentation.md` in its repo root containing, at minimum:
+
+1. **Design principle** — one paragraph stating "boundaries, not internals" and any deviations.
+2. **Public types** — the `<Lib>TelemetryEvent` enum and `<Lib>TelemetryReporter` protocol.
+3. **Injection points** — every top-level type that grows a `setTelemetry` setter, plus the propagation rules.
+4. **Per-event emission spec** — a table mapping each event to the symbol or callsite where it fires, plus the per-generation count.
+5. **Adapter mapping** — the snake_case sink phase string for each case and whether it carries a memory snapshot.
+6. **Tests** — at least: boundary-sequence test, noop-overhead test (±2% wall-clock bound), anomaly side-channel test, error-path test, lock-contention test.
+7. **Out of scope** — explicit list of per-step / per-block detail the library is *not* instrumenting this iteration.
+
+Flux's [REQUIREMENTS-instrumentation.md](REQUIREMENTS-instrumentation.md) is the reference implementation of this template.
+
+---
+
 ## App Group configuration (required)
 
 This package depends on [SwiftAcervo](https://github.com/intrusive-memory/SwiftAcervo) for shared model storage. SwiftAcervo v0.10.0 resolves its App Group ID in this order: `ACERVO_APP_GROUP_ID` env var → `com.apple.security.application-groups` entitlement (macOS only) → `fatalError`. There is **no silent fallback**.
@@ -206,4 +298,4 @@ Without this, `Acervo.sharedModelsDirectory` traps with `fatalError`. See [Swift
 
 ---
 
-**Last updated**: 2026-05-08 (v3.1.1)
+**Last updated**: 2026-05-14 (v3.2.0) — added §11 telemetry chokepoint convention

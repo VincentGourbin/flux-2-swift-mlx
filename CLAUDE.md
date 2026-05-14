@@ -95,6 +95,16 @@ The user's global Claude instructions live at `~/.claude/CLAUDE.md`. Key load-be
 
 See [AGENTS.md](./AGENTS.md) § App Group configuration (required).
 
+## 5a. Telemetry Chokepoint Convention
+
+When adding or reviewing instrumentation in this repo *or* in any sibling library (`SwiftTuberia`, `Produciesta`, `Vinetas`, etc.), follow the cross-library chokepoint pattern in [AGENTS.md §11](./AGENTS.md#11-telemetry-chokepoint-convention-cross-library). The canonical event names (`pipelineInit`, `weightLoadComplete`, `<phase>Complete`, `<loop>LoopStart` / `<loop>LoopEnd`, `numericalAnomaly`, `errorThrown`, `generationCancelled`) and adapter sink-phase strings (`<lib>_<noun>_<lifecycle>`) are shared across libraries so Vinetas can route every event without per-library special cases.
+
+The live event surface for this repo is [REQUIREMENTS-instrumentation.md](./REQUIREMENTS-instrumentation.md); use it as the reference implementation when wiring a new library.
+
+Two non-negotiable rules from §11 that agents have historically gotten wrong:
+- **Boundaries, not internals.** Do not introduce per-step / per-block / per-attention-head events at the baseline. Per-step detail is a follow-up iteration triggered by a real anomaly.
+- **`errorThrown` precedes every `throw`.** No exceptions. If grep finds 14 `throw Flux2Error.…` sites, expect 14 `errorThrown` emit sites.
+
 ## 6. Claude-Specific Critical Rules
 
 In addition to the universal rules in [AGENTS.md §10](AGENTS.md#10-universal-critical-rules):
@@ -105,4 +115,4 @@ In addition to the universal rules in [AGENTS.md §10](AGENTS.md#10-universal-cr
 
 ---
 
-**Last updated**: 2026-05-08 (v3.1.1)
+**Last updated**: 2026-05-14 (v3.2.0) — added §5a pointer to telemetry chokepoint convention

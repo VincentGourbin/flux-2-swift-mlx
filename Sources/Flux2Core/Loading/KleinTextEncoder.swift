@@ -6,6 +6,7 @@ import FluxTextEncoders
 import Foundation
 import MLX
 import MLXNN
+import os.lock
 
 #if canImport(AppKit)
   import AppKit
@@ -20,6 +21,21 @@ import MLXNN
 /// - Klein 4B: [1, 512, 7680]
 /// - Klein 9B: [1, 512, 12288]
 public class KleinTextEncoder: @unchecked Sendable {
+
+  // MARK: - Telemetry Seam
+
+  private let _telemetryLock = OSAllocatedUnfairLock<(any Flux2TelemetryReporter)?>(
+    initialState: nil)
+
+  public func setTelemetry(_ reporter: (any Flux2TelemetryReporter)?) {
+    _telemetryLock.withLock { state in
+      state = reporter
+    }
+  }
+
+  public func currentTelemetry() -> (any Flux2TelemetryReporter)? {
+    _telemetryLock.withLock { $0 }
+  }
 
   /// Klein variant (4B or 9B)
   public let variant: KleinVariant
@@ -44,6 +60,11 @@ public class KleinTextEncoder: @unchecked Sendable {
   /// - Parameter modelPath: Path to model directory (or nil to auto-download)
   @MainActor
   public func load(from modelPath: URL? = nil) async throws {
+    // P5-verified: paramCount uses architectural constants because the underlying
+    // Qwen3ForCausalLM module is private inside FluxTextEncoders.shared and not
+    // accessible via the public API. Known counts from Qwen3-4B / Qwen3-8B specs.
+    let loadStart = Date()
+
     Flux2Debug.log(
       "Loading Klein text encoder (\(variant.displayName), \(quantization.displayName))...")
 
@@ -91,6 +112,22 @@ public class KleinTextEncoder: @unchecked Sendable {
     }
 
     Flux2Debug.log("Klein text encoder loaded successfully")
+
+    // Emit weightLoadComplete on success path only (errorThrown precedes any throw — B11).
+    // paramCount: architectural constant for Qwen3 variant; underlying Module is private.
+    let paramCount: Int
+    switch variant {
+    case .klein4B: paramCount = 3_953_178_624  // Qwen3-4B: 3.95B parameters
+    case .klein9B: paramCount = 8_194_392_064  // Qwen3-8B: 8.19B parameters
+    }
+    let loadDuration = Date().timeIntervalSince(loadStart)
+    if let telemetry = currentTelemetry() {
+      await telemetry.capture(
+        .weightLoadComplete(
+          component: .textEncoderKlein,
+          paramCount: paramCount,
+          durationSeconds: loadDuration))
+    }
   }
 
   /// Find an already downloaded Qwen3 variant for the given Klein variant
@@ -120,6 +157,13 @@ public class KleinTextEncoder: @unchecked Sendable {
   /// - Returns: Enhanced prompt with more visual details
   public func upsamplePrompt(_ prompt: String) throws -> String {
     guard FluxTextEncoders.shared.isKleinLoaded else {
+      Task { [weak self] in
+        await self?.currentTelemetry()?.capture(
+          .errorThrown(
+            phase: .textEncoderFailed,
+            errorDescription: "Klein text encoder not loaded"
+          ))
+      }
       throw Flux2Error.modelNotLoaded("Klein text encoder not loaded")
     }
 
@@ -164,6 +208,13 @@ public class KleinTextEncoder: @unchecked Sendable {
     embeddings: MLXArray, usedPrompt: String
   ) {
     guard FluxTextEncoders.shared.isKleinLoaded else {
+      Task { [weak self] in
+        await self?.currentTelemetry()?.capture(
+          .errorThrown(
+            phase: .textEncoderFailed,
+            errorDescription: "Klein text encoder not loaded"
+          ))
+      }
       throw Flux2Error.modelNotLoaded("Klein text encoder not loaded")
     }
 
