@@ -27,7 +27,7 @@ import Tokenizers
 public final class FluxTextEncoders: @unchecked Sendable {
   /// Shared singleton instance
   public static let shared = FluxTextEncoders()
-  public static let version = "3.2.0"
+  public static let version = "3.2.0-dev"
 
   private var model: MistralForCausalLM?
   private var vlmModel: MistralVLM?
@@ -977,7 +977,7 @@ public enum FluxEncoderError: LocalizedError {
 // MARK: - Version Info
 
 public struct MistralVersion {
-  public static let version = "3.2.0"
+  public static let version = "3.2.0-dev"
   public static let modelName = "Mistral Small 3.2"
   public static let modelVersion = "24B-Instruct-2506"
 }

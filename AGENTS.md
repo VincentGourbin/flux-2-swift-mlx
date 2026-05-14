@@ -298,4 +298,4 @@ Without this, `Acervo.sharedModelsDirectory` traps with `fatalError`. See [Swift
 
 ---
 
-**Last updated**: 2026-05-14 (v3.2.0) — added §11 telemetry chokepoint convention
+**Last updated**: 2026-05-14 (v3.2.0-dev) — added §11 telemetry chokepoint convention
