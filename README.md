@@ -133,6 +133,29 @@ let image = try await pipeline.generateTextToImage(
 }
 ```
 
+## Telemetry
+
+`Flux2Core` emits typed `Flux2TelemetryEvent` events covering all major pipeline phases: `pipelineInit`, `pipelineDispose`, `weightLoadComplete` (one per component), `textEncodeComplete`, `schedulerConfigured`, `denoiseLoopStart`, `denoiseLoopEnd`, `vaeDecodeComplete`, `numericalAnomaly`, `generationCancelled`, and `errorThrown` — 11 cases in total. Subscribe once at process startup using the process-wide seam:
+
+```swift
+import Flux2Core
+
+// 1. Implement the reporter protocol (Sendable, single async method):
+struct PrintingReporter: Flux2TelemetryReporter {
+    func capture(_ event: Flux2TelemetryEvent) async {
+        print("[flux2] \(event)")
+    }
+}
+
+// 2. Install at startup (thread-safe, lock-guarded):
+Flux2Telemetry.setReporter(PrintingReporter())
+
+// 3. Remove at shutdown:
+Flux2Telemetry.setReporter(nil)
+```
+
+For test isolation, install a reporter on a specific pipeline instance via `Flux2Pipeline.setTelemetry(_:)` — the instance reporter takes precedence over the process-wide reporter when both are set. See `AGENTS.md §Telemetry` for contributor guidance on adding new event cases.
+
 ## Architecture
 
 Flux.2 Dev is a ~32B parameter rectified flow transformer:

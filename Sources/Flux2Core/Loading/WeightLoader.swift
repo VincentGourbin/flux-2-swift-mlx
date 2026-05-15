@@ -27,7 +27,7 @@ public class Flux2WeightLoader {
   }
 
   public static func currentTelemetry() -> (any Flux2TelemetryReporter)? {
-    _telemetryLock.withLock { $0 }
+    _telemetryLock.withLock { $0 } ?? Flux2Telemetry.current
   }
 
   /// Load all weights from a model directory

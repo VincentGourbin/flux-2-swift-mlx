@@ -34,7 +34,7 @@ public class Flux2Transformer2DModel: Module, @unchecked Sendable {
   }
 
   public func currentTelemetry() -> (any Flux2TelemetryReporter)? {
-    _telemetryLock.withLock { $0 }
+    _telemetryLock.withLock { $0 } ?? Flux2Telemetry.current
   }
 
   let config: Flux2TransformerConfig

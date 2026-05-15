@@ -93,7 +93,7 @@ public class Flux2Pipeline: @unchecked Sendable {
   }
 
   public func currentTelemetry() -> (any Flux2TelemetryReporter)? {
-    _telemetryLock.withLock { $0 }
+    _telemetryLock.withLock { $0 } ?? Flux2Telemetry.current
   }
 
   /// Model variant (dev, klein-4b, klein-9b)
