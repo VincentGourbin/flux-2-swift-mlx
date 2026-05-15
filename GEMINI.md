@@ -77,4 +77,4 @@ In addition to the universal rules in [AGENTS.md §10](AGENTS.md#10-universal-cr
 
 ---
 
-**Last updated**: 2026-05-14 (v3.2.0) — added §4a pointer to telemetry chokepoint convention
+**Last updated**: 2026-05-14 (v3.2.0-dev) — added §4a pointer to telemetry chokepoint convention

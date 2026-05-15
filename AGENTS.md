@@ -192,6 +192,57 @@ These apply to every agent. Agent-specific rules live in [CLAUDE.md](CLAUDE.md) 
 
 ---
 
+## Telemetry
+
+`Flux2Core` ships a **dual-seam telemetry surface**: an instance-bound seam (`Flux2Pipeline.setTelemetry(_:)`) for test isolation, and a process-wide seam (`Flux2Telemetry.setReporter(_:)`) for CLI hosts. Both seams are needed because CLI hosts can't hold direct references to `Flux2Pipeline` instances — those instances live behind `SwiftVinetas`'s `Flux2Engine` actor as private state. Without the process-wide seam, the CLI's `--telemetry` flag couldn't reach any of the 11 `Flux2TelemetryEvent` cases. The instance reporter always takes precedence: when both are set, the instance reporter wins, giving test code deterministic, pollution-free assertions even when an ambient process-wide reporter is installed.
+
+### Subscribing from a CLI host (process-wide)
+
+```swift
+// At process startup — once, in e.g. CLITelemetryBootstrap.enable():
+Flux2Telemetry.setReporter(myFlux2Adapter)
+
+// At shutdown / teardown:
+Flux2Telemetry.setReporter(nil)
+```
+
+`Flux2Telemetry.current` is lock-guarded (`OSAllocatedUnfairLock`) and safe to call from any thread or Swift concurrency context.
+
+### Subscribing from a test (per-instance)
+
+```swift
+let pipeline = Flux2Pipeline(config: cfg)
+let recorder = CapturingFlux2Reporter()
+
+await pipeline.setTelemetry(recorder)
+// … exercise pipeline …
+#expect(recorder.events.contains { if case .pipelineInit = $0 { true } else { false } })
+
+await pipeline.setTelemetry(nil)        // clean up
+Flux2Telemetry.setReporter(nil)         // always reset process-wide reporter in tearDown
+```
+
+`setTelemetry(_:)` propagates the reporter to every owned subcomponent (`textEncoder`, `kleinEncoder`, `transformer`, `scheduler`, `Flux2WeightLoader`). You do not need to call `setTelemetry` on subcomponents directly.
+
+### Adding a new event case
+
+1. Add the case to `Flux2TelemetryEvent` in `Sources/Flux2Core/Telemetry/Flux2TelemetryEvent.swift`. Every case and every associated-value type must be `Sendable`. Do NOT add a `runID` field — run identifiers belong at the host/sink layer.
+2. Emit via `currentTelemetry()` at the single canonical callsite: `await currentTelemetry()?.capture(.yourNewCase(...))`. Never call `instanceReporter?.capture(...)` or `Flux2Telemetry.current?.capture(...)` directly.
+3. Update `SwiftVinetas`'s exhaustive switch in `Flux2EventEncoding.swift` and `Flux2TelemetryCLIAdapter` — the compiler will catch the missing case.
+4. Add a test in `Flux2CoreTests/Telemetry/Flux2ProcessWideTelemetryTests.swift` (the `.serialized` suite) covering the 4-scenario matrix: instance-only, process-only, both (instance wins), reset.
+
+### When to add a new event
+
+- **Single canonical emission site**: one throw site or one phase boundary — not scattered across helpers.
+- **Sendable payload**: all associated values must be `Sendable`. Prefer `String`, `Int`, `Double`, `Float`, `[Int]`, or types already declared `Sendable` (e.g. `TuberiaTensorStat`).
+- **No `runID` on the case itself**: hosts attach run identifiers at the sink layer in the JSONL envelope. Keeping the enum stable across host designs is worth more than convenience.
+- **Prefer `Start`/`End` pairs for durational loops** (e.g. `denoiseLoopStart` / `denoiseLoopEnd`); use `Complete` for single-shot operations. Do not pair `Start` + `Complete`.
+- **Respect hot-path discipline**: do not read per-token tensors or sample stats at every denoising step. Stat sampling is reserved for boundary events (`*Complete`, `*End`). The happy-path sample count across a full T2I run should stay in single digits.
+
+For the cross-library dual-seam pattern (shared across `SwiftVinetas`, `flux-2-swift-mlx`, `pixart-swift-mlx`, `SwiftTuberia`, `SwiftAcervo`), see `SwiftVinetas/docs/INSTRUMENTATION_PATTERN.md`.
+
+---
+
 ## 11. Telemetry Chokepoint Convention (cross-library)
 
 This section describes the **shared instrumentation pattern** used across the intrusive-memory ML stack (`SwiftTuberia`, `flux-2-swift-mlx`, `Produciesta`, `Vinetas`, and downstream libraries that own diffusion / transformer / audio kernels). Other libraries adopting this pattern should mirror the chokepoint names below with their own short prefix so a single Vinetas-style adapter can route every event without per-library special cases.
@@ -298,4 +349,4 @@ Without this, `Acervo.sharedModelsDirectory` traps with `fatalError`. See [Swift
 
 ---
 
-**Last updated**: 2026-05-14 (v3.2.0) — added §11 telemetry chokepoint convention
+**Last updated**: 2026-05-14 (v3.2.0-dev) — added §11 telemetry chokepoint convention

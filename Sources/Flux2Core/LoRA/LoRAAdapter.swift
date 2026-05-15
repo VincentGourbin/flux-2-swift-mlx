@@ -69,7 +69,7 @@ public class LoRAManager: @unchecked Sendable {
   }
 
   public func currentTelemetry() -> (any Flux2TelemetryReporter)? {
-    _telemetryLock.withLock { $0 }
+    _telemetryLock.withLock { $0 } ?? Flux2Telemetry.current
   }
 
   /// Loaded LoRA loaders
