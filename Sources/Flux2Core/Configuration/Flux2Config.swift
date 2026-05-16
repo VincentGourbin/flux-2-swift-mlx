@@ -144,7 +144,32 @@ public enum Flux2Model: String, CaseIterable, Sendable {
     public var defaultGuidance: Float {
         switch self {
         case .dev: return 4.0
-        case .klein4B, .klein4BBase, .klein9B, .klein9BBase, .klein9BKV: return 1.0
+        case .klein4B, .klein9B, .klein9BKV: return 1.0
+        case .klein4BBase, .klein9BBase: return 3.5
+        }
+    }
+
+    /// Whether this model expects **classical CFG** at inference time —
+    /// i.e. two transformer passes per step (cond + uncond with empty
+    /// negative prompt) combined as `uncond + guidance * (cond - uncond)`.
+    ///
+    /// - `klein4BBase` / `klein9BBase`: ✅ true. These are *non-distilled*
+    ///   models. Their attention behaviour and any LoRA trained against
+    ///   them (e.g. `flux2-klein9b-lora-mlsharp-3d-repair`) depend on the
+    ///   uncond/cond delta — single-pass inference produces visually
+    ///   plausible output but cannot follow conditioning that wasn't
+    ///   trivially copyable from the references (e.g. camera deltas).
+    ///   Matches diffusers' `Flux2KleinPipeline` which uses
+    ///   `negative_prompt = ""` and `guidance_scale = 4.0` by default.
+    ///
+    /// - All others: ❌ false. `dev` uses embedded-guidance (a single
+    ///   transformer pass with a guidance tensor); the distilled / KV
+    ///   klein variants were CFG-distilled so they expect one pass at
+    ///   guidance = 1.0.
+    public var usesClassicalCFG: Bool {
+        switch self {
+        case .klein4BBase, .klein9BBase: return true
+        case .dev, .klein4B, .klein9B, .klein9BKV: return false
         }
     }
 

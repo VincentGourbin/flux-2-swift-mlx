@@ -34,6 +34,35 @@ public typealias Flux2ProgressCallback = @Sendable (Int, Int) -> Void
 /// Checkpoint callback for saving intermediate images (step, image)
 public typealias Flux2CheckpointCallback = @Sendable (Int, CGImage) -> Void
 
+/// Context passed to a denoising step hook.
+///
+/// `sigmaNext == 0` on the final iteration — chains relying on RePaint-style
+/// blending (e.g. masked inpainting) use this to restore the unchanged region
+/// to the clean original-image latent on the last step.
+public struct Flux2StepContext: Sendable {
+    /// Zero-based step index within the denoising loop.
+    public let stepIdx: Int
+    /// Total number of denoising steps that will run for this generation.
+    public let totalSteps: Int
+    /// Current sigma value (noise level at the start of this step).
+    public let sigma: Float
+    /// Next sigma value (noise level after this step). Equals `0` on the final step.
+    public let sigmaNext: Float
+    /// Target image height in pixels.
+    public let height: Int
+    /// Target image width in pixels.
+    public let width: Int
+    /// Whether this is the I2I conditioning path (true) or the T2I path (false).
+    public let isI2I: Bool
+}
+
+/// Per-step hook called inside the denoising loop, after the scheduler step.
+///
+/// Lets a chain (e.g. masked inpainting) inspect or transform the packed latents
+/// `[1, seq_len, 128]` between steps. Return the latents unchanged to act as a
+/// pure observer, or return a new tensor to influence subsequent steps.
+public typealias Flux2StepHook = @Sendable (Flux2StepContext, MLXArray) -> MLXArray
+
 /// Result of image generation including the image and metadata
 public struct Flux2GenerationResult: Sendable {
     /// The generated image
@@ -145,6 +174,23 @@ public class Flux2Pipeline: @unchecked Sendable {
     }
 
     // MARK: - Model Loading
+
+    // MARK: - Internal accessors for chain helpers
+    //
+    // Exposed only within `Flux2Core` so the in-module
+    // `Flux2Pipeline+ChainHelpers.swift` extension can reach the otherwise
+    // private model instances and helpers. Out-of-module callers go through
+    // the public API on that extension.
+
+    internal func ensureVAELoaded() async throws { try await loadVAE() }
+    internal var vaeForChains: AutoencoderKLFlux2? { vae }
+    internal func preprocessImageForVAEPublic(
+        _ image: CGImage,
+        targetHeight: Int,
+        targetWidth: Int
+    ) -> MLXArray {
+        preprocessImageForVAE(image, targetHeight: targetHeight, targetWidth: targetWidth)
+    }
 
     /// Load all required models
     /// - Parameter progressCallback: Optional callback for download progress
@@ -745,7 +791,8 @@ public class Flux2Pipeline: @unchecked Sendable {
         precomputedEmbeddings: MLXArray? = nil,
         checkpointInterval: Int?,
         onProgress: Flux2ProgressCallback?,
-        onCheckpoint: Flux2CheckpointCallback?
+        onCheckpoint: Flux2CheckpointCallback?,
+        onStep: Flux2StepHook? = nil
     ) async throws -> CGImage {
         let result = try await generateWithResult(
             mode: mode,
@@ -760,7 +807,8 @@ public class Flux2Pipeline: @unchecked Sendable {
             precomputedEmbeddings: precomputedEmbeddings,
             checkpointInterval: checkpointInterval,
             onProgress: onProgress,
-            onCheckpoint: onCheckpoint
+            onCheckpoint: onCheckpoint,
+            onStep: onStep
         )
         return result.image
     }
@@ -779,7 +827,8 @@ public class Flux2Pipeline: @unchecked Sendable {
         precomputedEmbeddings: MLXArray? = nil,
         checkpointInterval: Int?,
         onProgress: Flux2ProgressCallback?,
-        onCheckpoint: Flux2CheckpointCallback?
+        onCheckpoint: Flux2CheckpointCallback?,
+        onStep: Flux2StepHook? = nil
     ) async throws -> Flux2GenerationResult {
         // Validate dimensions
         let (validHeight, validWidth) = LatentUtils.validateDimensions(
@@ -809,6 +858,11 @@ public class Flux2Pipeline: @unchecked Sendable {
         let textEmbeddings: MLXArray
         var finalUsedPrompt: String = prompt
         var wasPromptUpsampled: Bool = false
+
+        // Classical CFG (klein base only): cache an empty-prompt embedding to
+        // run the transformer twice per step. Skipped at guidance ≤ 1.
+        let useClassicalCFG = model.usesClassicalCFG && guidance > 1.0
+        var negativeTextEmbeddings: MLXArray? = nil
 
         // MEMORY OPTIMIZATION: Compute phase limits for all phases
         let phaseLimits = MemoryConfig.PhaseLimits.forModel(model, profile: memoryProfile)
@@ -965,6 +1019,24 @@ public class Flux2Pipeline: @unchecked Sendable {
                 }
             }
             eval(textEmbeddings)
+
+            // Classical CFG: encode the empty negative prompt with the same
+            // encoder before unloading. Stored separately and consumed in the
+            // denoising loop's uncond pass.
+            if useClassicalCFG {
+                Flux2Debug.log("Classical CFG enabled — encoding empty negative prompt")
+                let negEmbeds: MLXArray
+                switch model {
+                case .dev:
+                    negEmbeds = try textEncoder!.encode("", upsample: false)
+                case .klein4B, .klein4BBase, .klein9B, .klein9BBase, .klein9BKV:
+                    negEmbeds = try kleinEncoder!.encode("", upsample: false)
+                }
+                eval(negEmbeds)
+                negativeTextEmbeddings = negEmbeds
+                Flux2Debug.log("Negative embeddings shape: \(negEmbeds.shape)")
+            }
+
             profiler.end("2. Text Encoding")
 
             Flux2Debug.log("Text embeddings shape: \(textEmbeddings.shape)")
@@ -1110,6 +1182,21 @@ public class Flux2Pipeline: @unchecked Sendable {
                 )
                 eval(packedOutputLatents)
 
+                if let onStep = onStep {
+                    let sigmaNext = scheduler.sigmas[1]
+                    let ctx = Flux2StepContext(
+                        stepIdx: 0,
+                        totalSteps: effectiveSteps,
+                        sigma: sigma0,
+                        sigmaNext: sigmaNext,
+                        height: validHeight,
+                        width: validWidth,
+                        isI2I: true
+                    )
+                    packedOutputLatents = onStep(ctx, packedOutputLatents)
+                    eval(packedOutputLatents)
+                }
+
                 let step0Duration = Date().timeIntervalSince(step0Start)
                 profiler.recordStep(duration: step0Duration)
                 onProgress?(1, effectiveSteps)
@@ -1137,6 +1224,21 @@ public class Flux2Pipeline: @unchecked Sendable {
                         sample: packedOutputLatents
                     )
                     eval(packedOutputLatents)
+
+                    if let onStep = onStep {
+                        let sigmaNext = scheduler.sigmas[stepIdx + 1]
+                        let ctx = Flux2StepContext(
+                            stepIdx: stepIdx,
+                            totalSteps: effectiveSteps,
+                            sigma: sigma,
+                            sigmaNext: sigmaNext,
+                            height: validHeight,
+                            width: validWidth,
+                            isI2I: true
+                        )
+                        packedOutputLatents = onStep(ctx, packedOutputLatents)
+                        eval(packedOutputLatents)
+                    }
 
                     if clearCacheEveryNSteps > 0 && (stepIdx + 1) % clearCacheEveryNSteps == 0 {
                         MemoryConfig.clearCache()
@@ -1179,6 +1281,15 @@ public class Flux2Pipeline: @unchecked Sendable {
             } else {
             // === STANDARD I2I DENOISING PATH ===
 
+            // Classical CFG: precompute uncond textIds once.
+            let i2iUncondTextIds: MLXArray?
+            if useClassicalCFG, let neg = negativeTextEmbeddings {
+                i2iUncondTextIds = LatentUtils.generateTextPositionIDs(length: neg.shape[1])
+                Flux2Debug.log("Classical CFG active for I2I — guidance=\(guidance), uncond seq=\(neg.shape[1])")
+            } else {
+                i2iUncondTextIds = nil
+            }
+
             for stepIdx in 0..<(scheduler.sigmas.count - 1) {
                 let stepStart = Date()
 
@@ -1193,8 +1304,8 @@ public class Flux2Pipeline: @unchecked Sendable {
                     throw Flux2Error.generationCancelled
                 }
 
-                // Run transformer with combined latents
-                let noisePred = transformer.callAsFunction(
+                // Run transformer (conditional pass)
+                let noisePredCond = transformer.callAsFunction(
                     hiddenStates: inputLatents,
                     encoderHiddenStates: textEmbeddings,
                     timestep: t,
@@ -1202,6 +1313,25 @@ public class Flux2Pipeline: @unchecked Sendable {
                     imgIds: combinedImageIds,
                     txtIds: textIds
                 )
+
+                // Classical CFG: second (unconditional) pass with the SAME image
+                // conditioning — reference latents stay, only the text changes.
+                let noisePred: MLXArray
+                if useClassicalCFG,
+                   let negEmbeds = negativeTextEmbeddings,
+                   let uncondIds = i2iUncondTextIds {
+                    let noisePredUncond = transformer.callAsFunction(
+                        hiddenStates: inputLatents,
+                        encoderHiddenStates: negEmbeds,
+                        timestep: t,
+                        guidance: guidanceTensor,
+                        imgIds: combinedImageIds,
+                        txtIds: uncondIds
+                    )
+                    noisePred = noisePredUncond + MLXArray(guidance) * (noisePredCond - noisePredUncond)
+                } else {
+                    noisePred = noisePredCond
+                }
 
                 // Extract only the OUTPUT portion of the noise prediction
                 // noisePred shape is [1, total_seq, 128], we want first outputSeqLen
@@ -1214,6 +1344,22 @@ public class Flux2Pipeline: @unchecked Sendable {
                     sample: packedOutputLatents
                 )
                 eval(packedOutputLatents)
+
+                // Step hook (see T2I path for rationale on running every step).
+                if let onStep = onStep {
+                    let sigmaNext = scheduler.sigmas[stepIdx + 1]
+                    let ctx = Flux2StepContext(
+                        stepIdx: stepIdx,
+                        totalSteps: effectiveSteps,
+                        sigma: sigma,
+                        sigmaNext: sigmaNext,
+                        height: validHeight,
+                        width: validWidth,
+                        isI2I: true
+                    )
+                    packedOutputLatents = onStep(ctx, packedOutputLatents)
+                    eval(packedOutputLatents)
+                }
 
                 // MEMORY OPTIMIZATION: Periodic cache clearing to prevent memory buildup
                 if clearCacheEveryNSteps > 0 && (stepIdx + 1) % clearCacheEveryNSteps == 0 {
@@ -1331,6 +1477,15 @@ public class Flux2Pipeline: @unchecked Sendable {
         // Klein models don't use guidance embeddings
         let guidanceTensor: MLXArray? = model.usesGuidanceEmbeds ? MLXArray([guidance]) : nil
 
+        // Classical CFG (klein base): precompute uncond text IDs once.
+        let uncondTextIds: MLXArray?
+        if useClassicalCFG, let neg = negativeTextEmbeddings {
+            uncondTextIds = LatentUtils.generateTextPositionIDs(length: neg.shape[1])
+            Flux2Debug.log("Classical CFG active — guidance=\(guidance), uncond seq=\(neg.shape[1])")
+        } else {
+            uncondTextIds = nil
+        }
+
         // MEMORY OPTIMIZATION: Set cache limit for denoising phase
         MemoryConfig.applyCacheLimit(bytes: phaseLimits.denoising)
 
@@ -1348,8 +1503,8 @@ public class Flux2Pipeline: @unchecked Sendable {
                 throw Flux2Error.generationCancelled
             }
 
-            // Run transformer
-            let noisePred = transformer.callAsFunction(
+            // Run transformer (conditional pass)
+            let noisePredCond = transformer.callAsFunction(
                 hiddenStates: packedLatents,
                 encoderHiddenStates: textEmbeddings,
                 timestep: t,
@@ -1357,6 +1512,25 @@ public class Flux2Pipeline: @unchecked Sendable {
                 imgIds: imageIds,
                 txtIds: textIds
             )
+
+            // Classical CFG: second (unconditional) pass + linear combination.
+            // Matches diffusers' `noise = uncond + guidance * (cond - uncond)`.
+            let noisePred: MLXArray
+            if useClassicalCFG,
+               let negEmbeds = negativeTextEmbeddings,
+               let uncondIds = uncondTextIds {
+                let noisePredUncond = transformer.callAsFunction(
+                    hiddenStates: packedLatents,
+                    encoderHiddenStates: negEmbeds,
+                    timestep: t,
+                    guidance: guidanceTensor,
+                    imgIds: imageIds,
+                    txtIds: uncondIds
+                )
+                noisePred = noisePredUncond + MLXArray(guidance) * (noisePredCond - noisePredUncond)
+            } else {
+                noisePred = noisePredCond
+            }
 
             // Scheduler step
             packedLatents = scheduler.step(
@@ -1367,6 +1541,24 @@ public class Flux2Pipeline: @unchecked Sendable {
 
             // Synchronize GPU
             eval(packedLatents)
+
+            // Step hook (e.g. RePaint masked-inpainting blend). Runs every step
+            // including the final one — chains that rely on `sigmaNext == 0` to
+            // restore the unchanged region must see that final iteration.
+            if let onStep = onStep {
+                let sigmaNext = scheduler.sigmas[stepIdx + 1]
+                let ctx = Flux2StepContext(
+                    stepIdx: stepIdx,
+                    totalSteps: effectiveSteps,
+                    sigma: sigma,
+                    sigmaNext: sigmaNext,
+                    height: validHeight,
+                    width: validWidth,
+                    isI2I: false
+                )
+                packedLatents = onStep(ctx, packedLatents)
+                eval(packedLatents)
+            }
 
             // MEMORY OPTIMIZATION: Periodic cache clearing to prevent memory buildup
             if clearCacheEveryNSteps > 0 && (stepIdx + 1) % clearCacheEveryNSteps == 0 {
