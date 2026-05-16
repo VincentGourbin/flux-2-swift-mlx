@@ -27,6 +27,10 @@ public enum Flux2TelemetryEvent: Sendable {
   // --- Weight loading (one event per component, on success) ---
   case weightLoadComplete(component: WeightComponent, paramCount: Int, durationSeconds: Double)
 
+  // --- Quantization (fires once per on-the-fly transformer quant pass) ---
+  case quantizationComplete(
+    component: WeightComponent, bits: Int, groupSize: Int, durationSeconds: Double)
+
   // --- Text encoding (boundary event with NaN/Inf check on the embedding) ---
   case textEncodeComplete(
     encoderName: String, finalPromptLength: Int, embeddingStat: TuberiaTensorStat,
@@ -35,12 +39,22 @@ public enum Flux2TelemetryEvent: Sendable {
   // --- Scheduler ---
   case schedulerConfigured(numInferenceSteps: Int, shift: Float, imageSeqLen: Int, mu: Float)
 
-  // --- Denoise loop (start + end only; per-step events deferred) ---
+  // --- Denoise loop (start + end + per-step) ---
+  // Per-step events were originally deferred under the boundary-only iteration.
+  // Re-enabled in iteration 04 after the SwiftVinetas `--telemetry` diagnosis
+  // showed there was no way to localize NaN / mode-collapse / color drift
+  // inside a 187-second Klein-4B denoise loop (TODO.md 2026-05-15).
   case denoiseLoopStart(
     variant: DenoiseVariant, totalSteps: Int, latentShape: [Int], latentDtype: String)
   case denoiseLoopEnd(
     variant: DenoiseVariant, totalSteps: Int, completedSteps: Int,
     finalLatentStat: TuberiaTensorStat, durationSeconds: Double)
+  case denoiseStepStart(
+    variant: DenoiseVariant, stepIndex: Int, totalSteps: Int, t: Float,
+    latentShape: [Int], latentDtype: String)
+  case denoiseStepComplete(
+    variant: DenoiseVariant, stepIndex: Int, totalSteps: Int, t: Float,
+    latentStat: TuberiaTensorStat, durationSeconds: Double)
 
   // --- VAE decode (boundary event with pixel-range check) ---
   case vaeDecodeComplete(pixelStat: TuberiaTensorStat, outputDims: [Int], durationSeconds: Double)

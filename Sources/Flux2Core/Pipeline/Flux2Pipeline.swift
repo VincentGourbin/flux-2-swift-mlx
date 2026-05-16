@@ -351,10 +351,13 @@ public class Flux2Pipeline: @unchecked Sendable {
     // Load weights with explicit memory management
     // For large models (Dev), this can temporarily use 2x memory during mapping
     Flux2Debug.log("Loading transformer weights from disk...")
+    let transformerLoadStart = Date()
     var weights = try Flux2WeightLoader.loadWeights(from: modelPath)
+    let transformerParamCount = weights.values.reduce(0) { $0 + $1.size }
 
     Flux2Debug.log("Applying weights to model...")
     try Flux2WeightLoader.applyTransformerWeights(&weights, to: transformer!)
+    let transformerLoadDuration = Date().timeIntervalSince(transformerLoadStart)
 
     // Explicitly release the raw weights dictionary to free memory
     // This is important for Dev model where weights can be ~32GB
@@ -362,6 +365,13 @@ public class Flux2Pipeline: @unchecked Sendable {
     eval([])  // Sync to ensure weights are released
     memoryManager.fullCleanup()
     Flux2Debug.log("Raw weights released from memory")
+
+    await currentTelemetry()?.capture(
+      .weightLoadComplete(
+        component: .transformer,
+        paramCount: transformerParamCount,
+        durationSeconds: transformerLoadDuration
+      ))
 
     // Quantize transformer to native MLX QuantizedLinear if requested
     // This handles both:
@@ -376,11 +386,20 @@ public class Flux2Pipeline: @unchecked Sendable {
       let groupSize = quantization.transformer.groupSize
       Flux2Debug.log("Quantizing transformer on-the-fly to \(bits)-bit (groupSize=\(groupSize))...")
       memoryManager.logMemoryState()
+      let quantStart = Date()
       quantize(model: transformer!, groupSize: groupSize, bits: bits)
       eval(transformer!.parameters())
+      let quantDuration = Date().timeIntervalSince(quantStart)
       memoryManager.fullCleanup()
       memoryManager.logMemoryState()
       Flux2Debug.log("Transformer quantized to QuantizedLinear (\(bits)-bit)")
+      await currentTelemetry()?.capture(
+        .quantizationComplete(
+          component: .transformer,
+          bits: bits,
+          groupSize: groupSize,
+          durationSeconds: quantDuration
+        ))
     }
 
     // Merge LoRA weights if any are loaded
@@ -1235,6 +1254,17 @@ public class Flux2Pipeline: @unchecked Sendable {
             latentDtype: String(describing: packedOutputLatents.dtype)
           ))
 
+        // Per-step start (iteration 04): single-shot KV extract counts as step 0 of 1.
+        await currentTelemetry()?.capture(
+          .denoiseStepStart(
+            variant: .imageToImageKVExtractStep0,
+            stepIndex: 0,
+            totalSteps: 1,
+            t: sigma0,
+            latentShape: packedOutputLatents.shape,
+            latentDtype: String(describing: packedOutputLatents.dtype)
+          ))
+
         let (noisePred0, kvCache) = transformer.forwardKVExtract(
           hiddenStates: packedOutputLatents,
           referenceHiddenStates: referenceLatents,
@@ -1256,6 +1286,17 @@ public class Flux2Pipeline: @unchecked Sendable {
         // B8: denoiseLoopEnd — imageToImageKVExtractStep0
         let kvExtractFinalStat = TuberiaTensorStat.sample(packedOutputLatents)
         if let telemetry = currentTelemetry() {
+          // Per-step complete (iteration 04): re-use the loop-end stat to avoid a
+          // second `TuberiaTensorStat.sample` reduction on the same latent.
+          await telemetry.capture(
+            .denoiseStepComplete(
+              variant: .imageToImageKVExtractStep0,
+              stepIndex: 0,
+              totalSteps: 1,
+              t: sigma0,
+              latentStat: kvExtractFinalStat,
+              durationSeconds: Date().timeIntervalSince(step0Start)
+            ))
           await telemetry.capture(
             .denoiseLoopEnd(
               variant: .imageToImageKVExtractStep0,
@@ -1300,6 +1341,18 @@ public class Flux2Pipeline: @unchecked Sendable {
           let sigma = scheduler.sigmas[stepIdx]
           let t = MLXArray([sigma])
 
+          // Per-step start (iteration 04). Step indices in this path start at 1
+          // because step 0 is the separate KV-extract pass above.
+          await currentTelemetry()?.capture(
+            .denoiseStepStart(
+              variant: .imageToImageKVCached,
+              stepIndex: stepIdx,
+              totalSteps: kvCachedTotalSteps,
+              t: sigma,
+              latentShape: packedOutputLatents.shape,
+              latentDtype: String(describing: packedOutputLatents.dtype)
+            ))
+
           let noisePred = transformer.forwardKVCached(
             hiddenStates: packedOutputLatents,
             encoderHiddenStates: textEmbeddings,
@@ -1325,6 +1378,20 @@ public class Flux2Pipeline: @unchecked Sendable {
           profiler.recordStep(duration: stepDuration)
           onProgress?(stepIdx + 1, effectiveSteps)
           Flux2Debug.verbose("Step \(stepIdx + 1)/\(effectiveSteps) (cached)")
+
+          // Per-step complete (iteration 04).
+          if let telemetry = currentTelemetry() {
+            let stepStat = TuberiaTensorStat.sample(packedOutputLatents)
+            await telemetry.capture(
+              .denoiseStepComplete(
+                variant: .imageToImageKVCached,
+                stepIndex: stepIdx,
+                totalSteps: kvCachedTotalSteps,
+                t: sigma,
+                latentStat: stepStat,
+                durationSeconds: stepDuration
+              ))
+          }
 
           // Checkpoint
           if let interval = checkpointInterval,
@@ -1398,6 +1465,17 @@ public class Flux2Pipeline: @unchecked Sendable {
           let sigma = scheduler.sigmas[stepIdx]
           let t = MLXArray([sigma])
 
+          // Per-step start (iteration 04).
+          await currentTelemetry()?.capture(
+            .denoiseStepStart(
+              variant: .imageToImageFullRecompute,
+              stepIndex: stepIdx,
+              totalSteps: effectiveSteps,
+              t: sigma,
+              latentShape: packedOutputLatents.shape,
+              latentDtype: String(describing: packedOutputLatents.dtype)
+            ))
+
           // Concatenate current output latents with reference latents for this step
           let inputLatents = concatenated([packedOutputLatents, referenceLatents], axis: 1)
 
@@ -1443,6 +1521,20 @@ public class Flux2Pipeline: @unchecked Sendable {
 
           onProgress?(stepIdx + 1, effectiveSteps)
           Flux2Debug.verbose("Step \(stepIdx + 1)/\(effectiveSteps)")
+
+          // Per-step complete (iteration 04).
+          if let telemetry = currentTelemetry() {
+            let stepStat = TuberiaTensorStat.sample(packedOutputLatents)
+            await telemetry.capture(
+              .denoiseStepComplete(
+                variant: .imageToImageFullRecompute,
+                stepIndex: stepIdx,
+                totalSteps: effectiveSteps,
+                t: sigma,
+                latentStat: stepStat,
+                durationSeconds: stepDuration
+              ))
+          }
 
           // Checkpoint
           if let interval = checkpointInterval,
@@ -1628,6 +1720,17 @@ public class Flux2Pipeline: @unchecked Sendable {
       let sigma = scheduler.sigmas[stepIdx]
       let t = MLXArray([sigma])
 
+      // Per-step start (iteration 04).
+      await currentTelemetry()?.capture(
+        .denoiseStepStart(
+          variant: .textToImage,
+          stepIndex: stepIdx,
+          totalSteps: effectiveSteps,
+          t: sigma,
+          latentShape: packedLatents.shape,
+          latentDtype: String(describing: packedLatents.dtype)
+        ))
+
       // Check transformer is still loaded (may be unloaded during cancellation)
       guard let transformer = transformer else {
         await currentTelemetry()?.capture(
@@ -1671,6 +1774,20 @@ public class Flux2Pipeline: @unchecked Sendable {
       onProgress?(stepIdx + 1, effectiveSteps)
 
       Flux2Debug.verbose("Step \(stepIdx + 1)/\(effectiveSteps)")
+
+      // Per-step complete (iteration 04).
+      if let telemetry = currentTelemetry() {
+        let stepStat = TuberiaTensorStat.sample(packedLatents)
+        await telemetry.capture(
+          .denoiseStepComplete(
+            variant: .textToImage,
+            stepIndex: stepIdx,
+            totalSteps: effectiveSteps,
+            t: sigma,
+            latentStat: stepStat,
+            durationSeconds: stepDuration
+          ))
+      }
 
       // Generate checkpoint image if requested
       if let interval = checkpointInterval,

@@ -1,6 +1,6 @@
 # flux-2-swift-mlx — Instrumentation Requirements
 
-**Status:** Iteration 03 — minimal boundary instrumentation. No known anomalies; we are instrumenting choke points so that *when* something goes wrong we know *where*, not *why*. Per-kernel detail is deferred until a real failure points us at a region.
+**Status:** Iteration 04 — per-step denoise events and transformer load events added on top of the iteration-03 boundary surface. Triggered by the 2026-05-15 SwiftVinetas `--telemetry` diagnosis (TODO.md): a full Klein-4B run emitted only 13 events end-to-end and there was no way to localize NaN / mode-collapse / color drift inside the 187 s denoise loop. Per-step `TuberiaTensorStat.sample` is gated by `if let telemetry = currentTelemetry()`, so a `nil` reporter still costs nothing.
 **Pattern source:** [Vinetas `docs/INSTRUMENTATION_PLAN.md`](https://github.com/intrusive-memory/Vinetas/blob/development/docs/INSTRUMENTATION_PLAN.md) + Produciesta `Docs/TELEMETRY_IMPL_PATTERN.md`
 **Host:** Vinetas
 **Depends on:** SwiftTuberia ≥ 0.7.0 (for the shared `TuberiaTensorStat` type — flux re-uses it instead of defining its own)
