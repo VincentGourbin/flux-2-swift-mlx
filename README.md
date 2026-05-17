@@ -37,6 +37,28 @@ A native Swift implementation of [Flux.2](https://blackforestlabs.ai/) image gen
 - **CLI Tool**: Full-featured command-line interface (`Flux2CLI`)
 - **macOS App**: Demo SwiftUI application (`Flux2App`) with T2I, I2I, and chat
 
+### Chains (Flux2Chains)
+- **`Flux2Chain` protocol**: composable, single-shot inference jobs returning
+  a regular `Flux2GenerationResult`. Each chain wraps `Flux2Pipeline` with
+  extra pre/in-loop/post stages, so progress callbacks, profiling, and
+  memory caps work like a normal `generate*` call.
+- **`Flux2MaskedInpaintingChain`**: RePaint-style per-step latent blending.
+  No Fill checkpoint required — works on every FLUX.2 base/distilled
+  variant. Soft masks (Gaussian-blurred edges) yield seamless edits.
+  ([example](docs/examples/inpainting/))
+- **`Flux2OutpaintingChain`**: BFL-style outpainting API. Caller passes an
+  image, per-side paddings in pixels, and a prompt; the chain handles
+  canvas extension, smart mask construction, neutral noise seeding, and
+  I2I+RePaint inference internally. ([example](docs/examples/outpainting/))
+- **`Flux2StepHook`**: low-level extension point on
+  `Flux2Pipeline.generate*` — a per-step callback that lets new chains
+  transform packed latents between steps. Foundation for the RePaint
+  blend; available for region control, style transfer, etc.
+- A third chain — `Flux2Sharp3DRepairChain` (single-image 3D novel-view
+  repair via Apple SHARP + a FLUX.2 LoRA) — lives in the sibling repo
+  [`rephoto-swift-coreml`](https://github.com/VincentGourbin/rephoto-swift-coreml)
+  because it pulls in AMLR-licensed CoreML weights.
+
 ### Text Encoders (FluxTextEncoders)
 - **Mistral Small 3.2 (24B)**: Text encoder for FLUX.2 dev/pro
 - **Qwen3 (4B/8B)**: Text encoder for FLUX.2 Klein

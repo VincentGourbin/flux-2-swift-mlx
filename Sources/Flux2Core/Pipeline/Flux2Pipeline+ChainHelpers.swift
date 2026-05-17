@@ -10,6 +10,9 @@ import MLX
 import CoreGraphics
 
 extension Flux2Pipeline {
+
+    // MARK: - Image ↔ latent
+
     /// Encode a `CGImage` to packed-sequence latents `[1, (h/16)*(w/16), 128]`,
     /// already normalised with the VAE BatchNorm statistics so the tensor is
     /// directly comparable with the denoiser's working latents.
@@ -55,6 +58,8 @@ extension Flux2Pipeline {
         eval(packed)
         return packed
     }
+
+    // MARK: - Dimensions & mask helpers
 
     /// Clamp `(width, height)` to the nearest lower multiple of 32 within
     /// `maxPixels` pixels — the layout the FLUX.2 transformer expects.

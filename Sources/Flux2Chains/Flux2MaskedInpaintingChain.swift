@@ -51,6 +51,33 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
     /// 32. Default 1024² matches the existing I2I conventions.
     public let maxPixels: Int
 
+    /// Configure a masked inpainting run.
+    ///
+    /// - Parameters:
+    ///   - pipeline: Pipeline to drive. Reused as-is — load its models and any
+    ///     LoRA *before* calling `run()` (or `run()` will load them lazily).
+    ///   - prompt: Text describing the desired full image. The model
+    ///     regenerates everything; the mask just forces the original back
+    ///     outside the painted region.
+    ///   - image: Source image. Pixels under the *black* part of the mask are
+    ///     preserved bit-exact by the RePaint blend.
+    ///   - mask: Grayscale image, same dimensions as `image` (it will be
+    ///     resized otherwise). **White = inpaint, black = keep.** Soft values
+    ///     in `[0, 1]` are honoured — use a Gaussian blur (≈ `image_width/30`)
+    ///     to get a seamless transition.
+    ///   - referenceImages: When non-nil and non-empty, the chain switches to
+    ///     `.imageToImage` so the transformer attends to these references in
+    ///     addition to the prompt. Used by `Flux2OutpaintingChain` to make
+    ///     the model continue the kept region. Pass `nil` for plain T2I
+    ///     RePaint inpainting.
+    ///   - steps: Denoising step count. `4` matches klein distilled defaults.
+    ///   - guidance: Classifier-free guidance scale. `1.0` for distilled
+    ///     klein; raise to ≈ 3.5 with `.klein9BBase` or `.klein4BBase` to
+    ///     trigger the classical CFG path on the underlying pipeline.
+    ///   - seed: Random seed for reproducibility. `nil` for non-deterministic.
+    ///   - maxPixels: Cap on the working resolution. Larger inputs are scaled
+    ///     down (aspect preserved) before being clamped to a multiple of 32.
+    ///   - onProgress: Forwarded to the pipeline's denoising loop.
     public init(
         pipeline: Flux2Pipeline,
         prompt: String,
@@ -75,6 +102,17 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
         self.onProgress = onProgress
     }
 
+    /// Execute the chain.
+    ///
+    /// Loads the pipeline's models if needed, encodes the source image into
+    /// the working latent space, builds the latent-aligned mask, registers
+    /// the RePaint step hook, and runs `generateWithResult`. Returns a
+    /// regular `Flux2GenerationResult` — `usedPrompt` and `wasUpsampled`
+    /// reflect the same conventions as a plain `generate*` call.
+    ///
+    /// - Returns: The inpainted image plus prompt metadata.
+    /// - Throws: Whatever the underlying pipeline can throw (model not
+    ///   loaded, memory, generation cancellation).
     public func run() async throws -> Flux2GenerationResult {
         try await pipeline.loadModels()
 

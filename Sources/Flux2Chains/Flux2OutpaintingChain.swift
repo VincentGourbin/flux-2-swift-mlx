@@ -68,6 +68,32 @@ public struct Flux2OutpaintingChain: Flux2Chain {
     /// chain's `maxPixels`. Set lower if you want to cap memory/time.
     public let maxPixels: Int
 
+    /// Configure an outpainting run.
+    ///
+    /// - Parameters:
+    ///   - pipeline: Pipeline to drive. Reused as-is — load its models and any
+    ///     LoRA *before* calling `run()` (or `run()` will load them lazily).
+    ///   - image: Source image. Will be pasted at `(left, top)` on the
+    ///     extended canvas and preserved bit-exact by the RePaint blend.
+    ///   - top: Pixels to add at the top. Silently rounded up to the next
+    ///     multiple of 32 (FLUX.2 requirement).
+    ///   - bottom: Pixels to add at the bottom (same rounding).
+    ///   - left: Pixels to add on the left (same rounding).
+    ///   - right: Pixels to add on the right (same rounding).
+    ///   - prompt: Text describing the **full** extended scene. Mention the
+    ///     content of the keep region too — the I2I reference gives the
+    ///     transformer visual anchoring, but the prompt is still its main
+    ///     steering signal.
+    ///   - steps: Denoising step count. `4` matches klein distilled defaults.
+    ///   - guidance: Classifier-free guidance scale.
+    ///   - seed: Random seed for reproducibility. `nil` for non-deterministic.
+    ///   - transitionPixels: Width of the soft transition band, in pixels of
+    ///     the keep region. The band lives *inside* the keep so the strips
+    ///     themselves carry mask = 1.0 (pure paint, no seed contamination).
+    ///   - maxPixels: Hard cap on the working canvas size. Overridden
+    ///     internally to `canvas_w × canvas_h` when smaller, so the canvas
+    ///     never gets downscaled.
+    ///   - onProgress: Forwarded to the pipeline's denoising loop.
     public init(
         pipeline: Flux2Pipeline,
         image: CGImage,
@@ -98,6 +124,22 @@ public struct Flux2OutpaintingChain: Flux2Chain {
         self.onProgress = onProgress
     }
 
+    /// Execute the chain end-to-end.
+    ///
+    /// Builds the extended canvas (mid-grey Gaussian noise outside the kept
+    /// region, image pasted at `(left, top)`), builds the smart mask, then
+    /// delegates to `Flux2MaskedInpaintingChain` with the original image
+    /// passed as an I2I reference so the transformer's attention continues
+    /// the kept content into the new strips.
+    ///
+    /// - Returns: The extended image plus prompt metadata.
+    /// - Throws:
+    ///   - `Flux2ChainError.invalidInput` if any padding is negative, every
+    ///     padding is zero, or the resulting canvas is not a multiple of 32
+    ///     on either axis (the source image itself may need padding by the
+    ///     caller in that case).
+    ///   - Whatever the underlying pipeline can throw (model not loaded,
+    ///     memory, generation cancellation).
     public func run() async throws -> Flux2GenerationResult {
         guard top >= 0, bottom >= 0, left >= 0, right >= 0 else {
             throw Flux2ChainError.invalidInput("Padding values must be non-negative")
