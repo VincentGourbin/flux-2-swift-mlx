@@ -96,6 +96,14 @@ public class Flux2Pipeline: @unchecked Sendable {
     /// Model downloader
     private var downloader: Flux2ModelDownloader?
 
+    /// Optional override for the Klein text encoder (Qwen3) directory.
+    /// When non-nil, `loadTextEncoder()` loads weights/tokenizer from this
+    /// path instead of fetching the curated Qwen3 variant from the Hub.
+    /// Useful for swapping in alternate Qwen3 encoders such as
+    /// abliterated/uncensored builds while keeping the rest of the pipeline
+    /// unchanged.
+    private let kleinEncoderPath: URL?
+
     /// LoRA adapter manager
     private var loraManager: LoRAManager?
 
@@ -122,11 +130,17 @@ public class Flux2Pipeline: @unchecked Sendable {
     ///   - quantization: Quantization configuration
     ///   - memoryOptimization: Memory optimization settings (nil = auto-detect based on system RAM)
     ///   - hfToken: HuggingFace token for model downloads
+    ///   - kleinEncoderPath: Optional local directory containing a Qwen3
+    ///     text encoder (`config.json`, `tokenizer.json`, `*.safetensors`).
+    ///     When set, the Klein text encoder loads from this path instead
+    ///     of resolving and downloading the curated Qwen3 variant. Has no
+    ///     effect when `model` is `.dev` (which uses the Mistral encoder).
     public init(
         model: Flux2Model = .dev,
         quantization: Flux2QuantizationConfig = .balanced,
         memoryOptimization: MemoryOptimizationConfig? = nil,
-        hfToken: String? = nil
+        hfToken: String? = nil,
+        kleinEncoderPath: URL? = nil
     ) {
         self.model = model
         self.quantization = quantization
@@ -135,6 +149,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         )
         self.scheduler = FlowMatchEulerScheduler()
         self.downloader = hfToken != nil ? Flux2ModelDownloader(hfToken: hfToken) : Flux2ModelDownloader()
+        self.kleinEncoderPath = kleinEncoderPath
     }
 
     // MARK: - Model Loading
@@ -204,11 +219,11 @@ public class Flux2Pipeline: @unchecked Sendable {
 
         case .klein4B, .klein4BBase:
             kleinEncoder = KleinTextEncoder(variant: .klein4B, quantization: mistralQuant)
-            try await kleinEncoder!.load()
+            try await kleinEncoder!.load(from: kleinEncoderPath)
 
         case .klein9B, .klein9BBase:
             kleinEncoder = KleinTextEncoder(variant: .klein9B, quantization: mistralQuant)
-            try await kleinEncoder!.load()
+            try await kleinEncoder!.load(from: kleinEncoderPath)
         }
 
         memoryManager.logMemoryState()
