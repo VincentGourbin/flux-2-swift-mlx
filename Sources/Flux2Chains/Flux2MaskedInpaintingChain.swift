@@ -25,7 +25,29 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
     /// load cost each time.
     public let pipeline: Flux2Pipeline
 
-    /// Inputs.
+    /// Text describing the **full** target image, **not** just the edit.
+    ///
+    /// FLUX.2 has no negative prompts and no dedicated edit instruction
+    /// channel — the prompt is the only steering signal for the in-mask
+    /// region. Follow the BFL prompting guidelines
+    /// (<https://docs.bfl.ml/guides/prompting_guide_flux2>):
+    ///
+    /// - **Structure**: *Subject + Action + Style + Context*. Word order
+    ///   matters: FLUX.2 weighs leading tokens more.
+    /// - **Length**: ~30–80 words. Describe the **whole** scene including
+    ///   the kept surroundings so the model has lighting/perspective cues
+    ///   for the inpainted region.
+    /// - **No negatives**: describe what you want, never what to avoid.
+    ///
+    /// Short prompts like `"a duck"` give the model no spatial / lighting /
+    /// integration cues and produce floating, mismatched subjects. Prefer:
+    /// *"A mallard duck standing on grey weathered concrete pavement at the
+    /// base of a rough limestone wall, soft midday sunlight from the upper
+    /// left casting a clear cast shadow on the ground, scattered grass
+    /// clippings around, naturalistic photography, shallow depth of field."*
+    ///
+    /// For dynamic prompt expansion at inference time, set
+    /// ``upsamplePrompt`` to `true`.
     public let prompt: String
     public let image: CGImage
     /// Grayscale mask, same dimensions as `image` (resized otherwise).
@@ -34,15 +56,41 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
     /// Optional reference image(s) for the transformer to attend to in
     /// addition to the prompt. When provided, the chain switches generation
     /// from `.textToImage` to `.imageToImage(referenceImages)` while still
-    /// applying the RePaint blend. Use this for *outpainting* where you want
-    /// the painted strips to genuinely continue the visual content of the
-    /// keep region — pass the extended canvas itself as the reference so the
-    /// model sees what it should match. For pure intra-image inpainting this
-    /// is unnecessary and adds compute.
+    /// applying the RePaint blend.
+    ///
+    /// **When to use:** for outpainting / scene extension. Pass the
+    /// original (un-extended) image so the transformer's attention
+    /// continues the kept content into the new strips (see
+    /// `Flux2OutpaintingChain`).
+    ///
+    /// **When NOT to use:** for "replace object X with object Y" inpainting.
+    /// Passing the source image (which still contains X under the mask)
+    /// makes the model attend to X's pixels and bleed its texture/colour
+    /// into Y — empirically verified on cat → duck (the duck inherits the
+    /// tabby's grey-striped head). Leave nil and rely on a descriptive
+    /// Flux 2-style prompt; see ``prompt``.
     public let referenceImages: [CGImage]?
+    /// When `referenceImages` is nil, auto-condition the transformer on
+    /// ``image`` itself.
+    ///
+    /// Default `false`. **This is intentional for the common case of
+    /// object replacement**: feeding the source as a reference lets the
+    /// to-be-replaced subject leak into the result via attention. Enable
+    /// only when the goal is *repair* or *scene extension* and the masked
+    /// region is empty / neutral — in that scenario the reference gives
+    /// the model the lighting / perspective / palette context it needs to
+    /// integrate the new content.
+    public let useImageAsReference: Bool
     public let steps: Int
     public let guidance: Float
     public let seed: UInt64?
+    /// When `true`, the active text encoder rewrites the prompt with an
+    /// internal vision-language model (Qwen3.5 VLM in this framework)
+    /// before encoding. Useful when the caller supplies a short edit
+    /// instruction rather than a full Flux 2-style descriptive prompt.
+    /// Cost: one extra VLM forward pass per call. Default `false` to
+    /// preserve the caller's exact wording.
+    public let upsamplePrompt: Bool
     /// Optional progress callback forwarded to `generateWithResult`.
     public let onProgress: Flux2ProgressCallback?
 
@@ -68,13 +116,21 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
     ///   - referenceImages: When non-nil and non-empty, the chain switches to
     ///     `.imageToImage` so the transformer attends to these references in
     ///     addition to the prompt. Used by `Flux2OutpaintingChain` to make
-    ///     the model continue the kept region. Pass `nil` for plain T2I
-    ///     RePaint inpainting.
+    ///     the model continue the kept region. Pass `nil` for the chain to
+    ///     decide based on ``useImageAsReference``.
+    ///   - useImageAsReference: When `referenceImages` is `nil`, auto-pass
+    ///     ``image`` itself as the I2I reference. Default `false` — for
+    ///     "replace object X with object Y" inpainting the source-as-ref
+    ///     bleeds X into Y via attention. Enable for *repair / extend*
+    ///     workflows where the masked region is empty.
     ///   - steps: Denoising step count. `4` matches klein distilled defaults.
     ///   - guidance: Classifier-free guidance scale. `1.0` for distilled
     ///     klein; raise to ≈ 3.5 with `.klein9BBase` or `.klein4BBase` to
     ///     trigger the classical CFG path on the underlying pipeline.
     ///   - seed: Random seed for reproducibility. `nil` for non-deterministic.
+    ///   - upsamplePrompt: Rewrite the prompt via the bundled VLM before
+    ///     encoding. Useful when the caller supplies a short edit
+    ///     instruction. Default `false`.
     ///   - maxPixels: Cap on the working resolution. Larger inputs are scaled
     ///     down (aspect preserved) before being clamped to a multiple of 32.
     ///   - onProgress: Forwarded to the pipeline's denoising loop.
@@ -84,9 +140,11 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
         image: CGImage,
         mask: CGImage,
         referenceImages: [CGImage]? = nil,
+        useImageAsReference: Bool = false,
         steps: Int = 4,
         guidance: Float = 1.0,
         seed: UInt64? = nil,
+        upsamplePrompt: Bool = false,
         maxPixels: Int = 1024 * 1024,
         onProgress: Flux2ProgressCallback? = nil
     ) {
@@ -95,9 +153,11 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
         self.image = image
         self.mask = mask
         self.referenceImages = referenceImages
+        self.useImageAsReference = useImageAsReference
         self.steps = steps
         self.guidance = guidance
         self.seed = seed
+        self.upsamplePrompt = upsamplePrompt
         self.maxPixels = maxPixels
         self.onProgress = onProgress
     }
@@ -156,6 +216,8 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
         let mode: Flux2GenerationMode
         if let refs = referenceImages, !refs.isEmpty {
             mode = .imageToImage(images: refs)
+        } else if useImageAsReference {
+            mode = .imageToImage(images: [image])
         } else {
             mode = .textToImage
         }
@@ -169,7 +231,7 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
             steps: steps,
             guidance: guidance,
             seed: seed,
-            upsamplePrompt: false,
+            upsamplePrompt: upsamplePrompt,
             precomputedEmbeddings: nil,
             checkpointInterval: nil,
             onProgress: onProgress,
