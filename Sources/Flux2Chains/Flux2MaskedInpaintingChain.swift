@@ -28,9 +28,20 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
     /// Inputs.
     public let prompt: String
     public let image: CGImage
-    /// Grayscale mask, same dimensions as `image` (resized otherwise).
-    /// White = inpaint, black = keep. Soft values in [0, 1] are honored.
+    /// Mask image, same dimensions as `image` (resized otherwise). What
+    /// "mask" means depends on ``maskConvention``:
+    /// - default `grayscaleWhiteInpaint`: separate grayscale image, white
+    ///   = inpaint, black = keep. Soft greys honoured.
+    /// - `alphaTransparentInpaint`: an "erased copy" of the source. Alpha
+    ///   = 0 (transparent) = inpaint, alpha = 1 (opaque) = keep. RGB
+    ///   ignored.
     public let mask: CGImage
+    /// How ``mask`` is interpreted. See ``Flux2MaskConvention``. Default
+    /// `grayscaleWhiteInpaint` for back-compat. Switch to
+    /// `alphaTransparentInpaint` when the mask is hand-authored in a photo
+    /// editor (Photoshop / Affinity / Procreate) by erasing the part to
+    /// redo — avoids maintaining a parallel grayscale file in lockstep.
+    public let maskConvention: Flux2MaskConvention
     /// Optional reference image(s) for the transformer to attend to in
     /// addition to the prompt. When provided, the chain switches generation
     /// from `.textToImage` to `.imageToImage(referenceImages)` while still
@@ -61,10 +72,17 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
     ///     outside the painted region.
     ///   - image: Source image. Pixels under the *black* part of the mask are
     ///     preserved bit-exact by the RePaint blend.
-    ///   - mask: Grayscale image, same dimensions as `image` (it will be
-    ///     resized otherwise). **White = inpaint, black = keep.** Soft values
-    ///     in `[0, 1]` are honoured — use a Gaussian blur (≈ `image_width/30`)
-    ///     to get a seamless transition.
+    ///   - mask: Mask image, same dimensions as `image` (it will be resized
+    ///     otherwise). Interpretation depends on `maskConvention`:
+    ///     - default `.grayscaleWhiteInpaint`: white = inpaint, black =
+    ///       keep, soft greys honoured. Use a Gaussian blur on the edge
+    ///       (≈ `image_width/30`) for a seamless transition.
+    ///     - `.alphaTransparentInpaint`: alpha = 0 (transparent) = inpaint,
+    ///       alpha = 1 (opaque) = keep. RGB content ignored.
+    ///   - maskConvention: How `mask` is interpreted. Default
+    ///     `.grayscaleWhiteInpaint` matches the existing API; pick
+    ///     `.alphaTransparentInpaint` to let an "erased copy of the source"
+    ///     drive the mask without a separate file.
     ///   - referenceImages: When non-nil and non-empty, the chain switches to
     ///     `.imageToImage` so the transformer attends to these references in
     ///     addition to the prompt. Used by `Flux2OutpaintingChain` to make
@@ -83,6 +101,7 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
         prompt: String,
         image: CGImage,
         mask: CGImage,
+        maskConvention: Flux2MaskConvention = .grayscaleWhiteInpaint,
         referenceImages: [CGImage]? = nil,
         steps: Int = 4,
         guidance: Float = 1.0,
@@ -94,6 +113,7 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
         self.prompt = prompt
         self.image = image
         self.mask = mask
+        self.maskConvention = maskConvention
         self.referenceImages = referenceImages
         self.steps = steps
         self.guidance = guidance
@@ -133,7 +153,8 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
         let maskLatents = Flux2Pipeline.packMaskForLatentBlending(
             mask,
             targetHeight: targetH,
-            targetWidth: targetW
+            targetWidth: targetW,
+            convention: maskConvention
         )
 
         // RePaint blend: outside-mask region is forced back to (image latent

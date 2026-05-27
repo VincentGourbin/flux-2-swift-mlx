@@ -56,6 +56,32 @@ final class Flux2MaskedInpaintingChainTests: XCTestCase {
         XCTAssertEqual(chain.referenceImages?.count, 2)
     }
 
+    func testMaskConventionDefaultsToGrayscale() {
+        let pipeline = Flux2Pipeline(model: .klein9B)
+        let img = solid(width: 32, height: 32)
+        let chain = Flux2MaskedInpaintingChain(
+            pipeline: pipeline,
+            prompt: "x",
+            image: img,
+            mask: img
+        )
+        XCTAssertEqual(chain.maskConvention, .grayscaleWhiteInpaint,
+                       "Back-compat: existing callers keep grayscale luminance reading")
+    }
+
+    func testMaskConventionForwardsAlpha() {
+        let pipeline = Flux2Pipeline(model: .klein9B)
+        let img = solid(width: 32, height: 32)
+        let chain = Flux2MaskedInpaintingChain(
+            pipeline: pipeline,
+            prompt: "x",
+            image: img,
+            mask: img,
+            maskConvention: .alphaTransparentInpaint
+        )
+        XCTAssertEqual(chain.maskConvention, .alphaTransparentInpaint)
+    }
+
     func testEmptyReferenceImagesArrayBehavesLikeNil() async {
         // The chain treats nil and [] the same way for the mode switch: both
         // mean "no reference, run as T2I". We surface this through the
