@@ -14,14 +14,31 @@ import UniformTypeIdentifiers
 import Flux2Core
 import Flux2Chains
 
+/// User-facing string mapping for ``Flux2MaskConvention``.
+///
+/// Kept local to the CLI so the framework enum stays free of
+/// ArgumentParser dependencies; the `--mask-convention` flag accepts the
+/// short identifiers `grayscale` / `alpha`.
+enum MaskConventionArg: String, ExpressibleByArgument, CaseIterable {
+    case grayscale
+    case alpha
+
+    var convention: Flux2MaskConvention {
+        switch self {
+        case .grayscale: return .grayscaleWhiteInpaint
+        case .alpha:     return .alphaTransparentInpaint
+        }
+    }
+}
+
 struct Inpaint: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "inpaint",
-        abstract: "RePaint-style masked inpainting: regenerate the white-masked region of an image with a text prompt"
+        abstract: "RePaint-style masked inpainting: regenerate the masked region of an image with a text prompt"
     )
 
-    @Option(name: .long, help: "Root of the FluxForge Studio Models directory.")
-    var modelsDir: String = "/Users/vincent/Pictures/FluxforgeStudio/Models"
+    @Option(name: .long, help: "Custom models directory (for sandboxed apps or custom storage). Defaults to the framework's standard models path.")
+    var modelsDir: String?
 
     @Option(name: .long, help: "FLUX.2 model: klein-9b (distilled, default) | klein-9b-base | klein-9b-kv | dev | klein-4b | klein-4b-base.")
     var fluxModel: String = "klein-9b"
@@ -29,17 +46,26 @@ struct Inpaint: AsyncParsableCommand {
     @Option(name: [.short, .long], help: "Input image to inpaint.")
     var image: String
 
-    @Option(name: [.short, .long], help: "Grayscale mask, same dimensions as image. WHITE = inpaint (will be replaced), BLACK = keep (preserved by RePaint blend).")
+    @Option(name: [.short, .long], help: "Mask image, same dimensions as the input. Interpretation depends on --mask-convention: 'grayscale' (default) reads luminance, WHITE = inpaint, BLACK = keep; 'alpha' reads the alpha channel, TRANSPARENT = inpaint, OPAQUE = keep. Soft values honoured in both modes.")
     var mask: String
 
-    @Option(name: [.short, .long], help: "Text prompt describing the desired full image (the model regenerates everything, the mask just forces the original back outside the painted region).")
+    @Option(name: .long, help: "How --mask is read: 'grayscale' (default — white = inpaint) or 'alpha' (transparent = inpaint, RGB ignored). Use 'alpha' when you erased the region to redo in a photo editor and saved a PNG with alpha.")
+    var maskConvention: MaskConventionArg = .grayscale
+
+    @Option(name: [.short, .long], help: "Text prompt describing the desired full image. Follow Flux 2 prompting guidelines (https://docs.bfl.ml/guides/prompting_guide_flux2): Subject + Action + Style + Context, 30–80 words, describe the WHOLE scene including the kept surroundings (the model has no other lighting / perspective cues for the inpainted region).")
     var prompt: String
 
     @Option(name: [.short, .long], help: "Output PNG path.")
     var output: String
 
-    @Option(name: .long, help: "Optional path(s) to reference image(s) — when set, the chain runs in I2I mode so the transformer attends to these while still respecting the RePaint mask. Repeat for multiple references. Useful for outpainting where you want the new strips to continue the existing scene.")
+    @Option(name: .long, help: "Optional path(s) to reference image(s) — when set, the chain runs in I2I mode so the transformer attends to these while still respecting the RePaint mask. Repeat for multiple references. Useful for scene-extension / repair where the new content must continue the kept region.")
     var reference: [String] = []
+
+    @Flag(name: .long, help: "Auto-feed the source image as I2I conditioning when --reference is not set. OFF by default — for 'replace object X with object Y' inpainting, the source still contains X under the mask and bleeds X into Y via attention. Enable for repair / scene-extension where the masked region is empty.")
+    var useImageAsReference: Bool = false
+
+    @Flag(name: .long, help: "Rewrite the prompt via the bundled Qwen3.5 VLM before encoding. Useful when --prompt is a short edit instruction rather than a full descriptive Flux 2 prompt. Adds one extra VLM forward pass.")
+    var upsamplePrompt: Bool = false
 
     @Option(name: .long, help: "Denoising steps for FLUX.2 (4 for distilled klein, 25-28 for base/dev).")
     var steps: Int = 4
@@ -55,7 +81,7 @@ struct Inpaint: AsyncParsableCommand {
             FileHandle.standardError.write(Data((msg + "\n").utf8))
         }
 
-        ModelRegistry.customModelsDirectory = URL(fileURLWithPath: modelsDir)
+        configureModelsDirectory(modelsDir)
 
         guard let imageCG = Self.loadCGImage(at: image) else {
             throw ValidationError("Could not decode image at \(image)")
@@ -102,10 +128,13 @@ struct Inpaint: AsyncParsableCommand {
             prompt: prompt,
             image: imageCG,
             mask: maskCG,
+            maskConvention: maskConvention.convention,
             referenceImages: referenceCGs,
+            useImageAsReference: useImageAsReference,
             steps: steps,
             guidance: guidance,
             seed: seed,
+            upsamplePrompt: upsamplePrompt,
             maxPixels: maxPixels,
             onProgress: { step, total in
                 logErr("  step \(step)/\(total)")

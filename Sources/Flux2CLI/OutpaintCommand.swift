@@ -23,8 +23,8 @@ struct Outpaint: AsyncParsableCommand {
         abstract: "Extend an image on any of the four sides via Flux2OutpaintingChain"
     )
 
-    @Option(name: .long, help: "Root of the FluxForge Studio Models directory.")
-    var modelsDir: String = "/Users/vincent/Pictures/FluxforgeStudio/Models"
+    @Option(name: .long, help: "Custom models directory (for sandboxed apps or custom storage). Defaults to the framework's standard models path.")
+    var modelsDir: String?
 
     @Option(name: .long, help: "FLUX.2 model: klein-9b (distilled, default) | klein-9b-base | klein-9b-kv | dev | klein-4b | klein-4b-base.")
     var fluxModel: String = "klein-9b"
@@ -32,7 +32,7 @@ struct Outpaint: AsyncParsableCommand {
     @Option(name: [.short, .long], help: "Input image to extend.")
     var image: String
 
-    @Option(name: [.short, .long], help: "Text prompt describing the full extended scene.")
+    @Option(name: [.short, .long], help: "Text prompt describing the full extended scene. Follow Flux 2 prompting guidelines (https://docs.bfl.ml/guides/prompting_guide_flux2): Subject + Action + Style + Context, 30–80 words, mention the content of the keep region too.")
     var prompt: String
 
     @Option(name: [.short, .long], help: "Output PNG path.")
@@ -53,6 +53,8 @@ struct Outpaint: AsyncParsableCommand {
     var guidance: Float = 1.0
     @Option(name: .long, help: "Random seed.")
     var seed: UInt64?
+    @Flag(name: .long, help: "Rewrite the prompt via the bundled Qwen3.5 VLM before encoding. Useful when --prompt is a short instruction rather than a full descriptive Flux 2 prompt.")
+    var upsamplePrompt: Bool = false
     @Option(name: .long, help: "Width of the soft transition band, in pixels of the keep region. Default 32.")
     var transitionPixels: Int = 32
     @Option(name: .long, help: "Cap on the total working pixel count. Defaults to 4 M; raise if you want larger canvases.")
@@ -63,7 +65,7 @@ struct Outpaint: AsyncParsableCommand {
             FileHandle.standardError.write(Data((msg + "\n").utf8))
         }
 
-        ModelRegistry.customModelsDirectory = URL(fileURLWithPath: modelsDir)
+        configureModelsDirectory(modelsDir)
 
         guard let imageCG = Self.loadCGImage(at: image) else {
             throw ValidationError("Could not decode image at \(image)")
@@ -104,6 +106,7 @@ struct Outpaint: AsyncParsableCommand {
             steps: steps,
             guidance: guidance,
             seed: seed,
+            upsamplePrompt: upsamplePrompt,
             transitionPixels: transitionPixels,
             maxPixels: maxPixels,
             onProgress: { step, total in
