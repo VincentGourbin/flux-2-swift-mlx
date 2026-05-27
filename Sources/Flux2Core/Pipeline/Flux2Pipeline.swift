@@ -112,6 +112,16 @@ public class Flux2Pipeline: @unchecked Sendable {
     /// Klein text encoder (Qwen3 - for Klein 4B/9B)
     private var kleinEncoder: KleinTextEncoder?
 
+    /// Optional override for the Klein text encoder (Qwen3) directory.
+    /// When non-nil, `loadTextEncoder()` loads weights + tokenizer from
+    /// this path instead of resolving and downloading the curated Qwen3
+    /// variant. Lets hosting apps swap in alternate Qwen3 builds
+    /// (abliterated, fine-tuned, different quantisation, …) without
+    /// forking the package. See `docs/TextEncoders.md` for the expected
+    /// directory layout and dimension constraints. Has no effect when
+    /// `model == .dev` (which uses the Mistral encoder).
+    private let kleinEncoderPath: URL?
+
     /// Diffusion transformer
     private var transformer: Flux2Transformer2DModel?
 
@@ -145,23 +155,28 @@ public class Flux2Pipeline: @unchecked Sendable {
     /// Clear cache every N denoising steps (0 = disabled)
     public var clearCacheEveryNSteps: Int = 5
 
-    /// Initialize pipeline
-    /// - Parameters:
-    ///   - model: Model variant to use (default: .dev)
-    ///   - quantization: Quantization settings for each component
-    ///   - hfToken: HuggingFace token for gated models
     /// Initialize the Flux.2 pipeline
     /// - Parameters:
     ///   - model: Model variant (dev, klein-4b, klein-9b)
     ///   - quantization: Quantization configuration
     ///   - memoryOptimization: Memory optimization settings (nil = auto-detect based on system RAM)
+    ///   - vaeVariant: VAE decoder variant (standard or small-decoder)
     ///   - hfToken: HuggingFace token for model downloads
+    ///   - kleinEncoderPath: Optional local directory containing a Qwen3
+    ///     text encoder (`config.json`, `tokenizer.json`, `*.safetensors`).
+    ///     When set, the Klein text encoder loads from this path instead
+    ///     of resolving and downloading the curated Qwen3 variant. The
+    ///     architecture must match the target Klein variant (Qwen3-4B for
+    ///     Klein 4B, Qwen3-8B for Klein 9B). See `docs/TextEncoders.md`
+    ///     for the directory layout and a list of compatible builds. Has
+    ///     no effect when `model == .dev` (which uses the Mistral encoder).
     public init(
         model: Flux2Model = .dev,
         quantization: Flux2QuantizationConfig = .balanced,
         memoryOptimization: MemoryOptimizationConfig? = nil,
         vaeVariant: ModelRegistry.VAEVariant = .smallDecoder,
-        hfToken: String? = nil
+        hfToken: String? = nil,
+        kleinEncoderPath: URL? = nil
     ) {
         self.model = model
         self.quantization = quantization
@@ -171,6 +186,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         )
         self.scheduler = FlowMatchEulerScheduler()
         self.downloader = hfToken != nil ? Flux2ModelDownloader(hfToken: hfToken) : Flux2ModelDownloader()
+        self.kleinEncoderPath = kleinEncoderPath
     }
 
     // MARK: - Model Loading
@@ -257,11 +273,11 @@ public class Flux2Pipeline: @unchecked Sendable {
 
         case .klein4B, .klein4BBase:
             kleinEncoder = KleinTextEncoder(variant: .klein4B, quantization: mistralQuant)
-            try await kleinEncoder!.load()
+            try await kleinEncoder!.load(from: kleinEncoderPath)
 
         case .klein9B, .klein9BBase, .klein9BKV:
             kleinEncoder = KleinTextEncoder(variant: .klein9B, quantization: mistralQuant)
-            try await kleinEncoder!.load()
+            try await kleinEncoder!.load(from: kleinEncoderPath)
         }
 
         memoryManager.logMemoryState()
@@ -951,7 +967,7 @@ public class Flux2Pipeline: @unchecked Sendable {
 
                     // Step 5: Reload Qwen3 for text encoding
                     Flux2Debug.log("Reloading Qwen3 for Klein text encoding...")
-                    try await kleinEncoder!.load()
+                    try await kleinEncoder!.load(from: kleinEncoderPath)
 
                     profiler.end("1b. VLM Interpretation")
                 }
@@ -1006,7 +1022,7 @@ public class Flux2Pipeline: @unchecked Sendable {
 
                     // Step 5: Reload Qwen3 for text encoding
                     Flux2Debug.log("Reloading Qwen3 for Klein text encoding...")
-                    try await kleinEncoder!.load()
+                    try await kleinEncoder!.load(from: kleinEncoderPath)
 
                     // Step 6: Encode with Qwen3 (already upsampled, so upsample=false)
                     textEmbeddings = try kleinEncoder!.encode(enhancedPrompt, upsample: false)

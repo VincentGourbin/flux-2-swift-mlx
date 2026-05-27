@@ -120,6 +120,79 @@ FluxEncodersCLI models --download qwen3-4b-8bit
 | Qwen3 8B | 8-bit | ~8GB | 12GB |
 | Qwen3 8B | 4-bit | ~4GB | 8GB |
 
+### Swapping in an alternate Qwen3 encoder (Klein only)
+
+`Flux2Pipeline.init(...)` accepts an optional `kleinEncoderPath: URL?`
+that bypasses the curated Hub variant and loads the Klein text encoder
+from a local directory instead. This is the supported way to plug in:
+
+- **Abliterated / uncensored** Qwen3 builds (e.g.
+  [`ponpoke/flux2-klein-9b-uncensored-text-encoder`](https://huggingface.co/ponpoke/flux2-klein-9b-uncensored-text-encoder))
+  so refusal directions in the curated encoder stop distorting prompts
+  the base transformer is otherwise willing to render.
+- **Fine-tuned** Qwen3 variants (style-conditioned, language-tuned, …).
+- **Different quantisations** of the same architecture (8-bit / 4-bit /
+  bf16) without waiting for an upstream addition to `Qwen3Variant`.
+
+```swift
+let encoderDir = URL(fileURLWithPath: "/path/to/qwen3-encoder")
+
+let pipeline = Flux2Pipeline(
+    model: .klein9B,
+    quantization: .balanced,
+    kleinEncoderPath: encoderDir
+)
+try await pipeline.loadModels()  // ← uses encoderDir, no Hub fetch
+```
+
+#### Directory layout
+
+The path must point at a directory containing the standard
+HuggingFace-style layout that `FluxTextEncoders.loadKleinModel(variant:from:)`
+expects:
+
+```
+/path/to/qwen3-encoder/
+├── config.json           # Qwen3 architecture config
+├── tokenizer.json        # Qwen3 tokenizer
+└── model.safetensors     # weights (single-file or sharded *.safetensors)
+```
+
+Sharded safetensors with an `index.json` are also supported.
+
+#### Architecture constraints
+
+The override must match the **target Klein variant**'s expected
+architecture exactly. The framework reads whichever precision the
+safetensors carry, but it doesn't auto-detect dimension mismatches —
+loading the wrong arch will fail at decode time with a confusing error.
+
+| Klein variant | Required Qwen3 architecture | Output dimension |
+|---|---|---|
+| `.klein4B` / `.klein4BBase` | Qwen3-4B (3 × 2560 hidden) | 7,680 |
+| `.klein9B` / `.klein9BBase` / `.klein9BKV` | Qwen3-8B (3 × 4096 hidden) | 12,288 |
+
+The hidden-state layers extracted are `[9, 18, 27]` for both — this is
+fixed in `KleinTextEncoder` and won't follow a fine-tune that expects a
+different layer triplet.
+
+#### What happens when the path is nil
+
+The default (`kleinEncoderPath: nil`) keeps the existing auto-download
+behavior: the framework picks a curated `Qwen3Variant` based on
+`(kleinVariant, quantization)`, reuses any already-downloaded variant,
+or falls back to Hub download. No behavior change for existing callers.
+
+#### What it does NOT do
+
+- It has **no effect on Dev** (`model == .dev`) — Dev uses the Mistral
+  encoder via `Flux2TextEncoder`, which has its own loader.
+- It doesn't validate the encoder before loading; an incompatible build
+  fails at the first forward pass, not at `Flux2Pipeline.init`.
+- It doesn't change the embedding layer indices, max sequence length, or
+  any other Klein-specific extraction logic — only the source of the
+  Qwen3 weights changes.
+
 ## Performance Benchmarks
 
 Performance comparison between Swift MLX and Python MLX on Apple Silicon.
