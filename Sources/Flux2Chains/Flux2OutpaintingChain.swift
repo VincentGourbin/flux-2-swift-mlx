@@ -46,15 +46,24 @@ public struct Flux2OutpaintingChain: Flux2Chain {
     public let left: Int
     public let right: Int
 
-    /// Text prompt describing the **full** extended scene. Mention the
-    /// content of the keep region too — the transformer attends to the
-    /// I2I reference but the prompt is still its main steering signal.
+    /// Text prompt describing the **full** extended scene.
+    ///
+    /// Follow the BFL prompting guidelines
+    /// (<https://docs.bfl.ml/guides/prompting_guide_flux2>): *Subject +
+    /// Action + Style + Context*, 30–80 words, leading words weigh more.
+    /// Mention the content of the keep region too — the transformer
+    /// attends to the I2I reference but the prompt is still its main
+    /// steering signal. No negative prompts.
     public let prompt: String
 
     /// FLUX.2 generation parameters. Defaults target distilled klein.
     public let steps: Int
     public let guidance: Float
     public let seed: UInt64?
+    /// Rewrite the prompt via the bundled VLM before encoding. Useful
+    /// when the caller passes a short instruction rather than a full
+    /// Flux 2-style descriptive prompt. Default `false`.
+    public let upsamplePrompt: Bool
     public let onProgress: Flux2ProgressCallback?
 
     /// Width of the soft transition band, in pixels of the canvas. The band
@@ -87,6 +96,9 @@ public struct Flux2OutpaintingChain: Flux2Chain {
     ///   - steps: Denoising step count. `4` matches klein distilled defaults.
     ///   - guidance: Classifier-free guidance scale.
     ///   - seed: Random seed for reproducibility. `nil` for non-deterministic.
+    ///   - upsamplePrompt: Rewrite the prompt via the bundled VLM before
+    ///     encoding. Useful when the caller passes a short instruction
+    ///     rather than a full descriptive Flux 2 prompt. Default `false`.
     ///   - transitionPixels: Width of the soft transition band, in pixels of
     ///     the keep region. The band lives *inside* the keep so the strips
     ///     themselves carry mask = 1.0 (pure paint, no seed contamination).
@@ -105,6 +117,7 @@ public struct Flux2OutpaintingChain: Flux2Chain {
         steps: Int = 4,
         guidance: Float = 1.0,
         seed: UInt64? = nil,
+        upsamplePrompt: Bool = false,
         transitionPixels: Int = 32,
         maxPixels: Int = 4 * 1024 * 1024,
         onProgress: Flux2ProgressCallback? = nil
@@ -119,6 +132,7 @@ public struct Flux2OutpaintingChain: Flux2Chain {
         self.steps = steps
         self.guidance = guidance
         self.seed = seed
+        self.upsamplePrompt = upsamplePrompt
         self.transitionPixels = transitionPixels
         self.maxPixels = maxPixels
         self.onProgress = onProgress
@@ -199,9 +213,11 @@ public struct Flux2OutpaintingChain: Flux2Chain {
             image: canvas,
             mask: mask,
             referenceImages: [image],  // I2I conditioning continues the scene
+            useImageAsReference: false,  // explicit refs already supplied
             steps: steps,
             guidance: guidance,
             seed: seed,
+            upsamplePrompt: upsamplePrompt,
             maxPixels: max(maxPixels, canvasW * canvasH),
             onProgress: onProgress
         )
