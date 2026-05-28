@@ -83,7 +83,7 @@ extension Flux2Pipeline {
             throw Flux2Error.modelNotLoaded("VAE")
         }
 
-        let preprocessed = preprocessImageForVAEPublic(
+        let preprocessed = await preprocessImageForVAEPublic(
             image,
             targetHeight: targetHeight,
             targetWidth: targetWidth
@@ -150,69 +150,88 @@ extension Flux2Pipeline {
         targetHeight: Int,
         targetWidth: Int,
         convention: Flux2MaskConvention = .grayscaleWhiteInpaint
-    ) -> MLXArray {
+    ) async -> MLXArray {
         let latentH = targetHeight / 16
         let latentW = targetWidth / 16
         switch convention {
         case .grayscaleWhiteInpaint:
-            return packGrayscaleMask(mask, latentH: latentH, latentW: latentW)
+            return await packGrayscaleMask(mask, latentH: latentH, latentW: latentW)
         case .alphaTransparentInpaint:
-            return packAlphaMask(mask, latentH: latentH, latentW: latentW)
+            return await packAlphaMask(mask, latentH: latentH, latentW: latentW)
         }
     }
 
     private static func packGrayscaleMask(
         _ mask: CGImage, latentH: Int, latentW: Int
-    ) -> MLXArray {
-        var pixels = [UInt8](repeating: 0, count: latentH * latentW)
-        let colorSpace = CGColorSpaceCreateDeviceGray()
-        guard let context = CGContext(
-            data: &pixels,
-            width: latentW,
-            height: latentH,
-            bitsPerComponent: 8,
-            bytesPerRow: latentW,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.none.rawValue
-        ) else {
-            return MLXArray.zeros([1, latentH * latentW, 1])
+    ) async -> MLXArray {
+        let count = latentH * latentW
+        // The CGContext keeps a raw pointer into `pixels`; capturing it by
+        // value into a Sendable closure isn't possible. The work item runs
+        // synchronously inside the continuation and the await blocks until
+        // it completes, so `UnsafeMutableBufferPointer` ownership stays
+        // local — safe under the explicit happens-before.
+        let floats: [Float] = await Self.runAtDefaultQoS {
+            let buf = UnsafeMutablePointer<UInt8>.allocate(capacity: count)
+            buf.initialize(repeating: 0, count: count)
+            defer {
+                buf.deinitialize(count: count)
+                buf.deallocate()
+            }
+            let colorSpace = CGColorSpaceCreateDeviceGray()
+            guard let context = CGContext(
+                data: buf,
+                width: latentW,
+                height: latentH,
+                bitsPerComponent: 8,
+                bytesPerRow: latentW,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ) else {
+                return [Float](repeating: 0, count: count)
+            }
+            context.interpolationQuality = .high
+            context.draw(mask, in: CGRect(x: 0, y: 0, width: latentW, height: latentH))
+            return (0..<count).map { Float(buf[$0]) / 255.0 }
         }
-        context.interpolationQuality = .high
-        context.draw(mask, in: CGRect(x: 0, y: 0, width: latentW, height: latentH))
-        let floats = pixels.map { Float($0) / 255.0 }
-        return MLXArray(floats).reshaped([1, latentH * latentW, 1])
+        return MLXArray(floats).reshaped([1, count, 1])
     }
 
     private static func packAlphaMask(
         _ mask: CGImage, latentH: Int, latentW: Int
-    ) -> MLXArray {
+    ) async -> MLXArray {
         // We need the alpha channel only. Rendering into a premultipliedLast
         // RGBA8 context with the colourspace fully neutral and then sampling
         // byte index 3 gives the unmolested alpha value (premultiplication
         // doesn't apply when src alpha is reconstructed from byte 3, since
         // the destination starts cleared and we only read the alpha plane).
-        let rgbaCount = latentH * latentW * 4
-        var pixels = [UInt8](repeating: 0, count: rgbaCount)
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        guard let context = CGContext(
-            data: &pixels,
-            width: latentW,
-            height: latentH,
-            bitsPerComponent: 8,
-            bytesPerRow: latentW * 4,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else {
-            return MLXArray.zeros([1, latentH * latentW, 1])
+        let count = latentH * latentW
+        let rgbaCount = count * 4
+        let floats: [Float] = await Self.runAtDefaultQoS {
+            let buf = UnsafeMutablePointer<UInt8>.allocate(capacity: rgbaCount)
+            buf.initialize(repeating: 0, count: rgbaCount)
+            defer {
+                buf.deinitialize(count: rgbaCount)
+                buf.deallocate()
+            }
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
+            guard let context = CGContext(
+                data: buf,
+                width: latentW,
+                height: latentH,
+                bitsPerComponent: 8,
+                bytesPerRow: latentW * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else {
+                return [Float](repeating: 0, count: count)
+            }
+            context.interpolationQuality = .high
+            context.draw(mask, in: CGRect(x: 0, y: 0, width: latentW, height: latentH))
+            // Invert: alpha=0 (transparent) → 1.0 (inpaint); alpha=255 → 0.0 (keep).
+            return (0..<count).map { i in
+                1.0 - Float(buf[i * 4 + 3]) / 255.0
+            }
         }
-        context.interpolationQuality = .high
-        context.draw(mask, in: CGRect(x: 0, y: 0, width: latentW, height: latentH))
-        // Invert: alpha=0 (transparent) → 1.0 (inpaint); alpha=255 → 0.0 (keep).
-        var floats = [Float](repeating: 0, count: latentH * latentW)
-        for i in 0..<(latentH * latentW) {
-            let a = pixels[i * 4 + 3]
-            floats[i] = 1.0 - Float(a) / 255.0
-        }
-        return MLXArray(floats).reshaped([1, latentH * latentW, 1])
+        return MLXArray(floats).reshaped([1, count, 1])
     }
 }

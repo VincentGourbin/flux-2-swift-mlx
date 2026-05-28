@@ -210,7 +210,7 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
             targetWidth: targetW
         )
 
-        let maskLatents = Flux2Pipeline.packMaskForLatentBlending(
+        let maskLatents = await Flux2Pipeline.packMaskForLatentBlending(
             mask,
             targetHeight: targetH,
             targetWidth: targetW,

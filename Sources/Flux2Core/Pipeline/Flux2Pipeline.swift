@@ -204,8 +204,39 @@ public class Flux2Pipeline: @unchecked Sendable {
         _ image: CGImage,
         targetHeight: Int,
         targetWidth: Int
-    ) -> MLXArray {
-        preprocessImageForVAE(image, targetHeight: targetHeight, targetWidth: targetWidth)
+    ) async -> MLXArray {
+        await preprocessImageForVAE(image, targetHeight: targetHeight, targetWidth: targetWidth)
+    }
+
+    /// Run a synchronous CPU block on a Default-QoS Dispatch worker,
+    /// regardless of the calling task's QoS.
+    ///
+    /// CoreGraphics rasterisation calls (`CGContext.draw(_:in:)` with
+    /// `interpolationQuality = .high`) dispatch their internal workers at
+    /// `.default` QoS. Calling them from a cooperative thread that
+    /// inherits a higher QoS (e.g. User-Initiated via MainActor button
+    /// click → `await chain.run()`) triggers the runtime priority-inversion
+    /// warning *"Thread running at User-initiated quality-of-service class
+    /// waiting on a lower QoS thread"* even though the work is correct
+    /// and the system silently elevates the worker via priority
+    /// inheritance.
+    ///
+    /// The fix has two pieces:
+    /// 1. `withCheckedContinuation` makes the cooperative thread *suspend*
+    ///    instead of *block* — no blocking thread means no inversion check.
+    /// 2. `DispatchWorkItem(qos: .default, flags: [.enforceQoS])` prevents
+    ///    Dispatch from elevating the worker's QoS to match the caller,
+    ///    so CG sees a Default-QoS caller and its internal workers stay at
+    ///    Default — symmetric, no inversion at the CG level either.
+    static func runAtDefaultQoS<T: Sendable>(
+        _ body: @Sendable @escaping () -> T
+    ) async -> T {
+        await withCheckedContinuation { (continuation: CheckedContinuation<T, Never>) in
+            let workItem = DispatchWorkItem(qos: .default, flags: [.enforceQoS]) {
+                continuation.resume(returning: body())
+            }
+            DispatchQueue.global(qos: .default).async(execute: workItem)
+        }
     }
 
     /// Load all required models
@@ -1111,7 +1142,7 @@ public class Flux2Pipeline: @unchecked Sendable {
             Flux2Debug.log("Generated output noise latents: \(patchifiedLatents.shape)")
 
             // Encode ALL reference images
-            let (referenceLatents, referencePositionIds) = try encodeReferenceImages(
+            let (referenceLatents, referencePositionIds) = try await encodeReferenceImages(
                 images,
                 height: validHeight,
                 width: validWidth
@@ -1711,7 +1742,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         _ images: [CGImage],
         height: Int,
         width: Int
-    ) throws -> (latents: MLXArray, positionIds: MLXArray) {
+    ) async throws -> (latents: MLXArray, positionIds: MLXArray) {
         guard let vae = vae else {
             throw Flux2Error.modelNotLoaded("VAE")
         }
@@ -1757,7 +1788,7 @@ public class Flux2Pipeline: @unchecked Sendable {
             Flux2Debug.log("  -> Resized to \(targetWidth)x\(targetHeight)")
 
             // Preprocess and encode
-            let processed = preprocessImageForVAE(image, targetHeight: targetHeight, targetWidth: targetWidth)
+            let processed = await preprocessImageForVAE(image, targetHeight: targetHeight, targetWidth: targetWidth)
 
             // Encode with VAE -> [1, 32, H/8, W/8]
             // IMPORTANT: Use samplePosterior=false to get deterministic mean (like diffusers argmax)
@@ -1827,7 +1858,7 @@ public class Flux2Pipeline: @unchecked Sendable {
     /// preserve exact pixel values without format conversion or anti-aliasing artifacts.
     /// When a resize is needed, uses CGContext with high-quality interpolation, then
     /// reads from the resized image's dataProvider.
-    private func preprocessImageForVAE(_ image: CGImage, targetHeight: Int, targetWidth: Int) -> MLXArray {
+    private func preprocessImageForVAE(_ image: CGImage, targetHeight: Int, targetWidth: Int) async -> MLXArray {
         let sourceWidth = image.width
         let sourceHeight = image.height
 
@@ -1836,28 +1867,43 @@ public class Flux2Pipeline: @unchecked Sendable {
         if sourceWidth != targetWidth || sourceHeight != targetHeight {
             Flux2Debug.log("Resizing image from \(sourceWidth)x\(sourceHeight) to \(targetWidth)x\(targetHeight)")
 
+            // Pixel buffer is captured by the Default-QoS work item below; the
+            // CGContext keeps a pointer into it, so the buffer (and any backing
+            // storage) must outlive the draw. The continuation handshake
+            // guarantees the await returns only after the work completes, so
+            // capturing pixelData by reference via UnsafeMutablePointer is safe.
             let bytesPerPixel = 4
             let bytesPerRow = bytesPerPixel * targetWidth
-            var pixelData = [UInt8](repeating: 0, count: targetHeight * bytesPerRow)
+            let pixelCount = targetHeight * bytesPerRow
 
-            guard let context = CGContext(
-                data: &pixelData,
-                width: targetWidth,
-                height: targetHeight,
-                bitsPerComponent: 8,
-                bytesPerRow: bytesPerRow,
-                space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
-            ) else {
-                Flux2Debug.log("Failed to create resize context")
-                return MLXRandom.normal([1, 3, targetHeight, targetWidth])
+            let resized: CGImage? = await Self.runAtDefaultQoS {
+                let pixelData = UnsafeMutablePointer<UInt8>.allocate(capacity: pixelCount)
+                pixelData.initialize(repeating: 0, count: pixelCount)
+                defer {
+                    pixelData.deinitialize(count: pixelCount)
+                    pixelData.deallocate()
+                }
+
+                guard let context = CGContext(
+                    data: pixelData,
+                    width: targetWidth,
+                    height: targetHeight,
+                    bitsPerComponent: 8,
+                    bytesPerRow: bytesPerRow,
+                    space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+                ) else {
+                    return nil
+                }
+
+                // High quality interpolation
+                context.interpolationQuality = .high
+                context.draw(image, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
+
+                return context.makeImage()
             }
 
-            // High quality interpolation
-            context.interpolationQuality = .high
-            context.draw(image, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
-
-            guard let resized = context.makeImage() else {
+            guard let resized else {
                 Flux2Debug.log("Failed to create resized image")
                 return MLXRandom.normal([1, 3, targetHeight, targetWidth])
             }

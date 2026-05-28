@@ -45,16 +45,16 @@ final class Flux2ChainHelpersTests: XCTestCase {
 
     // MARK: - Mask packing
 
-    func testPackMaskHasExpectedSequenceShape() {
+    func testPackMaskHasExpectedSequenceShape() async {
         // 512×512 image → 32×32 latent grid → 1024 tokens.
         let mask = makeUniformMask(width: 512, height: 512, value: 1.0)
-        let packed = Flux2Pipeline.packMaskForLatentBlending(mask, targetHeight: 512, targetWidth: 512)
+        let packed = await Flux2Pipeline.packMaskForLatentBlending(mask, targetHeight: 512, targetWidth: 512)
         XCTAssertEqual(packed.shape, [1, 1024, 1])
     }
 
-    func testPackMaskAllWhiteYieldsOnes() {
+    func testPackMaskAllWhiteYieldsOnes() async {
         let mask = makeUniformMask(width: 128, height: 128, value: 1.0)
-        let packed = Flux2Pipeline.packMaskForLatentBlending(mask, targetHeight: 128, targetWidth: 128)
+        let packed = await Flux2Pipeline.packMaskForLatentBlending(mask, targetHeight: 128, targetWidth: 128)
         // 128/16 = 8 → 64 tokens
         XCTAssertEqual(packed.shape, [1, 64, 1])
         // Sum should equal token count.
@@ -62,19 +62,19 @@ final class Flux2ChainHelpersTests: XCTestCase {
         XCTAssertEqual(total, 64.0, accuracy: 0.5)
     }
 
-    func testPackMaskAllBlackYieldsZeros() {
+    func testPackMaskAllBlackYieldsZeros() async {
         let mask = makeUniformMask(width: 128, height: 128, value: 0.0)
-        let packed = Flux2Pipeline.packMaskForLatentBlending(mask, targetHeight: 128, targetWidth: 128)
+        let packed = await Flux2Pipeline.packMaskForLatentBlending(mask, targetHeight: 128, targetWidth: 128)
         let total = packed.sum().item(Float.self)
         XCTAssertEqual(total, 0.0, accuracy: 0.5)
     }
 
     // MARK: - Mask packing (alpha convention)
 
-    func testAlphaMaskFullyTransparentYieldsOnes() {
+    func testAlphaMaskFullyTransparentYieldsOnes() async {
         // Fully transparent input ⇒ everything should be inpainted (mask = 1).
         let mask = makeUniformAlphaMask(width: 128, height: 128, alpha: 0)
-        let packed = Flux2Pipeline.packMaskForLatentBlending(
+        let packed = await Flux2Pipeline.packMaskForLatentBlending(
             mask, targetHeight: 128, targetWidth: 128,
             convention: .alphaTransparentInpaint
         )
@@ -83,10 +83,10 @@ final class Flux2ChainHelpersTests: XCTestCase {
                        "alpha=0 ⇒ inpaint=1.0 across all 64 tokens")
     }
 
-    func testAlphaMaskFullyOpaqueYieldsZeros() {
+    func testAlphaMaskFullyOpaqueYieldsZeros() async {
         // Fully opaque input ⇒ nothing inpainted (mask = 0 everywhere).
         let mask = makeUniformAlphaMask(width: 128, height: 128, alpha: 255)
-        let packed = Flux2Pipeline.packMaskForLatentBlending(
+        let packed = await Flux2Pipeline.packMaskForLatentBlending(
             mask, targetHeight: 128, targetWidth: 128,
             convention: .alphaTransparentInpaint
         )
@@ -95,10 +95,10 @@ final class Flux2ChainHelpersTests: XCTestCase {
                        "alpha=255 ⇒ keep=0.0 across all tokens")
     }
 
-    func testAlphaMaskSoftValueIsPreserved() {
+    func testAlphaMaskSoftValueIsPreserved() async {
         // alpha=128 ⇒ ~0.5 soft mask.
         let mask = makeUniformAlphaMask(width: 128, height: 128, alpha: 128)
-        let packed = Flux2Pipeline.packMaskForLatentBlending(
+        let packed = await Flux2Pipeline.packMaskForLatentBlending(
             mask, targetHeight: 128, targetWidth: 128,
             convention: .alphaTransparentInpaint
         )
@@ -107,15 +107,15 @@ final class Flux2ChainHelpersTests: XCTestCase {
         XCTAssertEqual(total, 64.0 * (1.0 - 128.0 / 255.0), accuracy: 1.0)
     }
 
-    func testAlphaMaskIgnoresRGBContent() {
+    func testAlphaMaskIgnoresRGBContent() async {
         // Two masks with identical alpha but wildly different RGB must
         // produce identical packed mask arrays.
         let m0 = makeAlphaMask(width: 128, height: 128, alpha: 0, rgb: (0, 0, 0))
         let m1 = makeAlphaMask(width: 128, height: 128, alpha: 0, rgb: (255, 0, 255))
-        let p0 = Flux2Pipeline.packMaskForLatentBlending(
+        let p0 = await Flux2Pipeline.packMaskForLatentBlending(
             m0, targetHeight: 128, targetWidth: 128, convention: .alphaTransparentInpaint
         )
-        let p1 = Flux2Pipeline.packMaskForLatentBlending(
+        let p1 = await Flux2Pipeline.packMaskForLatentBlending(
             m1, targetHeight: 128, targetWidth: 128, convention: .alphaTransparentInpaint
         )
         XCTAssertEqual(p0.sum().item(Float.self), p1.sum().item(Float.self),
