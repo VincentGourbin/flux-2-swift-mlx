@@ -243,6 +243,7 @@ final class Flux2OutpaintingChainTests: XCTestCase {
             prompt: "hello",
             steps: 7, guidance: 2.5, seed: 99,
             upsamplePrompt: true,
+            enrichPromptWithVLM: true,
             transitionPixels: 16, maxPixels: 500_000
         )
         XCTAssertEqual(chain.top, 16)
@@ -254,6 +255,7 @@ final class Flux2OutpaintingChainTests: XCTestCase {
         XCTAssertEqual(chain.guidance, 2.5)
         XCTAssertEqual(chain.seed, 99)
         XCTAssertTrue(chain.upsamplePrompt)
+        XCTAssertTrue(chain.enrichPromptWithVLM)
         XCTAssertEqual(chain.transitionPixels, 16)
         XCTAssertEqual(chain.maxPixels, 500_000)
     }
@@ -264,6 +266,14 @@ final class Flux2OutpaintingChainTests: XCTestCase {
         let chain = Flux2OutpaintingChain(pipeline: pipeline, image: img, prompt: "x")
         XCTAssertFalse(chain.upsamplePrompt,
                        "Off by default — caller's exact wording is preserved unless they opt in")
+    }
+
+    func testEnrichPromptWithVLMDefaultsOff() {
+        let pipeline = Flux2Pipeline(model: .klein9B)
+        let img = makeSolidImage(width: 32, height: 32, value: 50)
+        let chain = Flux2OutpaintingChain(pipeline: pipeline, image: img, prompt: "x")
+        XCTAssertFalse(chain.enrichPromptWithVLM,
+                       "Off by default — VLM enrichment is strictly opt-in so the chain runs without the VLM loaded")
     }
 
     // MARK: - Helpers

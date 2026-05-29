@@ -16,6 +16,7 @@
 
 import Foundation
 import Flux2Core
+import FluxTextEncoders  // FluxDebug logger; VLM service is reached via Flux2VLMPromptBuilder
 @preconcurrency import MLX
 import CoreGraphics
 
@@ -60,10 +61,31 @@ public struct Flux2OutpaintingChain: Flux2Chain {
     public let steps: Int
     public let guidance: Float
     public let seed: UInt64?
-    /// Rewrite the prompt via the bundled VLM before encoding. Useful
-    /// when the caller passes a short instruction rather than a full
-    /// Flux 2-style descriptive prompt. Default `false`.
+    /// Text-encoder-only prompt rewriting (Mistral / Klein-Qwen3). Does
+    /// not look at ``image``. For *image-aware* enrichment that
+    /// describes the kept region's lighting / camera / materials and
+    /// instructs FLUX.2 to continue them, use ``enrichPromptWithVLM``
+    /// instead — when both are set, the VLM wins and a warning is
+    /// logged. Default `false`.
     public let upsamplePrompt: Bool
+
+    /// When `true`, ask the bundled Qwen3.5 VLM to look at ``image`` and
+    /// the list of sides being extended, then assemble a 30-80 word
+    /// BFL-style prompt that continues the kept region's materials,
+    /// perspective, lighting direction, and colour palette into the new
+    /// strips.
+    ///
+    /// **The VLM is never required.** When it isn't loaded, a warning is
+    /// logged via ``FluxDebug`` and the chain falls back to the
+    /// caller's prompt + ``upsamplePrompt`` (existing behaviour).
+    ///
+    /// **Collision with ``upsamplePrompt``:** when both are `true`, the
+    /// VLM wins. A warning is logged.
+    ///
+    /// The caller owns the VLM lifecycle (load via
+    /// ``FluxTextEncoders/shared/loadQwen35VLM(from:)`` before
+    /// ``run()``, unload when done). Default `false`.
+    public let enrichPromptWithVLM: Bool
     public let onProgress: Flux2ProgressCallback?
 
     /// Width of the soft transition band, in pixels of the canvas. The band
@@ -96,9 +118,13 @@ public struct Flux2OutpaintingChain: Flux2Chain {
     ///   - steps: Denoising step count. `4` matches klein distilled defaults.
     ///   - guidance: Classifier-free guidance scale.
     ///   - seed: Random seed for reproducibility. `nil` for non-deterministic.
-    ///   - upsamplePrompt: Rewrite the prompt via the bundled VLM before
-    ///     encoding. Useful when the caller passes a short instruction
-    ///     rather than a full descriptive Flux 2 prompt. Default `false`.
+    ///   - upsamplePrompt: Text-encoder-only prompt rewriting. See the
+    ///     property doc for the difference vs ``enrichPromptWithVLM``
+    ///     and the collision rule. Default `false`.
+    ///   - enrichPromptWithVLM: Opt-in image-aware prompt rewriting via
+    ///     the bundled Qwen3.5 VLM. Strictly optional — when the VLM is
+    ///     not loaded the chain falls back to the verbatim prompt and
+    ///     logs a warning. Default `false`.
     ///   - transitionPixels: Width of the soft transition band, in pixels of
     ///     the keep region. The band lives *inside* the keep so the strips
     ///     themselves carry mask = 1.0 (pure paint, no seed contamination).
@@ -118,6 +144,7 @@ public struct Flux2OutpaintingChain: Flux2Chain {
         guidance: Float = 1.0,
         seed: UInt64? = nil,
         upsamplePrompt: Bool = false,
+        enrichPromptWithVLM: Bool = false,
         transitionPixels: Int = 32,
         maxPixels: Int = 4 * 1024 * 1024,
         onProgress: Flux2ProgressCallback? = nil
@@ -133,6 +160,7 @@ public struct Flux2OutpaintingChain: Flux2Chain {
         self.guidance = guidance
         self.seed = seed
         self.upsamplePrompt = upsamplePrompt
+        self.enrichPromptWithVLM = enrichPromptWithVLM
         self.transitionPixels = transitionPixels
         self.maxPixels = maxPixels
         self.onProgress = onProgress
@@ -207,9 +235,19 @@ public struct Flux2OutpaintingChain: Flux2Chain {
             throw Flux2ChainError.invalidInput("Failed to build smart mask")
         }
 
+        // VLM enrichment runs at this level (not delegated to the inner
+        // inpaint chain) because we know which sides are being extended,
+        // and we want the VLM to inspect the ORIGINAL image (not the
+        // padded canvas with noise strips). The inner chain is then
+        // called with `enrichPromptWithVLM: false` so there's no
+        // double-pass.
+        let (resolvedPrompt, resolvedUpsample) = await resolveFinalPromptAndUpsample(
+            paddings: (t: t, b: b, l: l, r: r)
+        )
+
         let inpaint = Flux2MaskedInpaintingChain(
             pipeline: pipeline,
-            prompt: prompt,
+            prompt: resolvedPrompt,
             image: canvas,
             mask: mask,
             referenceImages: [image],  // I2I conditioning continues the scene
@@ -217,11 +255,66 @@ public struct Flux2OutpaintingChain: Flux2Chain {
             steps: steps,
             guidance: guidance,
             seed: seed,
-            upsamplePrompt: upsamplePrompt,
+            upsamplePrompt: resolvedUpsample,
+            enrichPromptWithVLM: false,  // already handled here, don't double-process
             maxPixels: max(maxPixels, canvasW * canvasH),
             onProgress: onProgress
         )
         return try await inpaint.run()
+    }
+
+    // MARK: - VLM enrichment resolution
+
+    /// Same contract as the inpainting chain's resolver, but the VLM is
+    /// given the ORIGINAL ``image`` (not the padded canvas) and the set
+    /// of active sides so it can focus on the right edges.
+    ///
+    /// Outcomes (in order of preference):
+    /// 1. `enrichPromptWithVLM == true` + VLM loaded + builder returns a
+    ///    non-empty string → use that prompt, force `upsamplePrompt = false`
+    ///    downstream. If ``upsamplePrompt`` was also `true`, warn — VLM wins.
+    /// 2. `enrichPromptWithVLM == true` + VLM not loaded → warn, fall
+    ///    through to (3).
+    /// 3. Default → caller's prompt + caller's ``upsamplePrompt``
+    ///    (existing behaviour, byte-identical to before this feature).
+    private func resolveFinalPromptAndUpsample(
+        paddings: (t: Int, b: Int, l: Int, r: Int)
+    ) async -> (String, Bool) {
+        guard enrichPromptWithVLM else {
+            return (prompt, upsamplePrompt)
+        }
+        guard FluxTextEncoders.shared.isQwen35VLMLoaded else {
+            FluxDebug.error("[Flux2OutpaintingChain] enrichPromptWithVLM=true but Qwen3.5 VLM is not loaded. Falling back to caller's prompt. Load the VLM via FluxTextEncoders.shared.loadQwen35VLM(from:) before run() to enable image-aware prompt enrichment.")
+            return (prompt, upsamplePrompt)
+        }
+        if upsamplePrompt {
+            FluxDebug.error("[Flux2OutpaintingChain] Both enrichPromptWithVLM and upsamplePrompt are true — VLM wins (image-aware enrichment supersedes text-only upsampling). Disable one of the two to silence this warning.")
+        }
+
+        var sides = Set<OutpaintSide>()
+        if paddings.t > 0 { sides.insert(.top) }
+        if paddings.b > 0 { sides.insert(.bottom) }
+        if paddings.l > 0 { sides.insert(.left) }
+        if paddings.r > 0 { sides.insert(.right) }
+        // `paddings` is guaranteed to have at least one positive value by
+        // the validation at the top of run(), so `sides` is non-empty.
+
+        do {
+            let built = try await Flux2VLMPromptBuilder.buildOutpaintPrompt(
+                source: image,
+                userInstruction: prompt,
+                sides: sides
+            )
+            guard let final = built?.trimmingCharacters(in: .whitespacesAndNewlines), !final.isEmpty else {
+                FluxDebug.error("[Flux2OutpaintingChain] VLM returned an empty prompt — falling back to caller's prompt.")
+                return (prompt, upsamplePrompt)
+            }
+            FluxDebug.info("[Flux2OutpaintingChain] VLM-enriched prompt (sides=\(sides.sorted(by: { $0.rawValue < $1.rawValue }).map(\.rawValue).joined(separator: ","))): \(final)")
+            return (final, false)
+        } catch {
+            FluxDebug.error("[Flux2OutpaintingChain] VLM enrichment failed: \(error). Falling back to caller's prompt.")
+            return (prompt, upsamplePrompt)
+        }
     }
 
     // MARK: - Canvas / mask builders

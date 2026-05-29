@@ -13,6 +13,7 @@ import ImageIO
 import UniformTypeIdentifiers
 import Flux2Core
 import Flux2Chains
+import FluxTextEncoders
 
 /// User-facing string mapping for ``Flux2MaskConvention``.
 ///
@@ -27,6 +28,26 @@ enum MaskConventionArg: String, ExpressibleByArgument, CaseIterable {
         switch self {
         case .grayscale: return .grayscaleWhiteInpaint
         case .alpha:     return .alphaTransparentInpaint
+        }
+    }
+}
+
+/// User-facing string mapping for ``Flux2InpaintIntent``.
+///
+/// Kept local to the CLI so the framework enum stays free of
+/// ArgumentParser dependencies. Same identifiers as the enum cases.
+enum InpaintIntentArg: String, ExpressibleByArgument, CaseIterable {
+    case replace
+    case remove
+    case modify
+    case changeScene = "change-scene"
+
+    var intent: Flux2InpaintIntent {
+        switch self {
+        case .replace:     return .replace
+        case .remove:      return .remove
+        case .modify:      return .modify
+        case .changeScene: return .changeScene
         }
     }
 }
@@ -64,8 +85,20 @@ struct Inpaint: AsyncParsableCommand {
     @Flag(name: .long, help: "Auto-feed the source image as I2I conditioning when --reference is not set. OFF by default — for 'replace object X with object Y' inpainting, the source still contains X under the mask and bleeds X into Y via attention. Enable for repair / scene-extension where the masked region is empty.")
     var useImageAsReference: Bool = false
 
-    @Flag(name: .long, help: "Rewrite the prompt via the bundled Qwen3.5 VLM before encoding. Useful when --prompt is a short edit instruction rather than a full descriptive Flux 2 prompt. Adds one extra VLM forward pass.")
+    @Flag(name: .long, help: "Text-encoder-only prompt rewriting (Mistral/Klein-Qwen3). Does NOT look at the image. For image-aware rewriting that inherits the source's lighting/camera/materials, use --enrich-prompt-with-vlm instead.")
     var upsamplePrompt: Bool = false
+
+    @Flag(name: .long, help: "Image-aware prompt rewriting via the bundled Qwen3.5 VLM. The VLM looks at --image and rewrites --prompt into a 30-80 word BFL-style Flux 2 prompt that inherits the source's photographic identity (camera angle, lighting direction, materials, palette, depth of field). Strictly optional: if the VLM is not loaded, the chain falls back to --prompt verbatim with a warning. Note: this CLI does NOT auto-load the VLM; load it ahead of time via FluxEncodersCLI or the test-qwen35 command. When both --upsample-prompt and --enrich-prompt-with-vlm are set, the VLM wins.")
+    var enrichPromptWithVLM: Bool = false
+
+    @Option(name: .long, help: "Drives --enrich-prompt-with-vlm (ignored otherwise). 'replace' = swap object X for Y (default). 'remove' = clear object X, surface continues. 'modify' = keep object X but change colour/outfit/expression. 'change-scene' = keep subject exactly as-is, change the scene around it (use this when the mask preserves the subject — e.g. 'put the cat at the pool').")
+    var intent: InpaintIntentArg = .replace
+
+    @Option(name: .long, help: "Qwen3.5 VLM variant to load in-process when --enrich-prompt-with-vlm is set: '8bit' (default, 5 GB, recommended) or '4bit' (3 GB, faster but lower quality). Auto-downloads if missing. Omit to skip loading — the chain will then fall back to --prompt verbatim and emit a warning.")
+    var qwen35Variant: String?
+
+    @Option(name: .long, help: "Override the local path to Qwen3.5 VLM weights (alternative to --qwen35-variant for sandboxed apps).")
+    var qwen35Path: String?
 
     @Option(name: .long, help: "Denoising steps for FLUX.2 (4 for distilled klein, 25-28 for base/dev).")
     var steps: Int = 4
@@ -105,6 +138,38 @@ struct Inpaint: AsyncParsableCommand {
             throw ValidationError("Unsupported --flux-model '\(fluxModel)'.")
         }
 
+        // Optional Qwen3.5 VLM load — only relevant when the user opts
+        // into --enrich-prompt-with-vlm. The chain itself doesn't
+        // auto-load; we do it here at the CLI level so a single
+        // invocation is enough to benchmark the VLM-enriched path.
+        if enrichPromptWithVLM {
+            // Surface the VLM-built prompt via FluxDebug.info so the
+            // user can audit what FLUX.2 actually receives.
+            FluxDebug.isEnabled = true
+            if qwen35Variant == nil, qwen35Path == nil {
+                logErr("WARNING: --enrich-prompt-with-vlm is set but neither --qwen35-variant nor --qwen35-path was provided — the chain will fall back to --prompt verbatim.")
+            }
+        }
+        if let qwen35Path {
+            logErr("Loading Qwen3.5 VLM from \(qwen35Path) ...")
+            try await FluxTextEncoders.shared.loadQwen35VLM(from: qwen35Path)
+            logErr("✓ Qwen3.5 VLM loaded")
+        } else if let variantStr = qwen35Variant {
+            let selectedVariant: Qwen35Variant
+            switch variantStr.lowercased() {
+            case "4bit": selectedVariant = .qwen35_4B_4bit
+            case "8bit": selectedVariant = .qwen35_4B_8bit
+            default: throw ValidationError("Unsupported --qwen35-variant '\(variantStr)' (use '8bit' or '4bit')")
+            }
+            logErr("Downloading/loading Qwen3.5 VLM (\(selectedVariant.displayName)) ...")
+            let downloader = TextEncoderModelDownloader()
+            let path = try await downloader.downloadQwen35(variant: selectedVariant) { progress, message in
+                logErr("  [\(Int(progress * 100))%] \(message)")
+            }
+            try await FluxTextEncoders.shared.loadQwen35VLM(from: path.path)
+            logErr("✓ Qwen3.5 VLM loaded")
+        }
+
         let pipeline = Flux2Pipeline(
             model: modelChoice,
             quantization: .memoryEfficient,
@@ -135,6 +200,8 @@ struct Inpaint: AsyncParsableCommand {
             guidance: guidance,
             seed: seed,
             upsamplePrompt: upsamplePrompt,
+            enrichPromptWithVLM: enrichPromptWithVLM,
+            intent: intent.intent,
             maxPixels: maxPixels,
             onProgress: { step, total in
                 logErr("  step \(step)/\(total)")

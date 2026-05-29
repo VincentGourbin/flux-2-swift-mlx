@@ -28,6 +28,7 @@ struct Flux2CLI: AsyncParsableCommand {
             ImageToImage.self,
             Inpaint.self,
             Outpaint.self,
+            MaskSubject.self,
             Download.self,
             Info.self,
             Profile.self,

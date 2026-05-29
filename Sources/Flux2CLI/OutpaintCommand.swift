@@ -53,8 +53,11 @@ struct Outpaint: AsyncParsableCommand {
     var guidance: Float = 1.0
     @Option(name: .long, help: "Random seed.")
     var seed: UInt64?
-    @Flag(name: .long, help: "Rewrite the prompt via the bundled Qwen3.5 VLM before encoding. Useful when --prompt is a short instruction rather than a full descriptive Flux 2 prompt.")
+    @Flag(name: .long, help: "Text-encoder-only prompt rewriting (Mistral/Klein-Qwen3). Does NOT look at the image. For image-aware rewriting that continues the source's lighting/materials into the new strips, use --enrich-prompt-with-vlm instead.")
     var upsamplePrompt: Bool = false
+
+    @Flag(name: .long, help: "Image-aware prompt rewriting via the bundled Qwen3.5 VLM. The VLM looks at --image and the requested extension sides, then assembles a 30-80 word BFL-style Flux 2 prompt that continues the kept region's materials, perspective, lighting and palette into the new strips. Strictly optional: if the VLM is not loaded, the chain falls back to --prompt verbatim with a warning. Load the VLM ahead of time via FluxEncodersCLI or the test-qwen35 command. When both --upsample-prompt and --enrich-prompt-with-vlm are set, the VLM wins.")
+    var enrichPromptWithVLM: Bool = false
     @Option(name: .long, help: "Width of the soft transition band, in pixels of the keep region. Default 32.")
     var transitionPixels: Int = 32
     @Option(name: .long, help: "Cap on the total working pixel count. Defaults to 4 M; raise if you want larger canvases.")
@@ -107,6 +110,7 @@ struct Outpaint: AsyncParsableCommand {
             guidance: guidance,
             seed: seed,
             upsamplePrompt: upsamplePrompt,
+            enrichPromptWithVLM: enrichPromptWithVLM,
             transitionPixels: transitionPixels,
             maxPixels: maxPixels,
             onProgress: { step, total in

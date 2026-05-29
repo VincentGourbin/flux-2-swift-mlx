@@ -34,6 +34,10 @@ final class Flux2MaskedInpaintingChainTests: XCTestCase {
                        "Auto I2I conditioning is OFF by default — feeding the source as ref bleeds the to-be-replaced subject into the result via attention. Enable only for repair / scene-extension.")
         XCTAssertFalse(chain.upsamplePrompt,
                        "Default off — caller's wording wins unless they explicitly opt into VLM rewriting")
+        XCTAssertFalse(chain.enrichPromptWithVLM,
+                       "Default off — VLM enrichment is strictly opt-in so the chain is usable without the VLM loaded")
+        XCTAssertEqual(chain.intent, .replace,
+                       "Default intent is .replace (most common case: swap object X for Y). Only meaningful when enrichPromptWithVLM is true.")
     }
 
     func testInitForwardsExplicitArguments() {
@@ -52,6 +56,8 @@ final class Flux2MaskedInpaintingChainTests: XCTestCase {
             guidance: 3.5,
             seed: 1234,
             upsamplePrompt: true,
+            enrichPromptWithVLM: true,
+            intent: .remove,
             maxPixels: 2_400_000
         )
         XCTAssertEqual(chain.prompt, "hello")
@@ -62,6 +68,8 @@ final class Flux2MaskedInpaintingChainTests: XCTestCase {
         XCTAssertEqual(chain.referenceImages?.count, 2)
         XCTAssertTrue(chain.useImageAsReference)
         XCTAssertTrue(chain.upsamplePrompt)
+        XCTAssertTrue(chain.enrichPromptWithVLM)
+        XCTAssertEqual(chain.intent, .remove)
     }
 
     func testMaskConventionDefaultsToGrayscale() {
