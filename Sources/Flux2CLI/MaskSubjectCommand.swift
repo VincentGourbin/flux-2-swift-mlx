@@ -27,8 +27,11 @@ struct MaskSubject: AsyncParsableCommand {
     @Option(name: [.short, .long], help: "Output PNG path for the generated mask.")
     var output: String
 
-    @Option(name: .long, help: "Width of the Gaussian transition on the subject boundary, in pixels of the source. 0 = bit-hard edge (risk of visible seam). Default 4.")
+    @Option(name: .long, help: "Width of the Gaussian transition on the subject boundary, in pixels of the working image. 0 = bit-hard edge (risk of visible seam). Default 4.")
     var edgeSoftnessPixels: Int = 4
+
+    @Option(name: .long, help: "Optional working-resolution cap (total pixels). When set, the source is downscaled with Lanczos before Vision runs and the mask is produced at the smaller size — useful when the downstream pipeline will downscale to ~1 MP anyway (saves up to 24× of work on a 24 MP iPhone shot). Omit to keep the mask at source dimensions (right choice for ad-hoc inspection).")
+    var targetMaxPixels: Int?
 
     func run() async throws {
         @Sendable func logErr(_ msg: String) {
@@ -39,12 +42,16 @@ struct MaskSubject: AsyncParsableCommand {
             throw ValidationError("Could not decode image at \(image)")
         }
         logErr("Image: \(image) (\(cg.width)×\(cg.height))")
+        if let cap = targetMaxPixels {
+            logErr("Target max pixels: \(cap)")
+        }
 
         let mask: CGImage
         do {
             mask = try Flux2SubjectMask.makeChangeSceneMask(
                 from: cg,
-                edgeSoftnessPixels: edgeSoftnessPixels
+                edgeSoftnessPixels: edgeSoftnessPixels,
+                targetMaxPixels: targetMaxPixels
             )
         } catch Flux2SubjectMask.Error.noSubjectDetected {
             throw ValidationError("Vision found no foreground subject in \(image). Use a hand-drawn mask for this image.")
@@ -53,7 +60,7 @@ struct MaskSubject: AsyncParsableCommand {
         }
 
         try Self.savePNG(mask, to: output)
-        logErr("✓ Mask written → \(output)")
+        logErr("✓ Mask written → \(output) (\(mask.width)×\(mask.height))")
     }
 
     private static func loadCGImage(at path: String) -> CGImage? {

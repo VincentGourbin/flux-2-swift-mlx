@@ -16,6 +16,7 @@
 // Apple Silicon.
 
 import Foundation
+import Accelerate
 import CoreGraphics
 import CoreImage
 import Vision
@@ -27,6 +28,7 @@ public enum Flux2SubjectMask {
         case noSubjectDetected
         case maskRenderFailed
         case visionFailure(String)
+        case unsupportedPixelFormat(UInt32)
 
         public var description: String {
             switch self {
@@ -36,9 +38,30 @@ public enum Flux2SubjectMask {
                 return "Failed to render the segmentation mask to a CGImage."
             case .visionFailure(let msg):
                 return "Vision request failed: \(msg)"
+            case .unsupportedPixelFormat(let fmt):
+                return "Unsupported CVPixelBuffer format from Vision: 0x\(String(format: "%08X", fmt)). Vision may have changed its mask output format; please file a bug."
             }
         }
     }
+
+    // MARK: - Shared resources
+    //
+    // CIContexts compile Metal pipelines on first use (~50–200 ms one-time
+    // cost). Caching one process-wide amortises that across calls, which
+    // matters for hosts that invoke `makeChangeSceneMask` repeatedly
+    // (e.g. FluxForge Studio live preview). `cacheIntermediates: false`
+    // prevents the context from holding onto multi-MB intermediate
+    // CIImages between calls — relevant when input masks are 20+ MP.
+    // CIContext is thread-safe per Apple docs, so static let is fine.
+    private static let sharedCIContext: CIContext = {
+        CIContext(options: [.cacheIntermediates: false])
+    }()
+
+    // Note on Vision request caching: `VNGenerateForegroundInstanceMaskRequest`
+    // stores its results as mutable state on the request instance. Caching
+    // one statically would let concurrent calls clobber each other's
+    // `results`. The request itself is cheap to instantiate (no Metal
+    // compilation), so we create it per call and stay concurrency-safe.
 
     /// Generate a Flux2-ready grayscale mask suitable for the
     /// `.changeScene` inpaint workflow: BLACK over the subject (keep)
@@ -46,35 +69,52 @@ public enum Flux2SubjectMask {
     /// `Flux2MaskConvention.grayscaleWhiteInpaint`.
     ///
     /// Pipeline:
-    /// 1. Run `VNGenerateForegroundInstanceMaskRequest` on `image` —
-    ///    returns a per-instance segmentation. We OR-combine the
-    ///    instances so every subject the model finds is kept.
-    /// 2. The Vision mask is WHITE on the subject; we **invert** it to
-    ///    Flux's BLACK-keep convention.
-    /// 3. Apply a small Gaussian blur (`edgeSoftnessPixels`, default
-    ///    4 px) on the inverted mask so the boundary isn't bit-hard —
-    ///    keeps RePaint from leaving a visible seam, while staying
-    ///    tight enough that the subject's anatomy doesn't get
-    ///    repainted.
+    /// 1. (Optional) downscale the source to `targetMaxPixels` so all
+    ///    subsequent work happens at the smaller resolution. Use this
+    ///    when the caller knows the chain will downscale anyway — saves
+    ///    a 24× factor on a 24-MP iPhone shot vs the chain's default
+    ///    1 MP working size.
+    /// 2. Run `VNGenerateForegroundInstanceMaskRequest` on the working
+    ///    image. We OR-combine all detected instances so multi-part
+    ///    subjects (e.g. an animal split into head + body) all get kept.
+    /// 3. Vision's float mask (1.0 = subject) is inverted into Flux
+    ///    convention (0 = subject = keep), vectorised via Accelerate.
+    /// 4. Optional `CIGaussianBlur` for a soft edge — keeps RePaint from
+    ///    leaving a visible seam without losing anatomy.
     ///
     /// - Parameters:
     ///   - image: The source image to segment.
     ///   - edgeSoftnessPixels: Width of the Gaussian transition on the
-    ///     subject boundary, in pixels of the source. Default 4. Set to
-    ///     0 for a bit-hard edge (visible seam likely).
-    /// - Returns: A grayscale CGImage at the same dimensions as the
-    ///   input, ready to pass to `Flux2MaskedInpaintingChain` with the
-    ///   default `.grayscaleWhiteInpaint` mask convention.
+    ///     subject boundary, in pixels of the *working* image (after
+    ///     downscaling). Default 4. Set to 0 for a bit-hard edge.
+    ///   - targetMaxPixels: When set, the source is downscaled with
+    ///     Lanczos so the total pixel count is at most this many before
+    ///     Vision runs. The returned mask is at the downscaled size, so
+    ///     callers that pair the mask back with the unscaled source
+    ///     must resize themselves. `nil` (default) keeps the source as
+    ///     is — the right choice for ad-hoc inspection (CLI
+    ///     `mask-subject`). Pass `1024 * 1024` from hosts that will
+    ///     route the mask straight to `Flux2MaskedInpaintingChain`.
+    /// - Returns: A grayscale CGImage at the *working* dimensions
+    ///   (source dims when `targetMaxPixels` is nil, else clamped).
     /// - Throws: ``Error/noSubjectDetected`` if Vision finds nothing,
-    ///   ``Error/visionFailure`` if the request throws, or
-    ///   ``Error/maskRenderFailed`` if we couldn't compose the result.
+    ///   ``Error/visionFailure`` if the request throws,
+    ///   ``Error/unsupportedPixelFormat`` if Vision returns a format we
+    ///   don't know how to decode, or ``Error/maskRenderFailed`` if we
+    ///   couldn't compose the final CGImage.
     @available(macOS 14.0, *)
     public static func makeChangeSceneMask(
         from image: CGImage,
-        edgeSoftnessPixels: Int = 4
+        edgeSoftnessPixels: Int = 4,
+        targetMaxPixels: Int? = nil
     ) throws -> CGImage {
+        // Step 1: optional downscale. Doing it BEFORE Vision means the
+        // model runs on fewer pixels AND the returned mask is small
+        // enough to skip the identity-scale draw in renderInvertedMask.
+        let workingImage = downscaledIfNeeded(image, targetMaxPixels: targetMaxPixels) ?? image
+
         let request = VNGenerateForegroundInstanceMaskRequest()
-        let handler = VNImageRequestHandler(cgImage: image, options: [:])
+        let handler = VNImageRequestHandler(cgImage: workingImage, options: [:])
 
         do {
             try handler.perform([request])
@@ -86,8 +126,6 @@ public enum Flux2SubjectMask {
             throw Error.noSubjectDetected
         }
 
-        // Combine all detected instances into a single mask (some
-        // animals split into multiple instances).
         let pixelBuffer: CVPixelBuffer
         do {
             pixelBuffer = try observation.generateScaledMaskForImage(
@@ -98,62 +136,91 @@ public enum Flux2SubjectMask {
             throw Error.visionFailure("Failed to scale subject mask: \(error)")
         }
 
-        // The pixel buffer is single-channel float, white = subject.
-        // Convert to grayscale UInt8 in Flux convention (black = keep =
-        // subject ⇒ INVERT) at the same dimensions as the input.
-        guard let mask = renderInvertedMask(
+        return try renderInvertedMask(
             from: pixelBuffer,
-            targetWidth: image.width,
-            targetHeight: image.height,
+            targetWidth: workingImage.width,
+            targetHeight: workingImage.height,
             edgeSoftnessPixels: edgeSoftnessPixels
-        ) else {
-            throw Error.maskRenderFailed
-        }
-        return mask
+        )
     }
 
     // MARK: - Internals
 
-    /// Render a CVPixelBuffer (kCVPixelFormatType_OneComponent8 from
-    /// Vision) into a Flux-convention grayscale CGImage: subject → 0
-    /// (black, keep), background → 255 (white, inpaint), with an
-    /// optional Gaussian-style softening on the boundary.
+    /// Render a CVPixelBuffer (Vision's float mask) into a
+    /// Flux-convention grayscale CGImage. The hot path (Vision returns
+    /// a buffer already at `targetWidth×targetHeight`, which it does
+    /// for `generateScaledMaskForImage(from:)`) avoids any
+    /// CoreGraphics draw — we go straight from inverted bytes to
+    /// CGImage. The fallback path (sizes differ, e.g. unexpected
+    /// EXIF orientation) does one rescaling draw.
+    @available(macOS 14.0, *)
     private static func renderInvertedMask(
         from pixelBuffer: CVPixelBuffer,
         targetWidth: Int,
         targetHeight: Int,
         edgeSoftnessPixels: Int
-    ) -> CGImage? {
+    ) throws -> CGImage {
         let pbW = CVPixelBufferGetWidth(pixelBuffer)
         let pbH = CVPixelBufferGetHeight(pixelBuffer)
         let pbFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
-        guard let srcBase = CVPixelBufferGetBaseAddress(pixelBuffer) else { return nil }
+        guard let srcBase = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+            throw Error.maskRenderFailed
+        }
         let srcRowBytes = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        let count = pbW * pbH
 
-        // 1) Read the Vision mask into a UInt8 grayscale buffer in
-        //    Flux convention (subject = black, background = white). The
-        //    format depends on the Vision API:
-        //    - `generateMaskForInstances(...)` returns
-        //      `kCVPixelFormatType_OneComponent8` (subject = 255).
-        //    - `generateScaledMaskForImage(...)` returns
-        //      `kCVPixelFormatType_OneComponent32Float` (subject = 1.0).
-        //    Treating the float buffer as UInt8 reads 4-byte floats as
-        //    4 separate bytes ⇒ random-looking mask; that's the bug we
-        //    saw the first time.
-        var inverted = [UInt8](repeating: 0, count: pbW * pbH)
+        // 1) Decode the Vision mask into a Flux-convention UInt8 buffer
+        //    (subject=0 black=keep, background=255 white=inpaint).
+        //    Vectorised via Accelerate for the float path, which is what
+        //    `generateScaledMaskForImage` actually returns today.
+        var inverted = [UInt8](repeating: 0, count: count)
         switch pbFormat {
         case kCVPixelFormatType_OneComponent32Float:
-            for y in 0..<pbH {
-                let row = srcBase.advanced(by: y * srcRowBytes)
-                    .assumingMemoryBound(to: Float32.self)
-                for x in 0..<pbW {
-                    let v = max(0, min(1, row[x]))  // clamp [0, 1]
-                    inverted[y * pbW + x] = UInt8((1.0 - v) * 255.0)
+            // Read float mask values into a contiguous buffer, then run
+            // three vDSP passes: clamp to [0,1], compute (255 - 255*v),
+            // and saturating-cast to UInt8.
+            var floats = [Float](repeating: 0, count: count)
+            if srcRowBytes == pbW * MemoryLayout<Float>.size {
+                // Tightly packed: one memcpy.
+                floats.withUnsafeMutableBufferPointer { dst in
+                    memcpy(dst.baseAddress!, srcBase, count * MemoryLayout<Float>.size)
+                }
+            } else {
+                // Row padding: copy row-by-row.
+                floats.withUnsafeMutableBufferPointer { dst in
+                    for y in 0..<pbH {
+                        let row = srcBase.advanced(by: y * srcRowBytes)
+                        memcpy(
+                            dst.baseAddress!.advanced(by: y * pbW),
+                            row,
+                            pbW * MemoryLayout<Float>.size
+                        )
+                    }
                 }
             }
+            var lo: Float = 0
+            var hi: Float = 1
+            floats.withUnsafeMutableBufferPointer { fb in
+                vDSP_vclip(fb.baseAddress!, 1, &lo, &hi, fb.baseAddress!, 1, vDSP_Length(count))
+            }
+            // (1 - v) * 255  =  255 + (-255) * v  → vDSP_vsmsa
+            var negScale: Float = -255
+            var bias: Float = 255
+            floats.withUnsafeMutableBufferPointer { fb in
+                vDSP_vsmsa(fb.baseAddress!, 1, &negScale, &bias, fb.baseAddress!, 1, vDSP_Length(count))
+            }
+            inverted.withUnsafeMutableBufferPointer { dst in
+                floats.withUnsafeBufferPointer { src in
+                    vDSP_vfixu8(src.baseAddress!, 1, dst.baseAddress!, 1, vDSP_Length(count))
+                }
+            }
+
         case kCVPixelFormatType_OneComponent8:
+            // Defensive path: kept in case Vision ever switches back.
+            // Scalar loop is fine for byte inversion; vImage would be
+            // marginal here.
             for y in 0..<pbH {
                 let row = srcBase.advanced(by: y * srcRowBytes)
                     .assumingMemoryBound(to: UInt8.self)
@@ -161,62 +228,104 @@ public enum Flux2SubjectMask {
                     inverted[y * pbW + x] = 255 &- row[x]
                 }
             }
+
         default:
-            return nil  // unknown format ⇒ caller bubbles maskRenderFailed
+            throw Error.unsupportedPixelFormat(pbFormat)
         }
+
+        // 2) Build the final CGImage. Hot path: the Vision mask is
+        //    already at the target dimensions (Vision returns at the
+        //    handler's image size), so we skip the intermediate
+        //    CGContext draw and create the CGImage directly from
+        //    `inverted`. The fallback handles the rare case where
+        //    Vision returns at a different size (e.g. EXIF orientation
+        //    surprises) by scaling via a CGContext draw.
         let cs = CGColorSpaceCreateDeviceGray()
-        guard let srcCtx = CGContext(
-            data: &inverted,
-            width: pbW, height: pbH,
-            bitsPerComponent: 8,
-            bytesPerRow: pbW,
-            space: cs,
-            bitmapInfo: CGImageAlphaInfo.none.rawValue
-        ), let srcImage = srcCtx.makeImage() else { return nil }
+        let hardImage: CGImage
+        if pbW == targetWidth && pbH == targetHeight {
+            guard let ctx = CGContext(
+                data: &inverted,
+                width: pbW, height: pbH,
+                bitsPerComponent: 8,
+                bytesPerRow: pbW,
+                space: cs,
+                bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ), let image = ctx.makeImage() else {
+                throw Error.maskRenderFailed
+            }
+            hardImage = image
+        } else {
+            guard let srcCtx = CGContext(
+                data: &inverted,
+                width: pbW, height: pbH,
+                bitsPerComponent: 8,
+                bytesPerRow: pbW,
+                space: cs,
+                bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ), let srcImage = srcCtx.makeImage() else {
+                throw Error.maskRenderFailed
+            }
+            var dst = [UInt8](repeating: 255, count: targetWidth * targetHeight)
+            guard let dstCtx = CGContext(
+                data: &dst,
+                width: targetWidth, height: targetHeight,
+                bitsPerComponent: 8,
+                bytesPerRow: targetWidth,
+                space: cs,
+                bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ) else {
+                throw Error.maskRenderFailed
+            }
+            dstCtx.interpolationQuality = .high
+            dstCtx.draw(srcImage, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
+            guard let image = dstCtx.makeImage() else {
+                throw Error.maskRenderFailed
+            }
+            hardImage = image
+        }
 
-        // 3) Draw into the target-sized grayscale context. Core
-        //    Graphics' bilinear sampling already softens the boundary
-        //    a bit when the source is larger or smaller; we add an
-        //    explicit small Gaussian-like blur next if requested.
-        var dst = [UInt8](repeating: 255, count: targetWidth * targetHeight)
-        guard let dstCtx = CGContext(
-            data: &dst,
-            width: targetWidth, height: targetHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: targetWidth,
-            space: cs,
-            bitmapInfo: CGImageAlphaInfo.none.rawValue
-        ) else { return nil }
-        dstCtx.interpolationQuality = .high
-        dstCtx.draw(srcImage, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
-
-        guard let hardImage = CGContext(
-            data: &dst,
-            width: targetWidth, height: targetHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: targetWidth,
-            space: cs,
-            bitmapInfo: CGImageAlphaInfo.none.rawValue
-        )?.makeImage() else { return nil }
-
-        guard edgeSoftnessPixels > 0 else { return hardImage }
-        return applyGaussianBlur(hardImage, radius: edgeSoftnessPixels) ?? hardImage
+        if edgeSoftnessPixels > 0,
+           let blurred = applyGaussianBlur(hardImage, radius: edgeSoftnessPixels) {
+            return blurred
+        }
+        return hardImage
     }
 
-    /// Soften the mask edge with a small Gaussian via Core Image
-    /// (CIGaussianBlur). Falls back to the hard mask if anything goes
-    /// wrong — better a slight visible seam than a black-broken mask.
+    /// Soften the mask edge with a small Gaussian via the shared
+    /// Core Image context. Falls back to the hard mask if anything
+    /// goes wrong — better a slight visible seam than a broken mask.
     private static func applyGaussianBlur(_ image: CGImage, radius: Int) -> CGImage? {
         let ci = CIImage(cgImage: image)
-        let filter = CIFilter(name: "CIGaussianBlur")
-        filter?.setValue(ci, forKey: kCIInputImageKey)
-        filter?.setValue(Double(radius), forKey: kCIInputRadiusKey)
-        guard let output = filter?.outputImage else { return nil }
-        // Clamp to the original extent — CIGaussianBlur expands the
-        // image by the blur radius on every side; we want the same
-        // dimensions back.
-        let originalExtent = ci.extent
-        let context = CIContext(options: nil)
-        return context.createCGImage(output, from: originalExtent)
+        guard let filter = CIFilter(name: "CIGaussianBlur") else { return nil }
+        filter.setValue(ci, forKey: kCIInputImageKey)
+        filter.setValue(Double(radius), forKey: kCIInputRadiusKey)
+        guard let output = filter.outputImage else { return nil }
+        // CIGaussianBlur expands the extent by the blur radius on every
+        // side; clamp back to the original extent so the mask keeps the
+        // input's dimensions.
+        return sharedCIContext.createCGImage(output, from: ci.extent)
+    }
+
+    /// Downscale `image` so its total pixel count is ≤ `targetMaxPixels`,
+    /// preserving aspect ratio. Returns nil when no downscaling is
+    /// needed (input already fits, or `targetMaxPixels` is nil). Uses
+    /// `CILanczosScaleTransform` for high-quality, deterministic
+    /// resampling.
+    ///
+    /// `internal` so unit tests can verify the no-op vs scaling
+    /// boundaries without needing a real subject image (Vision-free
+    /// path).
+    internal static func downscaledIfNeeded(_ image: CGImage, targetMaxPixels: Int?) -> CGImage? {
+        guard let target = targetMaxPixels else { return nil }
+        let srcPixels = image.width * image.height
+        guard srcPixels > target else { return nil }
+        let scale = (Double(target) / Double(srcPixels)).squareRoot()
+        let ci = CIImage(cgImage: image)
+        guard let filter = CIFilter(name: "CILanczosScaleTransform") else { return nil }
+        filter.setValue(ci, forKey: kCIInputImageKey)
+        filter.setValue(scale, forKey: kCIInputScaleKey)
+        filter.setValue(1.0, forKey: kCIInputAspectRatioKey)
+        guard let output = filter.outputImage else { return nil }
+        return sharedCIContext.createCGImage(output, from: output.extent)
     }
 }

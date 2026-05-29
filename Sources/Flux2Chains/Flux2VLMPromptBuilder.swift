@@ -195,15 +195,11 @@ public enum Flux2VLMPromptBuilder {
         }
         let userMessage = userMessage(forInpaint: intent, instruction: userInstruction)
 
-        let result = try FluxTextEncoders.shared.analyzeImageWithQwen35(
-            image: source,
-            prompt: userMessage,
-            systemPrompt: systemPrompt,
-            enableThinking: false,
-            maxTokens: 220,
-            temperature: 0
-        )
-        return cleanFinalPrompt(result.text)
+        // The VLM forward is synchronous and takes ~3 s on M-series. Run
+        // it on a detached task so other work on the cooperative pool
+        // (UI updates, concurrent chains) isn't starved while we wait.
+        let raw = try await runVLM(image: source, prompt: userMessage, systemPrompt: systemPrompt)
+        return cleanFinalPrompt(raw)
     }
 
     /// Build a FLUX.2 outpainting prompt. The VLM looks at the source and
@@ -229,15 +225,28 @@ public enum Flux2VLMPromptBuilder {
 
         let userMessage = userMessage(forOutpaintSides: sides, instruction: userInstruction)
 
-        let result = try FluxTextEncoders.shared.analyzeImageWithQwen35(
-            image: source,
-            prompt: userMessage,
-            systemPrompt: outpaintSystemPrompt,
-            enableThinking: false,
-            maxTokens: 220,
-            temperature: 0
-        )
-        return cleanFinalPrompt(result.text)
+        let raw = try await runVLM(image: source, prompt: userMessage, systemPrompt: outpaintSystemPrompt)
+        return cleanFinalPrompt(raw)
+    }
+
+    /// Run the Qwen3.5 VLM forward on a detached, user-initiated task
+    /// so the ~3 s sync call doesn't block the cooperative thread pool.
+    /// CGImage / String are Sendable in the SDK we target.
+    private static func runVLM(
+        image: CGImage,
+        prompt: String,
+        systemPrompt: String
+    ) async throws -> String {
+        try await Task.detached(priority: .userInitiated) {
+            try FluxTextEncoders.shared.analyzeImageWithQwen35(
+                image: image,
+                prompt: prompt,
+                systemPrompt: systemPrompt,
+                enableThinking: false,
+                maxTokens: 220,
+                temperature: 0
+            ).text
+        }.value
     }
 
     // MARK: - User message assembly (exposed for tests)
