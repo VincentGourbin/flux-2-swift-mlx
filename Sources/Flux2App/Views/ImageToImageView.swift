@@ -51,8 +51,10 @@ struct ImageToImageView: View {
                     generateSection
                 }
                 .padding()
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(minWidth: 380, idealWidth: 450, maxWidth: 550)
+            .clipped()
 
             // Right panel: Output
             outputSection
@@ -71,7 +73,7 @@ struct ImageToImageView: View {
     private var referenceImagesSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Label("Reference Images (1-3)", systemImage: "photo.stack")
+                Label("Reference Images (1-\(viewModel.selectedModel.maxReferenceImages))", systemImage: "photo.stack")
                     .font(.headline)
 
                 Spacer()
@@ -90,29 +92,33 @@ struct ImageToImageView: View {
                 .foregroundStyle(.secondary)
 
             // Drop zone with image slots (dynamic based on model)
-            HStack(spacing: 12) {
-                ForEach(0..<viewModel.selectedModel.maxReferenceImages, id: \.self) { index in
-                    if index < viewModel.referenceImages.count {
-                        // Show existing image
-                        ReferenceImageSlot(
-                            image: viewModel.referenceImages[index],
-                            onRemove: {
-                                viewModel.removeReferenceImage(viewModel.referenceImages[index].id)
-                            }
-                        )
-                    } else if index == viewModel.referenceImages.count {
-                        // Show add button for next slot
-                        AddImageSlot(onAdd: { selectImage() })
-                            .onDrop(of: [.image], isTargeted: $isTargetedForDrop) { providers in
-                                handleImageDrop(providers)
-                                return true
-                            }
-                    } else {
-                        // Empty placeholder
-                        EmptyImageSlot()
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(0..<viewModel.selectedModel.maxReferenceImages, id: \.self) { index in
+                        if index < viewModel.referenceImages.count {
+                            // Show existing image
+                            ReferenceImageSlot(
+                                image: viewModel.referenceImages[index],
+                                onRemove: {
+                                    viewModel.removeReferenceImage(viewModel.referenceImages[index].id)
+                                }
+                            )
+                        } else if index == viewModel.referenceImages.count {
+                            // Show add button for next slot
+                            AddImageSlot(onAdd: { selectImage() })
+                                .onDrop(of: [.image], isTargeted: $isTargetedForDrop) { providers in
+                                    handleImageDrop(providers)
+                                    return true
+                                }
+                        } else {
+                            // Empty placeholder
+                            EmptyImageSlot()
+                        }
                     }
                 }
+                .padding(.vertical, 2)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .frame(height: 120)
         }
     }
@@ -211,6 +217,7 @@ struct ImageToImageView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Prompt Section
