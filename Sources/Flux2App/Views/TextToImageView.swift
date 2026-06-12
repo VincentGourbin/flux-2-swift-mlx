@@ -47,12 +47,41 @@ struct TextToImageView: View {
         }
         .onAppear {
             // Refresh diffusion model status
+            modelManager.refreshDownloadedModels()
             modelManager.refreshDownloadedDiffusionModels()
+            viewModel.enforceAvailableModelDefaults(
+                downloadedTransformers: modelManager.downloadedTransformers,
+                downloadedTextModels: modelManager.downloadedModels
+            )
         }
         .onChange(of: viewModel.selectedModel) { _, newModel in
             // Apply recommended defaults when model changes
-            viewModel.applyRecommendedDefaults(for: newModel)
+            if viewModel.shouldApplyDefaultsForModelChange() {
+                viewModel.applyRecommendedDefaults(for: newModel)
+            }
+            viewModel.enforceAvailableModelDefaults(
+                downloadedTransformers: modelManager.downloadedTransformers,
+                downloadedTextModels: modelManager.downloadedModels
+            )
         }
+        .onChange(of: modelManager.downloadedTransformers) { _, downloaded in
+            viewModel.enforceAvailableModelDefaults(
+                downloadedTransformers: downloaded,
+                downloadedTextModels: modelManager.downloadedModels
+            )
+        }
+        .onChange(of: modelManager.downloadedModels) { _, downloaded in
+            viewModel.enforceAvailableModelDefaults(
+                downloadedTransformers: modelManager.downloadedTransformers,
+                downloadedTextModels: downloaded
+            )
+        }
+        .focusedSceneValue(\.generationProjectCommands, GenerationProjectCommands(
+            newProject: { viewModel.newProject() },
+            openProject: { viewModel.openProject() },
+            saveProject: { viewModel.saveProject() },
+            saveProjectAs: { viewModel.saveProjectAs() }
+        ))
     }
 
     // MARK: - Model Selection Section
@@ -63,18 +92,46 @@ struct TextToImageView: View {
             Label("Model Configuration", systemImage: "cpu")
                 .font(.headline)
 
-            // Model type picker
+            // Family — chosen first; drives the pixel factor and which models are
+            // available. Pre-selected today, so the gating below stays dormant.
             HStack {
-                Text("Model:")
+                Text("Family:")
                     .frame(width: 100, alignment: .leading)
-                Picker("", selection: $viewModel.selectedModel) {
-                    ForEach(Flux2Model.allCases, id: \.self) { model in
-                        Text(model.displayName).tag(model)
+                Picker("", selection: $viewModel.selectedFamily) {
+                    ForEach(ModelFamily.allCases) { family in
+                        Text(family.displayName).tag(family as ModelFamily?)
                     }
                 }
                 .pickerStyle(.menu)
                 .frame(maxWidth: .infinity)
             }
+
+            // Pixel-alignment factor — a read-only property of the family.
+            if let family = viewModel.selectedFamily {
+                HStack {
+                    Text("Pixel factor:")
+                        .frame(width: 100, alignment: .leading)
+                    Text("\(family.pixelAlignment) px")
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .help("Output dimensions are floored to this multiple. Determined by the model family; not adjustable.")
+                    Spacer()
+                }
+            }
+
+            // Model type picker
+            HStack {
+                Text("Model:")
+                    .frame(width: 100, alignment: .leading)
+                Picker("", selection: $viewModel.selectedModel) {
+                    ForEach(viewModel.selectableModels, id: \.self) { model in
+                        Text(modelSelectionTitle(for: model)).tag(model)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(maxWidth: .infinity)
+            }
+            .disabled(!viewModel.isFamilySelected)
 
             // Text encoder quantization (only for Dev model)
             if viewModel.selectedModel == .dev {
@@ -82,13 +139,14 @@ struct TextToImageView: View {
                     Text("Text Encoder:")
                         .frame(width: 100, alignment: .leading)
                     Picker("", selection: $viewModel.textQuantization) {
-                        ForEach(MistralQuantization.allCases, id: \.self) { quant in
+                        ForEach(viewModel.downloadedTextQuantizations(in: modelManager.downloadedModels), id: \.self) { quant in
                             Text(quant.displayName).tag(quant)
                         }
                     }
                     .pickerStyle(.menu)
                     .frame(maxWidth: .infinity)
                 }
+                .disabled(!viewModel.isFamilySelected)
             }
 
             // Transformer quantization
@@ -96,16 +154,14 @@ struct TextToImageView: View {
                 Text("Transformer:")
                     .frame(width: 100, alignment: .leading)
                 Picker("", selection: $viewModel.transformerQuantization) {
-                    ForEach(TransformerQuantization.allCases, id: \.self) { quant in
-                        // Klein 9B only supports bf16
-                        if viewModel.selectedModel != .klein9B || quant == .bf16 {
-                            Text(quant.displayName).tag(quant)
-                        }
+                    ForEach(viewModel.compatibleTransformerQuantizations, id: \.self) { quant in
+                        Text(transformerSelectionTitle(for: quant)).tag(quant)
                     }
                 }
                 .pickerStyle(.menu)
                 .frame(maxWidth: .infinity)
             }
+            .disabled(!viewModel.isFamilySelected)
 
             // Memory estimate
             HStack {
@@ -176,19 +232,59 @@ struct TextToImageView: View {
     @ViewBuilder
     private var promptSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Prompt", systemImage: "text.cursor")
+            Label("AI Prompt", systemImage: "text.cursor")
                 .font(.headline)
 
             TextEditor(text: $viewModel.prompt)
                 .font(.body)
                 .scrollContentBackground(.hidden)
+                .padding(8)
                 .background(Color(nsColor: .textBackgroundColor))
-                .cornerRadius(8)
-                .frame(minHeight: 100, maxHeight: 200)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.black.opacity(0.22), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.18), radius: 2, x: 0, y: 1)
+                .frame(minHeight: 116, maxHeight: 210)
 
-            Toggle("Upsample prompt", isOn: $viewModel.upsamplePrompt)
-                .font(.caption)
-                .help("Enhance prompt with visual details using Mistral")
+            HStack(spacing: 16) {
+                Toggle("Upsample prompt", isOn: $viewModel.upsamplePrompt)
+                    .help("Enhance prompt with visual details using Mistral")
+
+                Toggle("Clear prompt after generation", isOn: $viewModel.clearPromptAfterGeneration)
+                    .help("Empty the prompt automatically once a run finishes successfully")
+            }
+            .font(.caption)
+            .toggleStyle(.checkbox)
+
+            if let upsampled = viewModel.upsampledPrompt {
+                upsampledPromptView(upsampled)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func upsampledPromptView(_ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label("Upsampled prompt", systemImage: "sparkles")
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+
+            ScrollView {
+                Text(text)
+                    .font(.caption)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 120)
+            .padding(8)
+            .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.accentColor.opacity(0.3), lineWidth: 1)
+            )
         }
     }
 
@@ -264,14 +360,23 @@ struct TextToImageView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Guidance: \(String(format: "%.1f", viewModel.guidance))")
-                        .font(.caption)
+                    HStack {
+                        Text("Guidance: \(String(format: "%.1f", viewModel.guidance))")
+                            .font(.caption)
+                        Spacer()
+                        Button("Default") {
+                            viewModel.resetGuidanceToModelDefault()
+                        }
+                        .controlSize(.mini)
+                    }
                     Slider(value: Binding(
                         get: { Double(viewModel.guidance) },
                         set: { viewModel.guidance = Float($0) }
                     ), in: 1...10, step: 0.5)
                 }
             }
+
+            Divider()
 
             // Seed
             HStack {
@@ -297,22 +402,41 @@ struct TextToImageView: View {
     @ViewBuilder
     private var generateSection: some View {
         VStack(spacing: 12) {
-            // Generate button
-            Button(action: {
-                Task { await viewModel.generate() }
-            }) {
-                HStack {
-                    if viewModel.isGenerating {
-                        ProgressView()
-                            .scaleEffect(0.8)
+            if viewModel.isResetting {
+                ProgressView("Resetting…")
+                    .progressViewStyle(.linear)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+            } else {
+                // Generate button
+                Button(action: {
+                    viewModel.startGeneration()
+                }) {
+                    HStack {
+                        if viewModel.isGenerating {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                        }
+                        Text(viewModel.isGenerating ? "Generating..." : "Generate Image")
                     }
-                    Text(viewModel.isGenerating ? "Generating..." : "Generate Image")
+                    .frame(maxWidth: .infinity)
                 }
-                .frame(maxWidth: .infinity)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(!viewModel.canGenerate || !modelManager.isTransformerDownloaded(viewModel.selectedTransformerVariant) || !modelManager.isVAEDownloaded)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(!viewModel.canGenerate || !modelManager.isTransformerDownloaded(viewModel.selectedTransformerVariant) || !modelManager.isVAEDownloaded)
+
+            if viewModel.isGenerating {
+                Button(role: .cancel) {
+                    viewModel.cancel()
+                } label: {
+                    Text("Cancel")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .tint(.red)
+            }
 
             // Progress
             if viewModel.isGenerating {
@@ -463,6 +587,20 @@ struct TextToImageView: View {
             .frame(height: 110)
         }
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+    }
+
+    private func modelSelectionTitle(for model: Flux2Model) -> String {
+        let hasDownloadedTransformer = ImageGenerationViewModel.compatibleTransformerQuantizations(for: model).contains { quantization in
+            let variant = ModelRegistry.TransformerVariant.variant(for: model, quantization: quantization)
+            return modelManager.isTransformerDownloaded(variant)
+        }
+        return hasDownloadedTransformer ? model.displayName : "\(model.displayName) (not downloaded)"
+    }
+
+    private func transformerSelectionTitle(for quantization: TransformerQuantization) -> String {
+        let variant = ModelRegistry.TransformerVariant.variant(for: viewModel.selectedModel, quantization: quantization)
+        let suffix = modelManager.isTransformerDownloaded(variant) ? "" : " (not downloaded)"
+        return "\(quantization.displayName)\(suffix)"
     }
 }
 

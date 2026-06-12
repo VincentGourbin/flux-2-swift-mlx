@@ -4,6 +4,7 @@
  */
 
 import SwiftUI
+import AppKit
 import FluxTextEncoders
 import Flux2Core
 import MLX
@@ -2604,6 +2605,21 @@ struct Qwen3ChatView: View {
 struct SettingsView: View {
     @EnvironmentObject var modelManager: ModelManager
     @AppStorage("hfToken") private var hfToken = ""
+    @AppStorage("imageSaveOutputRoot") private var imageSaveOutputRoot = ImageSaveService.defaultOutputRoot
+    @AppStorage("imageSaveOutputMode") private var imageSaveOutputMode = ImageSaveOutputMode.default.rawValue
+    @AppStorage("imageSavePreset") private var imageSavePreset = ImageSavePreset.peeps.rawValue
+    @AppStorage("imageSaveFormat") private var imageSaveFormat = ImageSaveFormat.png24.rawValue
+    @AppStorage("imageSaveInputBase") private var imageSaveInputBase = ImageSaveInputBase.staticPrefix.rawValue
+    @AppStorage("imageSaveFilenamePrefix") private var imageSaveFilenamePrefix = "image"
+    @AppStorage("imageSaveFreeText") private var imageSaveFreeText = ""
+    @AppStorage("imageSaveUseTimestamp") private var imageSaveUseTimestamp = false
+    @AppStorage("imageSaveTimestampFormat") private var imageSaveTimestampFormat = ImageSaveTimestampFormat.compactDate.rawValue
+    @AppStorage("imageSaveUseAutoIncrement") private var imageSaveUseAutoIncrement = false
+    @AppStorage("imageSaveAutoIncrementDigits") private var imageSaveAutoIncrementDigits = 5
+    @AppStorage("imageSaveAutoIncrementStart") private var imageSaveAutoIncrementStart = 1
+    @AppStorage("imageSaveAutoIncrementStep") private var imageSaveAutoIncrementStep = 1
+    @AppStorage("imageSaveUpscaleBeforeSave") private var imageSaveUpscaleBeforeSave = false
+    @AppStorage("imageSaveUpscaleBy") private var imageSaveUpscaleBy = 2.0
 
     var body: some View {
         Form {
@@ -2616,9 +2632,98 @@ struct SettingsView: View {
                 Text("Variant: \(modelManager.selectedVariant?.rawValue ?? "None")")
                 Text("Status: \(modelManager.isLoaded ? "Loaded" : "Not Loaded")")
             }
+
+            Section("Image Save") {
+                HStack {
+                    TextField("Output Root", text: $imageSaveOutputRoot)
+                        .textFieldStyle(.roundedBorder)
+
+                    Button("Choose...") {
+                        chooseOutputRoot()
+                    }
+                }
+
+                Picker("Path", selection: $imageSaveOutputMode) {
+                    ForEach(ImageSaveOutputMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Picker("Preset", selection: $imageSavePreset) {
+                    ForEach(ImageSavePreset.allCases) { preset in
+                        Text(preset.rawValue).tag(preset.rawValue)
+                    }
+                }
+                .disabled(imageSaveOutputMode != ImageSaveOutputMode.preset.rawValue)
+
+                Picker("Format", selection: $imageSaveFormat) {
+                    ForEach(ImageSaveFormat.supportedCases) { format in
+                        Text(format.rawValue).tag(format.rawValue)
+                    }
+                }
+
+                Toggle("Lanczos upscale before save", isOn: $imageSaveUpscaleBeforeSave)
+                Stepper("Scale: \(String(format: "%.2fx", imageSaveUpscaleBy))", value: $imageSaveUpscaleBy, in: 1.0...8.0, step: 0.05)
+                    .disabled(!imageSaveUpscaleBeforeSave)
+            }
+
+            Section("File Names") {
+                Picker("Base", selection: $imageSaveInputBase) {
+                    ForEach(ImageSaveInputBase.allCases) { inputBase in
+                        Text(inputBase.rawValue).tag(inputBase.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                TextField("Static Prefix", text: $imageSaveFilenamePrefix)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(imageSaveInputBase != ImageSaveInputBase.staticPrefix.rawValue)
+
+                TextField("Free Text Segment", text: $imageSaveFreeText)
+                    .textFieldStyle(.roundedBorder)
+
+                Toggle("Add timestamp", isOn: $imageSaveUseTimestamp)
+                Picker("Timestamp", selection: $imageSaveTimestampFormat) {
+                    ForEach(ImageSaveTimestampFormat.allCases) { format in
+                        Text(format.rawValue).tag(format.rawValue)
+                    }
+                }
+                .disabled(!imageSaveUseTimestamp)
+
+                Toggle("Add auto-increment", isOn: $imageSaveUseAutoIncrement)
+                Stepper("Digits: \(imageSaveAutoIncrementDigits)", value: $imageSaveAutoIncrementDigits, in: 1...12)
+                    .disabled(!imageSaveUseAutoIncrement)
+                Stepper("Start: \(imageSaveAutoIncrementStart)", value: $imageSaveAutoIncrementStart, in: 0...999_999)
+                    .disabled(!imageSaveUseAutoIncrement)
+                Stepper("Step: \(imageSaveAutoIncrementStep)", value: $imageSaveAutoIncrementStep, in: 1...999)
+                    .disabled(!imageSaveUseAutoIncrement)
+
+                Text("Preview: \(ImageSaveService.previewFilename(metadata: ImageSaveMetadata(prompt: "sample prompt")))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
         }
         .padding()
-        .frame(width: 400, height: 200)
+        .frame(width: 640, height: 680)
+        .onAppear {
+            if ImageSaveFormat(rawValue: imageSaveFormat)?.isSupported != true {
+                imageSaveFormat = ImageSaveFormat.png24.rawValue
+            }
+        }
+    }
+
+    private func chooseOutputRoot() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+
+        if panel.runModal() == .OK, let url = panel.url {
+            imageSaveOutputRoot = url.path
+        }
     }
 }
 

@@ -21,7 +21,7 @@ struct Flux2App: App {
         }
         .defaultSize(width: 1200, height: 800)
         .commands {
-            CommandGroup(replacing: .newItem) {}
+            ProjectFileCommands()
             CommandGroup(replacing: .appInfo) {
                 Button("About FLUX.2") {
                     NSApplication.shared.orderFrontStandardAboutPanel(

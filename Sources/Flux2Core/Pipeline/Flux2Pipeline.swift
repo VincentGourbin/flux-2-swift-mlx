@@ -63,6 +63,10 @@ public struct Flux2StepContext: Sendable {
 /// pure observer, or return a new tensor to influence subsequent steps.
 public typealias Flux2StepHook = @Sendable (Flux2StepContext, MLXArray) -> MLXArray
 
+/// Callback fired once the prompt has been upsampled/enhanced, before denoising
+/// begins, carrying the enhanced prompt so the UI can show it live.
+public typealias Flux2PromptUpsampleCallback = @Sendable (String) -> Void
+
 /// Result of image generation including the image and metadata
 public struct Flux2GenerationResult: Sendable {
     /// The generated image
@@ -727,7 +731,9 @@ public class Flux2Pipeline: @unchecked Sendable {
         upsamplePrompt: Bool = false,
         checkpointInterval: Int? = nil,
         onProgress: Flux2ProgressCallback? = nil,
-        onCheckpoint: Flux2CheckpointCallback? = nil
+        onCheckpoint: Flux2CheckpointCallback? = nil,
+        onStep: Flux2StepHook? = nil,
+        onPromptUpsampled: Flux2PromptUpsampleCallback? = nil
     ) async throws -> Flux2GenerationResult {
         try await generateWithResult(
             mode: .textToImage,
@@ -741,7 +747,9 @@ public class Flux2Pipeline: @unchecked Sendable {
             upsamplePrompt: upsamplePrompt,
             checkpointInterval: checkpointInterval,
             onProgress: onProgress,
-            onCheckpoint: onCheckpoint
+            onCheckpoint: onCheckpoint,
+            onStep: onStep,
+            onPromptUpsampled: onPromptUpsampled
         )
     }
 
@@ -759,7 +767,9 @@ public class Flux2Pipeline: @unchecked Sendable {
         upsamplePrompt: Bool = false,
         checkpointInterval: Int? = nil,
         onProgress: Flux2ProgressCallback? = nil,
-        onCheckpoint: Flux2CheckpointCallback? = nil
+        onCheckpoint: Flux2CheckpointCallback? = nil,
+        onStep: Flux2StepHook? = nil,
+        onPromptUpsampled: Flux2PromptUpsampleCallback? = nil
     ) async throws -> Flux2GenerationResult {
         guard !images.isEmpty && images.count <= 3 else {
             throw Flux2Error.invalidConfiguration("Provide 1-3 reference images")
@@ -781,7 +791,9 @@ public class Flux2Pipeline: @unchecked Sendable {
             upsamplePrompt: upsamplePrompt,
             checkpointInterval: checkpointInterval,
             onProgress: onProgress,
-            onCheckpoint: onCheckpoint
+            onCheckpoint: onCheckpoint,
+            onStep: onStep,
+            onPromptUpsampled: onPromptUpsampled
         )
     }
 
@@ -875,7 +887,8 @@ public class Flux2Pipeline: @unchecked Sendable {
         checkpointInterval: Int?,
         onProgress: Flux2ProgressCallback?,
         onCheckpoint: Flux2CheckpointCallback?,
-        onStep: Flux2StepHook? = nil
+        onStep: Flux2StepHook? = nil,
+        onPromptUpsampled: Flux2PromptUpsampleCallback? = nil
     ) async throws -> Flux2GenerationResult {
         // Validate dimensions
         let (validHeight, validWidth) = LatentUtils.validateDimensions(
@@ -1065,6 +1078,11 @@ public class Flux2Pipeline: @unchecked Sendable {
                     wasPromptUpsampled = upsamplePrompt && (usedPrompt != enrichedPrompt)
                 }
             }
+            // Surface the enhanced prompt now (before the long denoise) so the UI
+            // can show it live rather than only after the run completes.
+            if wasPromptUpsampled {
+                onPromptUpsampled?(finalUsedPrompt)
+            }
             eval(textEmbeddings)
 
             // Classical CFG: encode the empty negative prompt with the same
@@ -1251,6 +1269,10 @@ public class Flux2Pipeline: @unchecked Sendable {
 
                 // Steps 1+: Cached denoising (no reference tokens in input)
                 for stepIdx in 1..<(scheduler.sigmas.count - 1) {
+                    // Cooperative cancellation: bail out between steps when the
+                    // enclosing Task is cancelled (e.g. the UI Cancel button).
+                    try Task.checkCancellation()
+
                     let stepStart = Date()
                     let sigma = scheduler.sigmas[stepIdx]
                     let t = MLXArray([sigma])
@@ -1338,6 +1360,10 @@ public class Flux2Pipeline: @unchecked Sendable {
             }
 
             for stepIdx in 0..<(scheduler.sigmas.count - 1) {
+                // Cooperative cancellation: bail out between steps when the
+                // enclosing Task is cancelled (e.g. the UI Cancel button).
+                try Task.checkCancellation()
+
                 let stepStart = Date()
 
                 let sigma = scheduler.sigmas[stepIdx]
@@ -1540,6 +1566,10 @@ public class Flux2Pipeline: @unchecked Sendable {
 
         // Denoising loop - use sigmas (in [0, 1] range) for transformer
         for stepIdx in 0..<(scheduler.sigmas.count - 1) {
+            // Cooperative cancellation: bail out between steps when the
+            // enclosing Task is cancelled (e.g. the UI Cancel button).
+            try Task.checkCancellation()
+
             let stepStart = Date()
 
             let sigma = scheduler.sigmas[stepIdx]
@@ -1754,9 +1784,12 @@ public class Flux2Pipeline: @unchecked Sendable {
         Flux2Debug.log("Encoding \(images.count) reference images separately with unique T-coordinates...")
 
         // === STEP 1: Process each image separately ===
-        // Max area per image - matches diffusers pipeline_flux2.py line 892-893
-        // Reference uses 1024² for conditioning images (not 768² which is for upsampling)
-        let maxImageArea = 1024 * 1024  // ~4096 tokens per image
+        // Track the output budget so the first (context) reference encodes at the
+        // output size: output == reference keeps the composited patch aligned with
+        // the original (see ImageGenerationViewModel.referenceMatchedSize). Floored
+        // at the historical 1024² (diffusers pipeline_flux2.py:892-893) so additional
+        // reference images keep a sane conditioning budget at small output sizes.
+        let maxImageArea = max(width * height, 1024 * 1024)  // ~4096+ tokens per image
         let multipleOf = 32  // vae_scale_factor * 2
 
         var allPackedLatents: [MLXArray] = []
