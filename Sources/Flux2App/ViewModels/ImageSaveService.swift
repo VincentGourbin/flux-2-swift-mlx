@@ -134,10 +134,12 @@ enum ImageSaveService {
             .appendingPathComponent(relativeDirectory(outputMode: outputMode, preset: preset), isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
+        // Lanczos upscale is driven by the factor on the Generated Image row:
+        // 1 (or unset) means no upscale, > 1 scales up on save.
         let imageToSave: CGImage
-        if defaults.bool(forKey: "imageSaveUpscaleBeforeSave") {
-            let scale = max(1.0, defaults.double(forKey: "imageSaveUpscaleBy"))
-            imageToSave = try upscale(image, scale: scale)
+        let upscaleBy = defaults.double(forKey: "imageSaveUpscaleBy")
+        if upscaleBy > 1.0 {
+            imageToSave = try upscale(image, scale: upscaleBy)
         } else {
             imageToSave = image
         }
@@ -146,6 +148,32 @@ enum ImageSaveService {
         let url = directory.appendingPathComponent(filename)
         try write(imageToSave, to: url, format: format)
         return url
+    }
+
+    /// Write `image` next to `outputURL`, sharing its folder, base name, and
+    /// extension, with `suffix` appended to the stem (e.g. "name-input.png").
+    @MainActor
+    static func saveCompanion(_ image: CGImage, alongside outputURL: URL, suffix: String) throws -> URL {
+        let directory = outputURL.deletingLastPathComponent()
+        let stem = outputURL.deletingPathExtension().lastPathComponent
+        let ext = outputURL.pathExtension
+        let format = format(forExtension: ext)
+        let resolvedExtension = ext.isEmpty ? format.fileExtension : ext
+
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("\(stem)\(suffix).\(resolvedExtension)")
+        try write(image, to: url, format: format)
+        return url
+    }
+
+    private static func format(forExtension ext: String) -> ImageSaveFormat {
+        switch ext.lowercased() {
+        case "jpg", "jpeg": return .jpeg
+        case "jxl": return .jpegXL
+        case "heic": return .heic
+        case "webp": return .webP
+        default: return .png24
+        }
     }
 
     static func previewFilename(metadata: ImageSaveMetadata) -> String {

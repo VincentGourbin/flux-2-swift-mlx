@@ -16,6 +16,7 @@ struct ImageToImageView: View {
     @EnvironmentObject var modelManager: ModelManager
     @StateObject private var viewModel = ImageGenerationViewModel()
     @State private var isTargetedForDrop = false
+    @AppStorage("imageSaveUpscaleBy") private var imageSaveUpscaleBy = 1.0
 
     // Kept-but-hidden controls: the megapixel budget + barn doors now own
     // resolution and dimensions, so these are off by default (not deleted).
@@ -106,6 +107,7 @@ struct ImageToImageView: View {
             saveProject: { viewModel.saveProject() },
             saveProjectAs: { viewModel.saveProjectAs() }
         ))
+        .focusedSceneValue(\.generationProjectName, viewModel.projectDisplayName)
     }
 
     // MARK: - Reference Images Section
@@ -726,6 +728,30 @@ struct ImageToImageView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+
+                // Save-related controls (flush-right) once there's an image to work with.
+                if !viewModel.referenceImages.isEmpty {
+                    Divider()
+                        .frame(height: 16)
+
+                    LanczosUpscaleField(factor: $imageSaveUpscaleBy)
+
+                    Button(action: { viewModel.openOutputFolder() }) {
+                        Label("Open Folder", systemImage: "folder")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(viewModel.lastSavedImageURL == nil)
+                    .help("Reveal the last saved image in Finder")
+
+                    Button(action: { viewModel.saveInputImage() }) {
+                        Label("Save Input", systemImage: "square.and.arrow.down.on.square")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(viewModel.lastSavedImageURL == nil)
+                    .help("Save the formatted input (before barn doors) as <name>-input")
+                }
             }
             .padding()
 

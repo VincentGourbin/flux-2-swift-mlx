@@ -146,6 +146,16 @@ class ImageGenerationViewModel: ObservableObject {
     @Published var statusMessage: String = ""
     @Published var currentProjectURL: URL?
 
+    /// URL of the most recently saved generated image. Drives "Open Folder" and
+    /// names the companion "-input" file. Session-only; never persisted.
+    @Published private(set) var lastSavedImageURL: URL?
+
+    /// Window title: the loaded project's file name (no extension), or a
+    /// placeholder when nothing has been saved/opened yet.
+    var projectDisplayName: String {
+        currentProjectURL?.deletingPathExtension().lastPathComponent ?? "Untitled Project"
+    }
+
     // MARK: - Checkpoints
     @Published var checkpointImages: [CheckpointImage] = []
     @Published var checkpointInterval: Int = 10  // Save checkpoint every N steps
@@ -433,8 +443,18 @@ class ImageGenerationViewModel: ObservableObject {
 
         let sourceRect = integralPixelRect(from: contextArea, in: image)
         let sourceAspect = Double(sourceRect.width) / Double(sourceRect.height)
-        let targetAspect: Double
+        let size = budgetFilledSize(sourceAspect: sourceAspect)
+        width = size.width
+        height = size.height
+    }
 
+    /// Size that fills the megapixel budget at `sourceAspect` (shaped by the
+    /// Favour control), snapped to the family's pixel-alignment factor. The MP
+    /// budget — not the crop's pixel count — is the target, so a small barn-door
+    /// region no longer shrinks the output; it just implies the conditioning crop
+    /// is upscaled (see conditioningUpscaleFactor).
+    private func budgetFilledSize(sourceAspect: Double) -> (width: Int, height: Int) {
+        let targetAspect: Double
         switch sizingFavor {
         case .original:
             targetAspect = sourceAspect
@@ -444,17 +464,15 @@ class ImageGenerationViewModel: ObservableObject {
             targetAspect = min(sourceAspect, 3.0 / 4.0)
         }
 
-        // The MP budget (dialled down by the Image-Scaling slider) is the target
-        // pixel count; the barn-door aspect ratio only shapes it. Filling the
-        // budget means a small barn-door region no longer shrinks the output — it
-        // just implies the conditioning crop is upscaled (see conditioningUpscaleFactor).
         let scale = min(max(preparationScale, 0.1), 1.0)
         let pixelBudget = Double(conditioningPixelBudget) * scale * scale
-        let rawHeight = sqrt(pixelBudget / targetAspect)
+        let rawHeight = (pixelBudget / max(targetAspect, 0.0001)).squareRoot()
         let rawWidth = rawHeight * targetAspect
 
-        width = Self.snapToMultiple(Int(rawWidth.rounded()), multiple: pixelAlignment)
-        height = Self.snapToMultiple(Int(rawHeight.rounded()), multiple: pixelAlignment)
+        return (
+            Self.snapToMultiple(Int(rawWidth.rounded()), multiple: pixelAlignment),
+            Self.snapToMultiple(Int(rawHeight.rounded()), multiple: pixelAlignment)
+        )
     }
 
     /// Linear factor by which the barn-door crop must be scaled to fill the
@@ -927,6 +945,7 @@ class ImageGenerationViewModel: ObservableObject {
         checkpointImages.removeAll()
         errorMessage = nil
         currentProjectURL = nil
+        lastSavedImageURL = nil
         UserDefaults.standard.removeObject(forKey: Self.lastProjectURLKey)
         applyRecommendedDefaults(for: selectedModel)
         statusMessage = "New project"
@@ -1026,6 +1045,7 @@ class ImageGenerationViewModel: ObservableObject {
     }
 
     private func loadProject(from url: URL) throws {
+        lastSavedImageURL = nil
         let data = try Data(contentsOf: url)
         let project = try JSONDecoder().decode(GenerationProject.self, from: data)
         let restoredReferences = try project.referenceImages.map { stored in
@@ -1315,10 +1335,64 @@ class ImageGenerationViewModel: ObservableObject {
                 image,
                 metadata: ImageSaveMetadata(prompt: prompt)
             )
+            lastSavedImageURL = url
             statusMessage = "Saved to \(url.path)"
         } catch {
             errorMessage = "Failed to save: \(error.localizedDescription)"
         }
+    }
+
+    /// Reveal the most recently saved image (and its folder) in Finder.
+    func openOutputFolder() {
+        guard let url = lastSavedImageURL else { return }
+        #if canImport(AppKit)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+        #endif
+    }
+
+    /// Save the formatted input image (Image Formatting applied to the whole
+    /// reference, ignoring the barn doors) next to the last saved output, sharing
+    /// its name + extension with a "-input" suffix.
+    func saveInputImage() {
+        guard let outputURL = lastSavedImageURL else {
+            errorMessage = "Save the generated image first so the input can share its name."
+            return
+        }
+
+        do {
+            let input = try formattedFullInputImage()
+            let url = try ImageSaveService.saveCompanion(input, alongside: outputURL, suffix: "-input")
+            statusMessage = "Saved input to \(url.lastPathComponent)"
+        } catch {
+            errorMessage = "Failed to save input: \(error.localizedDescription)"
+        }
+    }
+
+    /// The reference image formatted per Image Formatting (Favour + crop/pad)
+    /// across the *whole* frame — i.e. before the barn doors narrow it. Mirrors
+    /// the output's budget-filled, alignment-floored sizing so the saved input
+    /// shares the model's grid.
+    func formattedFullInputImage() throws -> CGImage {
+        guard let original = referenceImages.first?.image else {
+            throw Flux2Error.invalidConfiguration("Add a reference image before saving the input")
+        }
+
+        let fullAspect = Double(original.width) / Double(max(original.height, 1))
+        let pre = budgetFilledSize(sourceAspect: fullAspect)
+        let targetSize = Self.referenceMatchedSize(
+            width: pre.width,
+            height: pre.height,
+            maxArea: conditioningPixelBudget,
+            multiple: pixelAlignment
+        )
+        let transform = preparationTransform(
+            sourceWidth: original.width,
+            sourceHeight: original.height,
+            targetWidth: targetSize.width,
+            targetHeight: targetSize.height,
+            method: sizingMethod
+        )
+        return try renderImage(original, targetWidth: targetSize.width, targetHeight: targetSize.height, transform: transform)
     }
 
     /// Clear pipeline to free memory

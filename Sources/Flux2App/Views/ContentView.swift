@@ -13,6 +13,8 @@ struct ContentView: View {
     @EnvironmentObject var modelManager: ModelManager
     @StateObject private var chatViewModel = ChatViewModel()
     @State private var selectedTab = 0
+    // Set by the focused image view; falls back to the app name on other tabs.
+    @FocusedValue(\.generationProjectName) private var projectName
 
     var body: some View {
         NavigationSplitView {
@@ -90,7 +92,7 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .navigationTitle("FLUX.2 Text Encoders")
+        .navigationTitle(projectName ?? "FLUX.2 Text Encoders")
     }
 }
 
@@ -2618,8 +2620,7 @@ struct SettingsView: View {
     @AppStorage("imageSaveAutoIncrementDigits") private var imageSaveAutoIncrementDigits = 5
     @AppStorage("imageSaveAutoIncrementStart") private var imageSaveAutoIncrementStart = 1
     @AppStorage("imageSaveAutoIncrementStep") private var imageSaveAutoIncrementStep = 1
-    @AppStorage("imageSaveUpscaleBeforeSave") private var imageSaveUpscaleBeforeSave = false
-    @AppStorage("imageSaveUpscaleBy") private var imageSaveUpscaleBy = 2.0
+    @AppStorage("imageSaveUpscaleBy") private var imageSaveUpscaleBy = 1.0
 
     var body: some View {
         Form {
@@ -2663,9 +2664,10 @@ struct SettingsView: View {
                     }
                 }
 
-                Toggle("Lanczos upscale before save", isOn: $imageSaveUpscaleBeforeSave)
-                Stepper("Scale: \(String(format: "%.2fx", imageSaveUpscaleBy))", value: $imageSaveUpscaleBy, in: 1.0...8.0, step: 0.05)
-                    .disabled(!imageSaveUpscaleBeforeSave)
+                Stepper("Lanczos upscale: \(String(format: "%.2f×", imageSaveUpscaleBy))", value: $imageSaveUpscaleBy, in: 1.0...8.0, step: 0.25)
+                Text("1× saves at native size. Also adjustable on the Generated Image row.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("File Names") {

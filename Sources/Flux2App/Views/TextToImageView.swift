@@ -14,6 +14,7 @@ import AppKit
 struct TextToImageView: View {
     @EnvironmentObject var modelManager: ModelManager
     @StateObject private var viewModel = ImageGenerationViewModel()
+    @AppStorage("imageSaveUpscaleBy") private var imageSaveUpscaleBy = 1.0
 
     var body: some View {
         HSplitView {
@@ -82,6 +83,7 @@ struct TextToImageView: View {
             saveProject: { viewModel.saveProject() },
             saveProjectAs: { viewModel.saveProjectAs() }
         ))
+        .focusedSceneValue(\.generationProjectName, viewModel.projectDisplayName)
     }
 
     // MARK: - Model Selection Section
@@ -492,6 +494,21 @@ struct TextToImageView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .help("Clear pipeline to free GPU memory")
+
+                if viewModel.generatedImage != nil {
+                    Divider()
+                        .frame(height: 16)
+
+                    LanczosUpscaleField(factor: $imageSaveUpscaleBy)
+
+                    Button(action: { viewModel.openOutputFolder() }) {
+                        Label("Open Folder", systemImage: "folder")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(viewModel.lastSavedImageURL == nil)
+                    .help("Reveal the last saved image in Finder")
+                }
             }
             .padding()
 

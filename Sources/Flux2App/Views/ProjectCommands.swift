@@ -16,10 +16,21 @@ private struct GenerationProjectCommandsKey: FocusedValueKey {
     typealias Value = GenerationProjectCommands
 }
 
+private struct GenerationProjectNameKey: FocusedValueKey {
+    typealias Value = String
+}
+
 extension FocusedValues {
     var generationProjectCommands: GenerationProjectCommands? {
         get { self[GenerationProjectCommandsKey.self] }
         set { self[GenerationProjectCommandsKey.self] = newValue }
+    }
+
+    /// Display name of the active generation project, surfaced to the window
+    /// title. Provided by whichever image view currently holds scene focus.
+    var generationProjectName: String? {
+        get { self[GenerationProjectNameKey.self] }
+        set { self[GenerationProjectNameKey.self] = newValue }
     }
 }
 
