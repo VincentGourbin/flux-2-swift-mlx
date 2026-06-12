@@ -1101,6 +1101,16 @@ struct ImagePreparationPreview: View {
                     .frame(width: imageRect.width, height: imageRect.height)
                     .position(x: imageRect.midX, y: imageRect.midY)
 
+                // Image Formatting feedback: semi-transparent regions show what
+                // crop discards or where pad letterboxing lands. Sits above the
+                // image but below the barn-door overlay.
+                formattingExclusionOverlay(in: imageRect)
+                    .fill(
+                        Color.black.opacity(overlayOpacity),
+                        style: FillStyle(eoFill: true)
+                    )
+                    .allowsHitTesting(false)
+
                 // Barn doors: the region outside the context area is darkened.
                 // Fully-open doors (context == whole image) darken nothing.
                 contextExclusionOverlay(in: imageRect)
@@ -1171,13 +1181,122 @@ struct ImagePreparationPreview: View {
         )
     }
 
-    private func excludedScalingOverlay(in imageRect: CGRect) -> Path {
-        let visible = cropVisibleRect()
-        let visibleRect = displayRect(for: visible, in: imageRect)
+    /// Regions dimmed to preview Image Formatting (crop discard or pad bands).
+    private func formattingExclusionOverlay(in imageRect: CGRect) -> Path {
+        guard adjustedSize.width > 0, adjustedSize.height > 0 else {
+            return Path()
+        }
+
+        let excluded = formattingExcludedRects()
+        guard !excluded.isEmpty else { return Path() }
+
         var path = Path()
-        path.addRect(imageRect)
-        path.addRect(visibleRect)
+        for rect in excluded {
+            path.addRect(displayRect(for: rect, in: imageRect))
+        }
         return path
+    }
+
+    private var contextPixelAspect: CGFloat {
+        let ctx = contextArea
+        let pixelWidth = ctx.width * CGFloat(image.width)
+        let pixelHeight = ctx.height * CGFloat(image.height)
+        guard pixelHeight > 0 else { return 1 }
+        return pixelWidth / pixelHeight
+    }
+
+    private var targetPixelAspect: CGFloat {
+        guard adjustedSize.height > 0 else { return 1 }
+        return CGFloat(adjustedSize.width) / CGFloat(adjustedSize.height)
+    }
+
+    private func formattingExcludedRects() -> [CGRect] {
+        let ctx = contextArea
+        let ctxAspect = contextPixelAspect
+        let targetAspect = targetPixelAspect
+
+        guard abs(ctxAspect - targetAspect) > 0.0001 else { return [] }
+
+        switch sizingMethod {
+        case .crop:
+            let visible = cropVisibleRect(in: ctx, ctxAspect: ctxAspect, targetAspect: targetAspect)
+            return exclusionBands(outer: ctx, inner: visible)
+        case .pad:
+            return padExcludedRects(in: ctx, ctxAspect: ctxAspect, targetAspect: targetAspect)
+        }
+    }
+
+    /// Crop: the kept region inside the barn-door context (matches
+    /// `preparationTransform` with `.crop`).
+    private func cropVisibleRect(in ctx: CGRect, ctxAspect: CGFloat, targetAspect: CGFloat) -> CGRect {
+        if ctxAspect > targetAspect {
+            let visibleWidth = targetAspect / ctxAspect * ctx.width
+            return CGRect(
+                x: ctx.minX + (ctx.width - visibleWidth) / 2,
+                y: ctx.minY,
+                width: visibleWidth,
+                height: ctx.height
+            )
+        }
+
+        let visibleHeight = ctxAspect / targetAspect * ctx.height
+        return CGRect(
+            x: ctx.minX,
+            y: ctx.minY + (ctx.height - visibleHeight) / 2,
+            width: ctx.width,
+            height: visibleHeight
+        )
+    }
+
+    /// Pad: letterbox/pillarbox bands around the context (matches
+    /// `preparationTransform` with `.pad`).
+    private func padExcludedRects(in ctx: CGRect, ctxAspect: CGFloat, targetAspect: CGFloat) -> [CGRect] {
+        let frame: CGRect
+        if ctxAspect > targetAspect {
+            // Fits width; pads top and bottom in the output canvas.
+            let frameHeight = ctx.width / targetAspect
+            frame = CGRect(
+                x: ctx.minX,
+                y: ctx.minY - (frameHeight - ctx.height) / 2,
+                width: ctx.width,
+                height: frameHeight
+            )
+        } else {
+            // Fits height; pads left and right.
+            let frameWidth = ctx.height * targetAspect
+            frame = CGRect(
+                x: ctx.minX - (frameWidth - ctx.width) / 2,
+                y: ctx.minY,
+                width: frameWidth,
+                height: ctx.height
+            )
+        }
+        return exclusionBands(outer: frame, inner: ctx)
+    }
+
+    /// `outer` minus `inner` as up to four rectangular bands (eoFill is not
+    /// used here — each band is filled individually).
+    private func exclusionBands(outer: CGRect, inner: CGRect) -> [CGRect] {
+        let clip = outer.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        let hole = inner.intersection(clip)
+        guard clip.width > 0, clip.height > 0, hole.width > 0, hole.height > 0 else {
+            return []
+        }
+
+        var bands: [CGRect] = []
+        if hole.minY > clip.minY {
+            bands.append(CGRect(x: clip.minX, y: clip.minY, width: clip.width, height: hole.minY - clip.minY))
+        }
+        if hole.maxY < clip.maxY {
+            bands.append(CGRect(x: clip.minX, y: hole.maxY, width: clip.width, height: clip.maxY - hole.maxY))
+        }
+        if hole.minX > clip.minX {
+            bands.append(CGRect(x: clip.minX, y: hole.minY, width: hole.minX - clip.minX, height: hole.height))
+        }
+        if hole.maxX < clip.maxX {
+            bands.append(CGRect(x: hole.maxX, y: hole.minY, width: clip.maxX - hole.maxX, height: hole.height))
+        }
+        return bands
     }
 
     private func contextExclusionOverlay(in imageRect: CGRect) -> Path {
@@ -1379,27 +1498,6 @@ struct ImagePreparationPreview: View {
 
     private var minimumContextHeight: CGFloat {
         CGFloat(16) / CGFloat(max(image.height, 16))
-    }
-
-    private func cropVisibleRect() -> CGRect {
-        guard adjustedSize.width > 0, adjustedSize.height > 0 else {
-            return CGRect(x: 0, y: 0, width: 1, height: 1)
-        }
-
-        let sourceAspect = CGFloat(image.width) / CGFloat(image.height)
-        let targetAspect = CGFloat(adjustedSize.width) / CGFloat(adjustedSize.height)
-
-        if sourceAspect > targetAspect {
-            let visibleWidth = targetAspect / sourceAspect
-            return CGRect(x: (1 - visibleWidth) / 2, y: 0, width: visibleWidth, height: 1)
-        }
-
-        if sourceAspect < targetAspect {
-            let visibleHeight = sourceAspect / targetAspect
-            return CGRect(x: 0, y: (1 - visibleHeight) / 2, width: 1, height: visibleHeight)
-        }
-
-        return CGRect(x: 0, y: 0, width: 1, height: 1)
     }
 
     private func displayRect(for normalized: CGRect, in imageRect: CGRect) -> CGRect {
