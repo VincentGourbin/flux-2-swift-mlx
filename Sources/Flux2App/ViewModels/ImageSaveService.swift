@@ -122,17 +122,25 @@ enum ImageSaveService {
             .path
     }
 
+    /// Configured save folder from Settings (output root + mode/preset subpath).
     @MainActor
-    static func save(_ image: CGImage, metadata: ImageSaveMetadata) throws -> URL {
+    static func outputDirectory() throws -> URL {
         let defaults = UserDefaults.standard
         let rootPath = nonEmpty(defaults.string(forKey: "imageSaveOutputRoot"), fallback: defaultOutputRoot)
         let outputMode = ImageSaveOutputMode(rawValue: nonEmpty(defaults.string(forKey: "imageSaveOutputMode"), fallback: ImageSaveOutputMode.default.rawValue)) ?? .default
         let preset = ImageSavePreset(rawValue: nonEmpty(defaults.string(forKey: "imageSavePreset"), fallback: ImageSavePreset.peeps.rawValue)) ?? .peeps
-        let format = savedFormat(from: defaults)
 
         let directory = URL(fileURLWithPath: rootPath, isDirectory: true)
             .appendingPathComponent(relativeDirectory(outputMode: outputMode, preset: preset), isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    @MainActor
+    static func save(_ image: CGImage, metadata: ImageSaveMetadata) throws -> URL {
+        let defaults = UserDefaults.standard
+        let format = savedFormat(from: defaults)
+        let directory = try outputDirectory()
 
         // Lanczos upscale is driven by the factor on the Generated Image row:
         // 1 (or unset) means no upscale, > 1 scales up on save.

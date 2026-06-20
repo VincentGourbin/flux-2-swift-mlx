@@ -84,6 +84,9 @@ struct TextToImageView: View {
             saveProjectAs: { viewModel.saveProjectAs() }
         ))
         .focusedSceneValue(\.generationProjectName, viewModel.projectDisplayName)
+        .focusedSceneValue(\.generationUnloadModels) {
+            Task { await viewModel.clearPipeline() }
+        }
     }
 
     // MARK: - Model Selection Section
@@ -225,6 +228,13 @@ struct TextToImageView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+            }
+
+            if let error = modelManager.errorMessage {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -486,14 +496,13 @@ struct TextToImageView: View {
                     .controlSize(.small)
                 }
 
-                Button(action: {
-                    Task { await viewModel.clearPipeline() }
-                }) {
-                    Label("Clear Memory", systemImage: "trash")
+                Button(action: { viewModel.clearPreview() }) {
+                    Label("Clear Preview", systemImage: "xmark.circle")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .help("Clear pipeline to free GPU memory")
+                .disabled(!viewModel.hasPreviewContent)
+                .help("Clear the generated image from the preview pane")
 
                 if viewModel.generatedImage != nil {
                     Divider()
@@ -506,8 +515,7 @@ struct TextToImageView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(viewModel.lastSavedImageURL == nil)
-                    .help("Reveal the last saved image in Finder")
+                    .help("Open the image output folder in Finder")
                 }
             }
             .padding()

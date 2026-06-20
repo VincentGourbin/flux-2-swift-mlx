@@ -20,6 +20,10 @@ private struct GenerationProjectNameKey: FocusedValueKey {
     typealias Value = String
 }
 
+private struct GenerationUnloadModelsKey: FocusedValueKey {
+    typealias Value = () -> Void
+}
+
 extension FocusedValues {
     var generationProjectCommands: GenerationProjectCommands? {
         get { self[GenerationProjectCommandsKey.self] }
@@ -31,6 +35,13 @@ extension FocusedValues {
     var generationProjectName: String? {
         get { self[GenerationProjectNameKey.self] }
         set { self[GenerationProjectNameKey.self] = newValue }
+    }
+
+    /// Unloads the active image-generation pipeline from memory. Provided by
+    /// Text to Image / Image to Image when that view holds scene focus.
+    var generationUnloadModels: (() -> Void)? {
+        get { self[GenerationUnloadModelsKey.self] }
+        set { self[GenerationUnloadModelsKey.self] = newValue }
     }
 }
 

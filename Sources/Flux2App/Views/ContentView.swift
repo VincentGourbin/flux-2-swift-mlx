@@ -101,6 +101,7 @@ struct ContentView: View {
 struct ModelStatusBar: View {
     @EnvironmentObject var modelManager: ModelManager
     @AppStorage("detailedProfiling") private var detailedProfiling = false
+    @FocusedValue(\.generationUnloadModels) private var unloadModels
     let selectedTab: Int
 
     /// Is this a Qwen3-focused tab?
@@ -444,12 +445,19 @@ struct ModelStatusBar: View {
             }
         }
 
-        // Link to Models tab
         Button(action: { /* Navigate to models tab - handled by parent */ }) {
             Text("Manage Models")
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
+
+        Button("Unload Models") {
+            unloadModels?()
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(unloadModels == nil)
+        .help("Unload diffusion models from memory. The next Generate reloads them.")
     }
 
     // MARK: - Helpers
@@ -1791,6 +1799,28 @@ struct ModelsManagementView: View {
                     Divider()
                 }
 
+                if let error = modelManager.errorMessage {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.primary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                        Button("Dismiss") {
+                            modelManager.errorMessage = nil
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+                    .background(Color.orange.opacity(0.12))
+
+                    Divider()
+                }
+
                 // ===== MISTRAL MODELS SECTION =====
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
@@ -2309,6 +2339,12 @@ struct TransformerSection: View {
                             Text("~\(info.size)")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
+                            if variant.isGated {
+                                Label("Gated", systemImage: "lock.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                                    .help("Requires a Hugging Face token and accepted license")
+                            }
                             if let size = size {
                                 Text("(\(ModelManager.formatBytes(Int(size))))")
                                     .font(.caption2)
@@ -2627,6 +2663,10 @@ struct SettingsView: View {
             Section("HuggingFace") {
                 SecureField("HF Token", text: $hfToken)
                     .textFieldStyle(.roundedBorder)
+                Text("Required for gated models (FLUX.2 Dev bf16, Klein 9B). Create a read token at huggingface.co/settings/tokens, then accept each model’s license on its model page.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Section("Model") {

@@ -156,6 +156,11 @@ class ImageGenerationViewModel: ObservableObject {
         currentProjectURL?.deletingPathExtension().lastPathComponent ?? "Untitled Project"
     }
 
+    /// Whether the preview pane is showing a generation result (or checkpoints).
+    var hasPreviewContent: Bool {
+        generatedImage != nil || !checkpointImages.isEmpty
+    }
+
     // MARK: - Checkpoints
     @Published var checkpointImages: [CheckpointImage] = []
     @Published var checkpointInterval: Int = 10  // Save checkpoint every N steps
@@ -512,17 +517,6 @@ class ImageGenerationViewModel: ObservableObject {
             transformerQuantization = Self.defaultTransformerQuantization(for: selectedModel)
         }
 
-        let currentVariant = selectedTransformerVariant
-        let currentDownloaded = downloadedTransformers.contains(currentVariant.rawValue)
-
-        if !currentDownloaded,
-           let downloadedVariant = Self.preferredDownloadedTransformerVariant(in: downloadedTransformers) {
-            selectedModel = downloadedVariant.modelType
-            transformerQuantization = downloadedVariant.quantization
-            applyRecommendedDefaults(for: selectedModel)
-            transformerQuantization = downloadedVariant.quantization
-        }
-
         if selectedModel == .dev,
            let downloadedTextQuantization = Self.preferredDownloadedTextQuantization(in: downloadedTextModels),
            !downloadedTextModels.contains(Self.textModelId(for: textQuantization)) {
@@ -550,21 +544,6 @@ class ImageGenerationViewModel: ObservableObject {
 
     private static func defaultTransformerQuantization(for model: Flux2Model) -> TransformerQuantization {
         compatibleTransformerQuantizations(for: model).first ?? .bf16
-    }
-
-    private static func preferredDownloadedTransformerVariant(in downloadedTransformers: Set<String>) -> ModelRegistry.TransformerVariant? {
-        let preferredOrder: [ModelRegistry.TransformerVariant] = [
-            .klein4B_8bit,
-            .klein4B_bf16,
-            .klein9B_kv_bf16,
-            .klein9B_bf16,
-            .qint8,
-            .bf16
-        ]
-
-        return preferredOrder.first {
-            downloadedTransformers.contains($0.rawValue) && $0.isForInference
-        }
     }
 
     private static func preferredDownloadedTextQuantization(in downloadedTextModels: Set<String>) -> MistralQuantization? {
@@ -611,8 +590,16 @@ class ImageGenerationViewModel: ObservableObject {
     }
 
     /// Set or update the process selection (the dashed marquee).
-    func setProcessArea(_ rect: CGRect) {
+    func setProcessArea(_ rect: CGRect?) {
+        guard let rect else {
+            processArea = nil
+            return
+        }
         processArea = Self.clampUnitRect(rect)
+    }
+
+    func clearProcessSelection() {
+        processArea = nil
     }
 
     // Dormant until the pipeline has native mask/inpaint support.
@@ -697,9 +684,10 @@ class ImageGenerationViewModel: ObservableObject {
 
         let original = firstReference.image
         let contextRect = integralPixelRect(from: contextArea, in: original)
-        // Current Flux.2 conditioning has no mask input, so the whole context is
-        // composited back. Keep the process-selection helper for future inpaint models.
-        let processRect = contextRect
+        // Flux.2 has no mask input, so the model still sees the full context.
+        // The paste-back step uses the dashed process selection when present so
+        // edge artifacts from the generated context do not get stitched in.
+        let processRect = integralProcessRect(in: original, contextRect: contextRect)
         let targetSize = adjustedGenerationSize
 
         let contextImage = try cropImage(original, to: contextRect)
@@ -741,7 +729,11 @@ class ImageGenerationViewModel: ObservableObject {
         let generatedCropRect = integralPixelRect(visibleCanvasRect, imageWidth: generatedImage.width, imageHeight: generatedImage.height)
         let generatedPatch = try cropImage(generatedImage, to: generatedCropRect)
         let visibleSourceRect = plan.transform.sourceRect(forCanvasRect: generatedCropRect)
-        let destinationRect = visibleSourceRect.offsetBy(dx: plan.contextRect.minX, dy: plan.contextRect.minY)
+        let destinationRect = integralPixelRect(
+            visibleSourceRect.offsetBy(dx: plan.contextRect.minX, dy: plan.contextRect.minY),
+            imageWidth: plan.originalImage.width,
+            imageHeight: plan.originalImage.height
+        )
 
         guard let context = makeImageContext(width: plan.originalImage.width, height: plan.originalImage.height) else {
             throw Flux2Error.imageProcessingFailed("Failed to create composition context")
@@ -750,19 +742,18 @@ class ImageGenerationViewModel: ObservableObject {
         context.interpolationQuality = .high
         context.draw(
             plan.originalImage,
-            in: CGRect(x: 0, y: 0, width: plan.originalImage.width, height: plan.originalImage.height)
+            in: ImageCoordinateMapper.contextDrawRect(
+                forTopLeftRect: CGRect(x: 0, y: 0, width: plan.originalImage.width, height: plan.originalImage.height),
+                canvasHeight: CGFloat(plan.originalImage.height)
+            )
         )
-        // `destinationRect` is in top-left image coordinates (matching `pixelRect`
-        // and `CGImage.cropping`), but a CGContext draws from a bottom-left origin.
-        // Flip the Y axis so the patch lands where it was cropped from rather than
-        // mirrored about the image's horizontal center.
-        let flippedDestinationRect = CGRect(
-            x: destinationRect.minX,
-            y: CGFloat(plan.originalImage.height) - destinationRect.maxY,
-            width: destinationRect.width,
-            height: destinationRect.height
+        context.draw(
+            generatedPatch,
+            in: ImageCoordinateMapper.contextDrawRect(
+                forTopLeftRect: destinationRect,
+                canvasHeight: CGFloat(plan.originalImage.height)
+            )
         )
-        context.draw(generatedPatch, in: flippedDestinationRect)
 
         guard let compositedImage = context.makeImage() else {
             throw Flux2Error.imageProcessingFailed("Failed to composite generated patch")
@@ -799,13 +790,17 @@ class ImageGenerationViewModel: ObservableObject {
         }
 
         context.interpolationQuality = .high
+        let drawRect = CGRect(
+            x: transform.offsetX,
+            y: transform.offsetY,
+            width: CGFloat(image.width) * transform.scale,
+            height: CGFloat(image.height) * transform.scale
+        )
         context.draw(
             image,
-            in: CGRect(
-                x: transform.offsetX,
-                y: transform.offsetY,
-                width: CGFloat(image.width) * transform.scale,
-                height: CGFloat(image.height) * transform.scale
+            in: ImageCoordinateMapper.contextDrawRect(
+                forTopLeftRect: drawRect,
+                canvasHeight: CGFloat(targetHeight)
             )
         )
 
@@ -827,13 +822,17 @@ class ImageGenerationViewModel: ObservableObject {
             throw Flux2Error.imageProcessingFailed("Failed to create crop context")
         }
 
+        let sourceDrawRect = CGRect(
+            x: -cropRect.minX,
+            y: -cropRect.minY,
+            width: CGFloat(image.width),
+            height: CGFloat(image.height)
+        )
         context.draw(
             image,
-            in: CGRect(
-                x: -cropRect.minX,
-                y: -cropRect.minY,
-                width: CGFloat(image.width),
-                height: CGFloat(image.height)
+            in: ImageCoordinateMapper.contextDrawRect(
+                forTopLeftRect: sourceDrawRect,
+                canvasHeight: cropRect.height
             )
         )
 
@@ -1342,12 +1341,27 @@ class ImageGenerationViewModel: ObservableObject {
         }
     }
 
-    /// Reveal the most recently saved image (and its folder) in Finder.
+    /// Open the configured output folder in Finder, selecting the last save when known.
     func openOutputFolder() {
-        guard let url = lastSavedImageURL else { return }
         #if canImport(AppKit)
-        NSWorkspace.shared.activateFileViewerSelecting([url])
+        do {
+            if let url = lastSavedImageURL {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } else {
+                let directory = try ImageSaveService.outputDirectory()
+                NSWorkspace.shared.open(directory)
+            }
+        } catch {
+            errorMessage = "Failed to open output folder: \(error.localizedDescription)"
+        }
         #endif
+    }
+
+    /// Clear the generated image and checkpoints from the preview pane.
+    func clearPreview() {
+        generatedImage = nil
+        checkpointImages.removeAll()
+        statusMessage = "Preview cleared"
     }
 
     /// Save the formatted input image (Image Formatting applied to the whole
@@ -1400,7 +1414,7 @@ class ImageGenerationViewModel: ObservableObject {
         await pipeline?.clearAll()
         pipeline = nil
         Memory.clearCache()
-        statusMessage = "Pipeline cleared"
+        statusMessage = "Models unloaded"
     }
 
     // MARK: - Recommended Defaults (Black Forest Labs)

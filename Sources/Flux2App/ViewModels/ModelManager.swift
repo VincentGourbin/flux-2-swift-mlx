@@ -330,19 +330,36 @@ class ModelManager: ObservableObject {
         memoryStats = MemoryStats.current
     }
 
+    /// Hugging Face token from the environment or app Settings.
+    var huggingFaceToken: String? {
+        let token = ProcessInfo.processInfo.environment["HF_TOKEN"]
+            ?? UserDefaults.standard.string(forKey: "hfToken")
+        guard let token, !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return token
+    }
+
     /// Download a transformer variant
     func downloadTransformer(_ variant: ModelRegistry.TransformerVariant) async {
         guard !isDownloading else { return }
 
+        if variant.isGated, huggingFaceToken == nil {
+            errorMessage = """
+            \(variant.huggingFaceRepo) requires a Hugging Face token. \
+            Open Flux2App → Settings (⌘,), paste your token, and accept the model license at \
+            \(variant.huggingFaceURL)
+            """
+            return
+        }
+
+        errorMessage = nil
         isDownloading = true
         downloadProgress = 0
         downloadMessage = "Starting download of \(variant.rawValue) transformer..."
 
         do {
-            let downloader = Flux2ModelDownloader(
-                hfToken: ProcessInfo.processInfo.environment["HF_TOKEN"]
-                    ?? UserDefaults.standard.string(forKey: "hfToken")
-            )
+            let downloader = Flux2ModelDownloader(hfToken: huggingFaceToken)
 
             let component = ModelRegistry.ModelComponent.transformer(variant)
             _ = try await downloader.download(component) { progress, message in

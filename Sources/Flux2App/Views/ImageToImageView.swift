@@ -108,6 +108,9 @@ struct ImageToImageView: View {
             saveProjectAs: { viewModel.saveProjectAs() }
         ))
         .focusedSceneValue(\.generationProjectName, viewModel.projectDisplayName)
+        .focusedSceneValue(\.generationUnloadModels) {
+            Task { await viewModel.clearPipeline() }
+        }
     }
 
     // MARK: - Reference Images Section
@@ -432,6 +435,13 @@ struct ImageToImageView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+
+            if let error = modelManager.errorMessage {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -721,13 +731,13 @@ struct ImageToImageView: View {
                     .disabled(viewModel.referenceImages.count >= viewModel.selectedModel.maxReferenceImages)
                 }
 
-                Button(action: {
-                    Task { await viewModel.clearPipeline() }
-                }) {
-                    Label("Clear Memory", systemImage: "trash")
+                Button(action: { viewModel.clearPreview() }) {
+                    Label("Clear Preview", systemImage: "xmark.circle")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .disabled(!viewModel.hasPreviewContent)
+                .help("Clear the generated image from the preview pane")
 
                 // Save-related controls (flush-right) once there's an image to work with.
                 if !viewModel.referenceImages.isEmpty {
@@ -741,8 +751,7 @@ struct ImageToImageView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(viewModel.lastSavedImageURL == nil)
-                    .help("Reveal the last saved image in Finder")
+                    .help("Open the image output folder in Finder")
 
                     Button(action: { viewModel.saveInputImage() }) {
                         Label("Save Input", systemImage: "square.and.arrow.down.on.square")
@@ -784,17 +793,10 @@ struct ImageToImageView: View {
                             adjustedSize: viewModel.adjustedGenerationSize,
                             sizingMethod: viewModel.sizingMethod,
                             overlayOpacity: viewModel.preparationOverlayOpacity,
-                            processArea: Binding(
-                                get: {
-                                    viewModel.processArea ?? CGRect(x: 0.35, y: 0.35, width: 0.30, height: 0.30)
-                                },
-                                set: { viewModel.setProcessArea($0) }
-                            ),
                             contextArea: Binding(
                                 get: { viewModel.contextArea },
                                 set: { viewModel.setContextArea($0) }
-                            ),
-                            hasProcessSelection: viewModel.processArea != nil
+                            )
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -1068,29 +1070,27 @@ struct ImagePreparationPreview: View {
     let adjustedSize: (width: Int, height: Int)
     let sizingMethod: ImageSizingMethod
     let overlayOpacity: Double
-    @Binding var processArea: CGRect
     @Binding var contextArea: CGRect
-    /// Whether a process selection (the dashed marquee) currently exists.
-    var hasProcessSelection: Bool
 
     @State private var activeDrag: DragMode?
     @State private var selectionStart: CGPoint?
+    /// Context rect captured at drag start, restored if the drag is too small
+    /// to be an intentional new region (so a stray click doesn't collapse it).
+    @State private var contextBeforeDrag: CGRect?
 
     private enum DragMode {
         case contextLeft
         case contextRight
         case contextTop
         case contextBottom
-        case processSelection
+        case contextSelection
     }
 
     var body: some View {
         GeometryReader { geometry in
             let imageRect = fittedImageRect(in: geometry.size)
-            // The dashed selection draws while it exists or while it is being
-            // dragged out. The parent-derived `hasProcessSelection` lags the
-            // in-flight drag frame, so `activeDrag` provides immediate feedback.
-            let showsSelection = hasProcessSelection || activeDrag == .processSelection
+            let showsFormattingOverlay = activeDrag == nil && !formattingExcludedRects().isEmpty
+            let showsBarnDoorOverlay = !isContextFullyOpen
 
             ZStack {
                 Color(nsColor: .textBackgroundColor)
@@ -1101,40 +1101,29 @@ struct ImagePreparationPreview: View {
                     .frame(width: imageRect.width, height: imageRect.height)
                     .position(x: imageRect.midX, y: imageRect.midY)
 
-                // Image Formatting feedback: semi-transparent regions show what
-                // crop discards or where pad letterboxing lands. Sits above the
-                // image but below the barn-door overlay.
-                formattingExclusionOverlay(in: imageRect)
-                    .fill(
-                        Color.black.opacity(overlayOpacity),
-                        style: FillStyle(eoFill: true)
-                    )
-                    .allowsHitTesting(false)
-
-                // Barn doors: the region outside the context area is darkened.
-                // Fully-open doors (context == whole image) darken nothing.
-                contextExclusionOverlay(in: imageRect)
-                    .fill(
-                        Color.black.opacity(0.72),
-                        style: FillStyle(eoFill: true)
-                    )
-
-                // Selection: a standard dashed marquee inside the context area.
-                // Two-tone marching ants stay legible on light and dark image
-                // content: black dashes fill the gaps left by the white dashes.
-                if showsSelection {
-                    processBorder(in: imageRect)
-                        .stroke(
-                            Color.black.opacity(0.85),
-                            style: StrokeStyle(lineWidth: 2, dash: [5, 5])
+                // Crop/pad preview bands — hidden while dragging so barn-door
+                // moves don't spawn shifting rectangles.
+                if showsFormattingOverlay {
+                    formattingExclusionOverlay(in: imageRect)
+                        .fill(
+                            Color.black.opacity(overlayOpacity),
+                            style: FillStyle(eoFill: false, antialiased: false)
                         )
-                    processBorder(in: imageRect)
-                        .stroke(
-                            Color.white,
-                            style: StrokeStyle(lineWidth: 2, dash: [5, 5], dashPhase: 5)
+                        .allowsHitTesting(false)
+                }
+
+                // Barn doors: darken only when the context is narrower than
+                // the full image. Skip when fully open to avoid eoFill hairlines.
+                if showsBarnDoorOverlay {
+                    contextExclusionOverlay(in: imageRect)
+                        .fill(
+                            Color.black.opacity(0.72),
+                            style: FillStyle(eoFill: false, antialiased: false)
                         )
+                        .allowsHitTesting(false)
                 }
             }
+            .compositingGroup()
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
@@ -1153,6 +1142,14 @@ struct ImagePreparationPreview: View {
                 #endif
             }
         }
+    }
+
+    private var isContextFullyOpen: Bool {
+        let epsilon: CGFloat = 0.0001
+        return abs(contextArea.minX) < epsilon
+            && abs(contextArea.minY) < epsilon
+            && abs(contextArea.width - 1) < epsilon
+            && abs(contextArea.height - 1) < epsilon
     }
 
     private func fittedImageRect(in size: CGSize) -> CGRect {
@@ -1192,7 +1189,9 @@ struct ImagePreparationPreview: View {
 
         var path = Path()
         for rect in excluded {
-            path.addRect(displayRect(for: rect, in: imageRect))
+            let clipped = rect.intersection(contextArea)
+            guard clipped.width > 0, clipped.height > 0 else { continue }
+            path.addRect(displayRect(for: clipped, in: imageRect))
         }
         return path
     }
@@ -1300,17 +1299,41 @@ struct ImagePreparationPreview: View {
     }
 
     private func contextExclusionOverlay(in imageRect: CGRect) -> Path {
-        let contextRect = displayRect(for: contextArea, in: imageRect)
+        let bands = exclusionBands(
+            outer: CGRect(x: 0, y: 0, width: 1, height: 1),
+            inner: contextArea
+        )
+        let contextRect = pixelAligned(displayRect(for: contextArea, in: imageRect))
         var path = Path()
-        path.addRect(imageRect)
-        path.addRect(contextRect)
+        for band in bands {
+            var rect = pixelAligned(displayRect(for: band, in: imageRect))
+            rect = bleedBandRectTowardContext(rect, contextRect: contextRect)
+            guard rect.width > 0, rect.height > 0 else { continue }
+            path.addRect(rect)
+        }
         return path
     }
 
-    private func processBorder(in imageRect: CGRect) -> Path {
-        Path { path in
-            path.addRect(displayRect(for: processArea, in: imageRect))
+    /// Expand a barn-door band 1px into the lit context so antialiased edges
+    /// don't leave a grey hairline on the live region.
+    private func bleedBandRectTowardContext(_ band: CGRect, contextRect: CGRect) -> CGRect {
+        let bleed: CGFloat = 1
+        var rect = band
+        if abs(rect.maxX - contextRect.minX) <= bleed {
+            rect.size.width += bleed
         }
+        if abs(rect.minX - contextRect.maxX) <= bleed {
+            rect.origin.x -= bleed
+            rect.size.width += bleed
+        }
+        if abs(rect.maxY - contextRect.minY) <= bleed {
+            rect.size.height += bleed
+        }
+        if abs(rect.minY - contextRect.maxY) <= bleed {
+            rect.origin.y -= bleed
+            rect.size.height += bleed
+        }
+        return rect
     }
 
     private func dragGesture(in imageRect: CGRect) -> some Gesture {
@@ -1335,8 +1358,8 @@ struct ImagePreparationPreview: View {
                     updateContextTop(to: snapY(point.y), in: imageRect)
                 case .contextBottom:
                     updateContextBottom(to: snapY(point.y), in: imageRect)
-                case .processSelection:
-                    updateProcessSelection(to: point, in: imageRect)
+                case .contextSelection:
+                    updateContextSelection(to: point, in: imageRect)
                 case nil:
                     break
                 }
@@ -1344,6 +1367,7 @@ struct ImagePreparationPreview: View {
             .onEnded { _ in
                 activeDrag = nil
                 selectionStart = nil
+                contextBeforeDrag = nil
                 #if canImport(AppKit)
                 NSCursor.arrow.set()
                 #endif
@@ -1351,17 +1375,16 @@ struct ImagePreparationPreview: View {
     }
 
     private func dragMode(for location: CGPoint, in imageRect: CGRect) -> DragMode? {
-        // Barn-door edges take priority within their 20px grab zone. This also
-        // enforces "no selection within 20px of a barn door": those presses
-        // become edge drags, never selections.
+        // Barn-door edges take priority within their 20px grab zone, so an edge
+        // adjustment never starts a new region by accident.
         if let edge = contextEdge(at: location, in: imageRect) {
             return edge
         }
 
-        // Anywhere else inside the context area starts a process selection.
-        guard imageRect.contains(location) else { return nil }
-        let point = normalizedPoint(for: location, in: imageRect)
-        return contextArea.contains(point) ? .processSelection : nil
+        // Dragging anywhere else inside the image draws a new live region
+        // (the barn-door context). The whole region is what gets processed and
+        // composited back, so there is no separate paste-back selection.
+        return imageRect.contains(location) ? .contextSelection : nil
     }
 
     private func contextEdge(at location: CGPoint, in imageRect: CGRect) -> DragMode? {
@@ -1387,31 +1410,41 @@ struct ImagePreparationPreview: View {
 
     #if canImport(AppKit)
     private func cursor(for location: CGPoint, in imageRect: CGRect) -> NSCursor {
-        // Within 20px of a barn-door edge -> resize. Inside the lit context
-        // area -> crosshair (selection). Dark region / outside image -> arrow.
+        // Within 20px of a barn-door edge -> resize. Anywhere else on the image
+        // -> crosshair (draw a new region). Outside image -> arrow.
         switch contextEdge(at: location, in: imageRect) {
         case .contextLeft, .contextRight:
             return .resizeLeftRight
         case .contextTop, .contextBottom:
             return .resizeUpDown
         default:
-            let point = normalizedPoint(for: location, in: imageRect)
-            return imageRect.contains(location) && contextArea.contains(point) ? .crosshair : .arrow
+            return imageRect.contains(location) ? .crosshair : .arrow
         }
     }
     #endif
 
-    private func updateProcessSelection(to point: CGPoint, in imageRect: CGRect) {
+    /// Draw a brand-new barn-door region from a press-drag. Tiny drags (a stray
+    /// click) restore the region captured at drag start instead of collapsing it.
+    private func updateContextSelection(to point: CGPoint, in imageRect: CGRect) {
         guard let selectionStart else { return }
-        // A selection must stay at least 20px inside every barn door.
-        let bounds = selectionBounds(in: imageRect)
-        let end = clamp(point, to: bounds)
-        let start = clamp(selectionStart, to: bounds)
-        let minX = min(start.x, end.x)
-        let minY = min(start.y, end.y)
-        let width = max(abs(end.x - start.x), 1 / CGFloat(max(image.width, 1)))
-        let height = max(abs(end.y - start.y), 1 / CGFloat(max(image.height, 1)))
-        processArea = CGRect(x: minX, y: minY, width: width, height: height)
+        if contextBeforeDrag == nil { contextBeforeDrag = contextArea }
+
+        let start = CGPoint(x: snapX(selectionStart.x), y: snapY(selectionStart.y))
+        let end = CGPoint(x: snapX(point.x), y: snapY(point.y))
+        let rect = CGRect(
+            x: min(start.x, end.x),
+            y: min(start.y, end.y),
+            width: abs(end.x - start.x),
+            height: abs(end.y - start.y)
+        )
+
+        let minWidthNorm = 12 / max(imageRect.width, 1)
+        let minHeightNorm = 12 / max(imageRect.height, 1)
+        if rect.width >= minWidthNorm, rect.height >= minHeightNorm {
+            contextArea = rect
+        } else if let snapshot = contextBeforeDrag {
+            contextArea = snapshot
+        }
     }
 
     private func updateContextLeft(to x: CGFloat, in imageRect: CGRect) {
@@ -1458,38 +1491,21 @@ struct ImagePreparationPreview: View {
         )
     }
 
-    /// Normalized 20px margin used to keep barn doors and the selection apart.
-    private func selectionMargin(in imageRect: CGRect) -> (x: CGFloat, y: CGFloat) {
-        let pixels: CGFloat = 20
-        return (pixels / max(imageRect.width, 1), pixels / max(imageRect.height, 1))
-    }
-
-    /// The region a selection may occupy: the context area inset by 20px.
-    private func selectionBounds(in imageRect: CGRect) -> CGRect {
-        let margin = selectionMargin(in: imageRect)
-        let inset = contextArea.insetBy(dx: margin.x, dy: margin.y)
-        guard inset.width > 0, inset.height > 0 else {
-            return CGRect(x: contextArea.midX, y: contextArea.midY, width: 0, height: 0)
-        }
-        return inset
-    }
-
-    // Each barn door stops 20px short of the selection when one exists,
-    // otherwise it can close until the context reaches its minimum size.
+    // Each barn door can close until the context reaches its minimum size.
     private func barnDoorLimitLeft(in imageRect: CGRect) -> CGFloat {
-        hasProcessSelection ? processArea.minX - selectionMargin(in: imageRect).x : contextArea.maxX - minimumContextWidth
+        contextArea.maxX - minimumContextWidth
     }
 
     private func barnDoorLimitRight(in imageRect: CGRect) -> CGFloat {
-        hasProcessSelection ? processArea.maxX + selectionMargin(in: imageRect).x : contextArea.minX + minimumContextWidth
+        contextArea.minX + minimumContextWidth
     }
 
     private func barnDoorLimitTop(in imageRect: CGRect) -> CGFloat {
-        hasProcessSelection ? processArea.minY - selectionMargin(in: imageRect).y : contextArea.maxY - minimumContextHeight
+        contextArea.maxY - minimumContextHeight
     }
 
     private func barnDoorLimitBottom(in imageRect: CGRect) -> CGFloat {
-        hasProcessSelection ? processArea.maxY + selectionMargin(in: imageRect).y : contextArea.minY + minimumContextHeight
+        contextArea.minY + minimumContextHeight
     }
 
     private var minimumContextWidth: CGFloat {
@@ -1501,25 +1517,30 @@ struct ImagePreparationPreview: View {
     }
 
     private func displayRect(for normalized: CGRect, in imageRect: CGRect) -> CGRect {
-        CGRect(
-            x: imageRect.minX + normalized.minX * imageRect.width,
-            y: imageRect.minY + normalized.minY * imageRect.height,
-            width: normalized.width * imageRect.width,
-            height: normalized.height * imageRect.height
+        pixelAligned(
+            CGRect(
+                x: imageRect.minX + normalized.minX * imageRect.width,
+                y: imageRect.minY + normalized.minY * imageRect.height,
+                width: normalized.width * imageRect.width,
+                height: normalized.height * imageRect.height
+            )
         )
+    }
+
+    /// Floor/ceil to whole pixels so stacked overlays don't leave 1px gaps.
+    private func pixelAligned(_ rect: CGRect) -> CGRect {
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let minX = (rect.minX * scale).rounded(.down) / scale
+        let minY = (rect.minY * scale).rounded(.down) / scale
+        let maxX = (rect.maxX * scale).rounded(.up) / scale
+        let maxY = (rect.maxY * scale).rounded(.up) / scale
+        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
 
     private func normalizedPoint(for location: CGPoint, in imageRect: CGRect) -> CGPoint {
         CGPoint(
             x: min(max((location.x - imageRect.minX) / imageRect.width, 0), 1),
             y: min(max((location.y - imageRect.minY) / imageRect.height, 0), 1)
-        )
-    }
-
-    private func clamp(_ point: CGPoint, to rect: CGRect) -> CGPoint {
-        CGPoint(
-            x: min(max(point.x, rect.minX), rect.maxX),
-            y: min(max(point.y, rect.minY), rect.maxY)
         )
     }
 
