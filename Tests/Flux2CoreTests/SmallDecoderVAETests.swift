@@ -440,7 +440,8 @@ final class PipelineVAEVariantTests: XCTestCase {
 
     func testPipelineDefaultVAEVariant() {
         let pipeline = Flux2Pipeline(model: .klein4B, quantization: .balanced)
-        XCTAssertEqual(pipeline.vaeVariant, .standard)
+        // Default is .smallDecoder since dce6fc5 ("Default vaeVariant to .smallDecoder across SDK and CLI")
+        XCTAssertEqual(pipeline.vaeVariant, .smallDecoder)
     }
 
     func testPipelineSmallDecoderVariant() {
