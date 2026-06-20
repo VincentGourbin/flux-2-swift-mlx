@@ -16,7 +16,9 @@ let package = Package(
         .executable(name: "Flux2App", targets: ["Flux2App"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.30.2"),
+        // Pinned exactly: mlx-swift introduces breaking API changes even in patch
+        // releases (e.g. AdamW TupleState -> AdamState in 0.31.4). Bump deliberately.
+        .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.31.4"),
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.2.0"),
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.1.6"),
         .package(url: "https://github.com/jpsim/Yams", from: "5.1.0"),
