@@ -8,12 +8,19 @@ import FluxTextEncoders
 import ImageIO
 import UniformTypeIdentifiers
 
-/// Configure custom models directory for both registries
+/// Configure custom models directory for both registries.
 func configureModelsDirectory(_ path: String?) {
-    guard let path = path else { return }
-    let url = URL(fileURLWithPath: path)
-    ModelRegistry.customModelsDirectory = url
-    TextEncoderModelDownloader.customModelsDirectory = url
+    if let path {
+        let url = URL(fileURLWithPath: path)
+        ModelRegistry.customModelsDirectory = url
+        TextEncoderModelDownloader.customModelsDirectory = url
+        TextEncoderModelDownloader.reconfigureHubApi()
+        return
+    }
+
+    ModelRegistry.applyLaunchModelsDirectoryOverride()
+    guard let custom = ModelRegistry.customModelsDirectory else { return }
+    TextEncoderModelDownloader.customModelsDirectory = custom
     TextEncoderModelDownloader.reconfigureHubApi()
 }
 

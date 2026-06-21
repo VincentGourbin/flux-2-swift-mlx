@@ -13,6 +13,10 @@ struct Flux2App: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var modelManager = ModelManager()
 
+    init() {
+        ModelsDirectoryBootstrap.apply()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()

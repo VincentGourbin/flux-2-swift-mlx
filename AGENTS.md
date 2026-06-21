@@ -70,12 +70,45 @@ Fixture: `Tests/Fixtures/VMSmoke/project.json` (self-contained I2I project with 
 | --- | --- |
 | `F2SM_PROJECT` | Absolute path to a generation project JSON. Opens on launch instead of last-saved project. |
 | `F2SM_SMOKE_MARKER` | Optional. When set with `F2SM_PROJECT`, writes a marker file on load: first line `ok` or `error`, then detail. |
+| `F2SM_MODELS_DIR` | Optional. Overrides the model cache directory (Flux2App + Flux2CLI). Auto-detected when `/Volumes/My Shared Files/flux2-model-cache` exists. |
 
 ```bash
 F2SM_PROJECT=/tmp/flux2-smoke/VMSmoke/project.json \
 F2SM_SMOKE_MARKER=/tmp/flux2-smoke-ready \
+F2SM_MODELS_DIR="/Volumes/My Shared Files/flux2-model-cache" \
 ./Flux2App &
 ```
+
+### Models in the Tart VM
+
+**Circus** (Tart Virtual Machine → **Shared Directories** grid) builds `--dir` flags at launch. Default row:
+
+| Include | Full Path | Shortcut |
+| --- | --- | --- |
+| ✓ | `/Users/drwevans/Library/Caches/models` | `flux2-model-cache` |
+
+Tart flag: `--dir=flux2-model-cache:/Users/drwevans/Library/Caches/models:ro`
+
+Guest path: `/Volumes/My Shared Files/flux2-model-cache` (must keep shortcut **`flux2-model-cache`** unless you also set `F2SM_MODELS_DIR`).
+
+Flux2App auto-detects that guest path. `bin/vm-smoke.sh` requires it and passes `F2SM_MODELS_DIR`.
+
+**Model cache probes** (mount up; lists what weights are visible):
+
+```bash
+bin/vm-smoke-models.sh
+```
+
+**CLI generate smoke** (Klein 4B I2I when `FLUX.2-klein-4B-8bit` exists on the shared cache):
+
+```bash
+bin/vm-smoke-generate.sh
+# → /tmp/flux2-smoke-i2i.png  (exit 2 = skipped, weights missing)
+```
+
+Uses `Tests/Fixtures/VMSmoke/reference.png`, `--model klein-4b`, 4 steps at 512×384. Download Klein weights to the **host** cache first (`flux2 download --model klein-4b`). Dev bf16 will not fit the 64 GB guest.
+
+Shares are fixed at **launch** — shut down and **Start** from Circus after changing the list. A VM already running without the share will not see host weights until restart.
 
 **Manual recipe:**
 

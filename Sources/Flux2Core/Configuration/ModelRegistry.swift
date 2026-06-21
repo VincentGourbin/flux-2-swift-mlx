@@ -432,6 +432,33 @@ public enum ModelRegistry {
     /// Set this before any download/check call to redirect model storage.
     nonisolated(unsafe) public static var customModelsDirectory: URL?
 
+    /// Tart virtio-fs mount for the host FLUX / MLX model cache (`--dir=flux2-model-cache:…`).
+    public static let tartVirtualMacFlux2ModelCacheMountName = "flux2-model-cache"
+
+    public static let tartVirtualMacSharedModelsPath =
+        "/Volumes/My Shared Files/\(tartVirtualMacFlux2ModelCacheMountName)"
+
+    /// Optional launch override (`F2SM_MODELS_DIR` or the Tart shared models mount).
+    public static let modelsDirectoryEnvironmentKey = "F2SM_MODELS_DIR"
+
+    /// Apply `F2SM_MODELS_DIR` or the Tart shared mount when no custom directory is set yet.
+    public static func applyLaunchModelsDirectoryOverride() {
+        guard customModelsDirectory == nil else { return }
+
+        if let path = ProcessInfo.processInfo.environment[modelsDirectoryEnvironmentKey],
+           !path.isEmpty {
+            customModelsDirectory = URL(fileURLWithPath: path, isDirectory: true)
+            return
+        }
+
+        let shared = URL(fileURLWithPath: tartVirtualMacSharedModelsPath, isDirectory: true)
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: shared.path, isDirectory: &isDirectory),
+           isDirectory.boolValue {
+            customModelsDirectory = shared
+        }
+    }
+
     /// Base directory for model storage.
     /// Uses customModelsDirectory if set, otherwise falls back to ~/Library/Caches/models
     public static var modelsDirectory: URL {

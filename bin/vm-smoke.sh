@@ -8,6 +8,7 @@ REMOTE_DIR="${REMOTE_DIR:-/tmp/flux2-smoke}"
 FIXTURE="${FIXTURE:-$ROOT/Tests/Fixtures/VMSmoke/project.json}"
 REMOTE_PROJECT="${REMOTE_PROJECT:-$REMOTE_DIR/VMSmoke/project.json}"
 MARKER="${MARKER:-/tmp/flux2-smoke-ready}"
+VM_MODELS_DIR="${VM_MODELS_DIR:-/Volumes/My Shared Files/flux2-model-cache}"
 OUT="${OUT:-/tmp/flux2-smoke.png}"
 CONFIG="${CONFIG:-debug}"
 MARKER_WAIT_SECONDS="${MARKER_WAIT_SECONDS:-30}"
@@ -27,13 +28,19 @@ cd "$ROOT"
 swift build --product Flux2App -c "$CONFIG_LC"
 "$ROOT/bin/build-mlx-metallib.sh"
 
+if ! ssh -o ControlPath=none "$VM" "test -d '$VM_MODELS_DIR/black-forest-labs'"; then
+  echo "Models mount not found in guest: $VM_MODELS_DIR" >&2
+  echo "Shut down the VM and start it from Circus (or tart run --dir=models:$HOME/Library/Caches/models:ro)." >&2
+  exit 1
+fi
+
 ssh -o ControlPath=none "$VM" "mkdir -p '$(dirname "$REMOTE_PROJECT")'"
 scp "$BUILD_DIR/Flux2App" "$BUILD_DIR/mlx.metallib" "$VM:$REMOTE_DIR/"
 scp "$FIXTURE" "$VM:$REMOTE_PROJECT"
 
 ssh -o ControlPath=none "$VM" "pkill -x Flux2App 2>/dev/null || true; rm -f '$MARKER'"
 
-ssh -o ControlPath=none "$VM" "cd '$REMOTE_DIR' && F2SM_PROJECT='$REMOTE_PROJECT' F2SM_SMOKE_MARKER='$MARKER' ./Flux2App >/tmp/flux2-smoke.log 2>&1 &"
+ssh -o ControlPath=none "$VM" "cd '$REMOTE_DIR' && F2SM_PROJECT='$REMOTE_PROJECT' F2SM_SMOKE_MARKER='$MARKER' F2SM_MODELS_DIR='$VM_MODELS_DIR' ./Flux2App >/tmp/flux2-smoke.log 2>&1 &"
 
 deadline=$((SECONDS + MARKER_WAIT_SECONDS))
 while (( SECONDS < deadline )); do
