@@ -14,7 +14,7 @@ import AppKit
 
 struct ImageToImageView: View {
     @EnvironmentObject var modelManager: ModelManager
-    @StateObject private var viewModel = ImageGenerationViewModel()
+    @StateObject private var viewModel = ImageGenerationViewModel(loadsEnvironmentProject: true)
     @State private var isTargetedForDrop = false
     @AppStorage("imageSaveUpscaleBy") private var imageSaveUpscaleBy = 1.0
 

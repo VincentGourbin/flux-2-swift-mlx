@@ -12,7 +12,14 @@ import MLX
 struct ContentView: View {
     @EnvironmentObject var modelManager: ModelManager
     @StateObject private var chatViewModel = ChatViewModel()
-    @State private var selectedTab = 0
+    /// Open Image to Image when `F2SM_PROJECT` is set so smoke hooks run on launch.
+    private static var initialSelectedTab: Int {
+        if let path = ProcessInfo.processInfo.environment["F2SM_PROJECT"], !path.isEmpty {
+            return 5
+        }
+        return 0
+    }
+    @State private var selectedTab = Self.initialSelectedTab
     // Set by the focused image view; falls back to the app name on other tabs.
     @FocusedValue(\.generationProjectName) private var projectName
 

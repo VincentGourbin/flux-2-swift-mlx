@@ -54,11 +54,27 @@ xcodebuild -downloadComponent MetalToolchain   # required for bin/build-mlx-meta
 
 Without the Metal Toolchain component, `xcodebuild` fails with `cannot execute tool 'metal'`.
 
-**One-shot host → VM smoke** (build on host, deploy, screenshot):
+**One-shot host → VM smoke** (build on host, deploy, open fixture project, verify marker, screenshot):
 
 ```bash
 bin/vm-smoke.sh
 # → /tmp/flux2-smoke.png
+# Waits for /tmp/flux2-smoke-ready (F2SM_SMOKE_MARKER) with first line `ok`.
+```
+
+Fixture: `Tests/Fixtures/VMSmoke/project.json` (self-contained I2I project with embedded reference PNG).
+
+**Launch hooks** (agent / smoke):
+
+| Env var | Purpose |
+| --- | --- |
+| `F2SM_PROJECT` | Absolute path to a generation project JSON. Opens on launch instead of last-saved project. |
+| `F2SM_SMOKE_MARKER` | Optional. When set with `F2SM_PROJECT`, writes a marker file on load: first line `ok` or `error`, then detail. |
+
+```bash
+F2SM_PROJECT=/tmp/flux2-smoke/VMSmoke/project.json \
+F2SM_SMOKE_MARKER=/tmp/flux2-smoke-ready \
+./Flux2App &
 ```
 
 **Manual recipe:**

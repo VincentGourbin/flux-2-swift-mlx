@@ -172,9 +172,16 @@ class ImageGenerationViewModel: ObservableObject {
     private var skipNextModelDefaultApplication = false
 
     // MARK: - Init with defaults
-    init() {
+    private let loadsEnvironmentProject: Bool
+
+    init(loadsEnvironmentProject: Bool = false) {
+        self.loadsEnvironmentProject = loadsEnvironmentProject
         applyRecommendedDefaults(for: selectedModel)
-        loadLastProjectIfAvailable()
+        if loadsEnvironmentProject {
+            loadStartupProjectIfAvailable()
+        } else {
+            loadLastProjectIfAvailable()
+        }
     }
 
     // MARK: - Computed Properties
@@ -362,6 +369,11 @@ class ImageGenerationViewModel: ObservableObject {
     }
 
     private static let lastProjectURLKey = "lastGenerationProjectURL"
+    /// Absolute path to a generation project JSON file. When set, opens on launch
+    /// instead of restoring `lastGenerationProjectURL` (VM smoke / agent hooks).
+    private static let projectEnvironmentKey = "F2SM_PROJECT"
+    /// When set alongside `F2SM_PROJECT`, writes `ok` or `error` plus detail on load.
+    private static let smokeMarkerEnvironmentKey = "F2SM_SMOKE_MARKER"
 
     // MARK: - Image Management
 
@@ -1011,6 +1023,55 @@ class ImageGenerationViewModel: ObservableObject {
             statusMessage = "Opened project \(url.lastPathComponent)"
         } catch {
             errorMessage = "Failed to open project: \(error.localizedDescription)"
+        }
+    }
+
+    private func loadStartupProjectIfAvailable() {
+        if let envPath = ProcessInfo.processInfo.environment[Self.projectEnvironmentKey],
+           !envPath.isEmpty {
+            loadProjectFromEnvironment(path: envPath)
+            return
+        }
+        loadLastProjectIfAvailable()
+    }
+
+    private func loadProjectFromEnvironment(path: String) {
+        let url = URL(fileURLWithPath: path)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            let message = "F2SM_PROJECT file not found: \(path)"
+            errorMessage = message
+            writeSmokeMarker(outcome: "error", detail: message)
+            return
+        }
+
+        do {
+            try loadProject(from: url)
+            currentProjectURL = url
+            UserDefaults.standard.set(url.path, forKey: Self.lastProjectURLKey)
+            statusMessage = "Opened project \(url.lastPathComponent) (F2SM_PROJECT)"
+            writeSmokeMarker(
+                outcome: "ok",
+                detail: "project=\(url.path)\nreferences=\(referenceImages.count)\nprompt=\(prompt)"
+            )
+        } catch {
+            let message = "Failed to open F2SM_PROJECT: \(error.localizedDescription)"
+            errorMessage = message
+            currentProjectURL = nil
+            writeSmokeMarker(outcome: "error", detail: message)
+        }
+    }
+
+    private func writeSmokeMarker(outcome: String, detail: String) {
+        guard let markerPath = ProcessInfo.processInfo.environment[Self.smokeMarkerEnvironmentKey],
+              !markerPath.isEmpty else {
+            return
+        }
+
+        let body = "\(outcome)\n\(detail)\n"
+        do {
+            try body.write(toFile: markerPath, atomically: true, encoding: .utf8)
+        } catch {
+            NSLog("F2SM_SMOKE_MARKER write failed: \(error.localizedDescription)")
         }
     }
 
