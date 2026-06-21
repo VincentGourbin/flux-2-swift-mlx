@@ -1,6 +1,6 @@
 # Circus Tart dev-environment API (handoff)
 
-**Status:** proposal / handoff. Not built yet.
+**Status:** proposal / handoff. Not built yet. **v1 interface frozen 2026-06-21** — see "v1 contract (frozen)".
 **Audience:** the Circus (`utility-be-circus`) agent, plus any genAI app repo that
 smoke-tests inside the Tart guest (image, audio, DAW plugins, standalone apps).
 **Origin:** drafted from `flux-2-swift-mix` VM smoke work; generalized because the
@@ -62,8 +62,99 @@ guest; each app repo owns what "success" means.
 }
 ```
 
-On failure, a clear reason — `vm_off`, `ssh_timeout`, `mount_missing:<name>` —
-so the caller surfaces it instead of looping.
+On failure, a clear reason (frozen enum in the contract below) so the caller
+surfaces it instead of looping.
+
+---
+
+## v1 contract (frozen 2026-06-21)
+
+This section is **authoritative**. Everything else in this doc is rationale; if
+prose disagrees with the contract, the contract wins. Circus and every consumer
+repo build to exactly this shape. Within v1, changes are **additive only** — any
+breaking change bumps to v2.
+
+### Stable surface = the `circus` CLI
+
+The contract is a shell-callable `circus` command (a thin CLI Circus ships that
+talks to the running app over its local transport). **The wire transport
+beneath it — localhost HTTP, unix socket, whatever — is Circus's choice and is
+*not* part of the contract.** Consumers depend only on the CLI, which is also
+what lets a mock `circus` shim stand in before the real server exists.
+
+- `circus --api-version` → prints `1`. Callers may assert on it.
+- Global flags: `--profile <name>`, `--timeout <seconds>` (integer seconds), `--json`.
+- Exit codes (all verbs except `exec`): `0` success / condition met; `1` failure
+  (reason on stderr, and in `error` under `--json`); `124` Circus-side timeout.
+- Human-readable logs go to stderr; machine output to stdout (JSON only with `--json`).
+- Bracketed numbers below are **advisory defaults**; the frozen part is each flag
+  and its seconds unit, not the default value.
+
+### Verbs
+
+| Verb | Signature | Exit |
+| --- | --- | --- |
+| ensure-ready | `circus ensure-ready --profile <name> [--timeout 180] [--json]` | `0` ready; `1` not ready |
+| restart | `circus restart --profile <name> [--timeout 240] [--json]` | `0` ready after restart; `1` else |
+| exec | `circus exec [--env K=V]… [--timeout <s>] -- <cmd>…` | guest command's exit code; `124` if Circus timeout fired |
+| put | `circus put --host <path> --guest <abs-guest-path>` | `0` / `1` |
+| get | `circus get --guest <abs-guest-path> --host <path>` | `0` / `1` |
+| wait | `circus wait (--guest <path> [--min-bytes <n>] \| --process <name> \| --port <n>) [--timeout 60]` | `0` met; `124` timeout |
+
+Frozen behaviour:
+
+- **`exec`** runs one command in the active profile's guest. `--env` repeats and
+  is injected into the guest process environment; everything after `--` is the
+  command, run via `sh -lc`; stdout/stderr stream through. Circus never retries.
+- `exec` is fire-and-return. To background a guest process, end the command with
+  `&` and use `wait` for readiness — Circus does not track guest process
+  lifecycle beyond `wait --process`.
+- **`put`/`get`** are single transfers; `--guest` is always an absolute guest path.
+- **`wait`** polls exactly one of `--guest` / `--process` / `--port`.
+
+### `ensure-ready` / `restart` JSON (`--json`)
+
+```json
+{
+  "ready": false,
+  "apiVersion": 1,
+  "vmStatus": "running",
+  "sshHost": "tart-virtual-mac",
+  "error": "mount_missing:flux2-model-cache",
+  "mounts": [
+    { "name": "flux2-model-cache", "guestPath": "/Volumes/My Shared Files/flux2-model-cache", "ok": false }
+  ]
+}
+```
+
+- `ready` (bool) · `apiVersion` (int `1`) · `vmStatus` (`running|stopped|starting|error`)
+  · `sshHost` (string) · `mounts` (array of `{name, guestPath, ok}`).
+- `error` is present only when `ready` is `false`, and is one of the reason
+  strings below.
+- `guestPath` is always `/Volumes/My Shared Files/<name>`.
+
+### Reason strings (frozen enum)
+
+`vm_off` · `vm_start_failed` · `ssh_timeout` · `guest_not_operating` ·
+`mount_missing:<name>` · `profile_unknown:<name>`
+
+New reasons may be **added** within v1; callers must treat an unrecognised
+reason as a generic failure rather than crashing.
+
+### Profile schema (frozen fields)
+
+```text
+name:   string                 # the --profile value
+ram:    32 | 64                # GB; applied via `tart set --memory`
+mounts:                        # each → tart run --dir=<name>:<hostPath>:<mode>
+  - name:     string           # also the guest dir under /Volumes/My Shared Files/
+    hostPath: string           # ~ allowed
+    mode:     ro | rw
+```
+
+Profiles live in Circus (UI/config) and are referenced by `name`. A consumer
+repo hard-codes only the profile **name** and the mount **names** it reads —
+never host paths.
 
 ---
 
@@ -90,6 +181,10 @@ Flux smoke needs `flux2-model-cache`; a reverb plugin smoke needs
 ---
 
 ## Transport (greenfield — build this)
+
+> Per the **v1 contract**, the stable surface is the `circus` CLI; the wire
+> transport described here sits *behind* it and may change without breaking
+> callers.
 
 There is **no control API today.** A `control.sock` file sits in the Circus repo
 root but is untracked and has no server behind it — do not assume it is wired.
