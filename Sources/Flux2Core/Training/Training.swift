@@ -38,7 +38,7 @@ import Foundation
 
 /// LoRA Training Module Version
 public enum Training {
-  public static let version = "3.3.3"
+  public static let version = "3.3.3-dev"
 
   /// Supported features
   public static let features: [String] = [
