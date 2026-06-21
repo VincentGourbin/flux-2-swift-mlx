@@ -30,7 +30,7 @@ swift build --product Flux2App -c "$CONFIG_LC"
 
 if ! ssh -o ControlPath=none "$VM" "test -d '$VM_MODELS_DIR/black-forest-labs'"; then
   echo "Models mount not found in guest: $VM_MODELS_DIR" >&2
-  echo "Shut down the VM and start it from Circus (or tart run --dir=models:$HOME/Library/Caches/models:ro)." >&2
+  echo "Shut down the VM and start it from Circus (or tart run --dir=flux2-model-cache:$HOME/Library/Caches/models:ro)." >&2
   exit 1
 fi
 
