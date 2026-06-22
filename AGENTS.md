@@ -99,7 +99,7 @@ Flux2App auto-detects that guest path. `bin/vm-smoke.sh` requires it and passes 
 bin/vm-smoke-models.sh
 ```
 
-**CLI generate smoke** (Klein 4B I2I when `FLUX.2-klein-4B-8bit` exists on the shared cache):
+**CLI generate smoke** (Klein 4B I2I when `FLUX.2-klein-4B-klein4b-8bit` exists on the shared cache):
 
 ```bash
 bin/vm-smoke-generate.sh

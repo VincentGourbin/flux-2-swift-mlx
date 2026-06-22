@@ -13,7 +13,7 @@ GENERATE_TIMEOUT_SECONDS="${GENERATE_TIMEOUT_SECONDS:-900}"
 
 # Paths relative to VM_MODELS_DIR (must exist on the host cache / virtio share).
 REQUIRED=(
-  "black-forest-labs/FLUX.2-klein-4B-8bit"
+  "black-forest-labs/FLUX.2-klein-4B-klein4b-8bit"
   "black-forest-labs/FLUX.2-klein-4B-vae"
 )
 
@@ -62,7 +62,7 @@ ssh -o ControlPath=none "$VM" "cd '$REMOTE_DIR' && \
   -o output.png \
   --model klein-4b \
   --transformer-quant qint8 \
-  --text-quant 8bit \
+  --text-quant 4bit \
   --vae-variant standard \
   --steps 4 \
   -g 1.0 \

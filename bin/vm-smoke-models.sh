@@ -33,7 +33,7 @@ echo
 echo "Weight probes:"
 missing=0
 probe "FLUX.2 Dev transformer (bf16)" "black-forest-labs/FLUX.2-dev-transformer-bf16" || ((missing++)) || true
-probe "FLUX.2 Klein 4B transformer (8bit)" "black-forest-labs/FLUX.2-klein-4B-8bit" || ((missing++)) || true
+probe "FLUX.2 Klein 4B transformer (8bit)" "black-forest-labs/FLUX.2-klein-4B-klein4b-8bit" || ((missing++)) || true
 probe "FLUX.2 Klein 4B VAE" "black-forest-labs/FLUX.2-klein-4B-vae" || ((missing++)) || true
 probe "Mistral MLX 8bit (dev text encoder)" "lmstudio-community/Mistral-Small-3.2-24B-Instruct-2506-MLX-8bit" || ((missing++)) || true
 
