@@ -1,6 +1,11 @@
 # Circus Tart dev-environment API (handoff)
 
-**Status:** proposal / handoff. Not built yet. **v1 interface frozen 2026-06-21** — see "v1 contract (frozen)".
+**Status:** v1 interface frozen 2026-06-21 (see "v1 contract"). **Profiles
+implemented 2026-06-22** — file-authored, read-only in Circus, picked at launch.
+The `circus` CLI verbs (`ensure-ready` / `put` / `exec` / `wait` / `get`) are
+**not built yet**; they are the next phase. Until then the testable loop is:
+author a profile → launch Circus → pick it → start the VM → Circus applies RAM +
+`--dir` mounts and verifies them.
 **Audience:** the Circus (`utility-be-circus`) agent, plus any genAI app repo that
 smoke-tests inside the Tart guest (image, audio, DAW plugins, standalone apps).
 **Origin:** drafted from `flux-2-swift-mix` VM smoke work; generalized because the
@@ -43,7 +48,7 @@ guest; each app repo owns what "success" means.
 
 | Primitive | Purpose | Bounds |
 | --- | --- | --- |
-| `ensure-ready` | Start VM if stopped → wait guest macOS + SSH → verify every enabled mount in the active profile | bounded timeout, structured result |
+| `ensure-ready` | Start VM if stopped → wait guest macOS + SSH → verify every mount in the active profile | bounded timeout, structured result |
 | `restart` | Graceful shutdown → relaunch with current saved prefs (shares are launch-only `--dir`; RAM via `tart set --memory`) | only when launch-time config changed |
 | `exec` | Run one shell command in the guest with an env map | caller-supplied timeout; no retry loop |
 | `put` / `get` | Copy host ↔ guest (build products, fixtures, golden files) | single transfer |
@@ -152,17 +157,21 @@ mounts:                        # each → tart run --dir=<name>:<hostPath>:<mode
     mode:     ro | rw
 ```
 
-Profiles live in Circus (UI/config) and are referenced by `name`. A consumer
-repo hard-codes only the profile **name** and the mount **names** it reads —
-never host paths.
+Profiles are **file-authored JSON**, one file per profile at
+`~/Documents/Circus Configurations/<name>.json`, read-only in Circus and **picked
+by the human at launch** (editing requires quit → relaunch → re-pick). Presence
+of a mount entry = active; there is **no `enabled` field**. A consumer repo
+hard-codes only the profile **name** and the mount **names** it reads — never
+host paths. Extra JSON keys are ignored; `ram` snaps to `32` or `64`.
 
 ---
 
 ## Profiles
 
 Profiles name **which mounts and how much RAM**, not which app. App identity
-stays in the app repo's smoke script. Conceptual shape (UI-editable, like the
-Shared Directories grid today):
+stays in the app repo's smoke script. Each profile is a JSON file at
+`~/Documents/Circus Configurations/<name>.json`, picked at launch (see the
+contract for the exact schema). Conceptual shape:
 
 ```text
 profile: tart-av-dev
