@@ -84,6 +84,44 @@ Example: a small live region (say 30% of the frame) with a 1 MP budget still gen
 
 ---
 
+## Flux2CLI
+
+`flux2 i2i` supports the same Image Preparation pipeline when you pass any prep
+flag, or load a Flux2App project file.
+
+**Legacy (unchanged):** plain reference image + optional `-w`/`-h` — no
+formatting, live area, or composite.
+
+**Prepared:**
+
+```bash
+flux2 i2i "cyan studio backdrop" -i photo.jpg -o edited.png \
+  --prepared \
+  --method pad --favour original \
+  --live-area 0.1,0.1,0.8,0.8 \
+  --megapixels 1.0
+```
+
+**From project JSON** (same shape as Flux2App saves / `F2SM_PROJECT` smoke
+fixture):
+
+```bash
+flux2 i2i --project path/to/project.json -o edited.png --model klein-4b
+```
+
+| Flag | App equivalent |
+| --- | --- |
+| `--favour` | Image Formatting → Favour |
+| `--method` | Crop / Pad |
+| `--scale` | Preparation scale |
+| `--live-area x,y,w,h` | Barn-door / Live Area (normalized) |
+| `--process-area x,y,w,h` | Process selection for paste-back (optional) |
+| `--megapixels` | Megapixel budget |
+| `--no-composite` | Save raw model canvas only |
+| `--prepared` | Force prep with defaults (full frame, 1 MP) |
+
+---
+
 ## Other additions (brief)
 
 Not documented in depth here; they support day-to-day use:

@@ -384,11 +384,11 @@ struct ImageToImage: AsyncParsableCommand {
         abstract: "Transform an image using a text prompt (image-to-image)"
     )
 
-    @Argument(help: "Text prompt describing the desired output")
-    var prompt: String
+    @Argument(help: "Text prompt describing the desired output (optional when --project is set)")
+    var prompt: String = ""
 
     @Option(name: .shortAndLong, help: "Reference image for visual conditioning")
-    var images: [String]
+    var images: [String] = []
 
     @Option(name: .long, help: "Image to analyze with VLM and inject description into prompt (not used as visual reference)")
     var interpret: [String] = []
@@ -452,6 +452,33 @@ struct ImageToImage: AsyncParsableCommand {
 
     @Option(name: .long, help: "Custom models directory (for sandboxed apps or custom storage)")
     var modelsDir: String?
+
+    @Option(name: .long, help: "Flux2App project JSON (prompt, references, Image Preparation settings)")
+    var project: String?
+
+    @Flag(name: .long, help: "Use Image Preparation (formatting, live area, composite back)")
+    var prepared: Bool = false
+
+    @Option(name: .long, help: "Formatting favour: original, horizontal, vertical")
+    var favour: String?
+
+    @Option(name: .long, help: "Formatting method: crop or pad")
+    var method: String?
+
+    @Option(name: .customLong("scale"), help: "Preparation scale 0.1…1.0 (default: 1.0)")
+    var preparationScale: Double?
+
+    @Option(name: .long, help: "Megapixel budget 0.25…4.0 (default: 1.0)")
+    var megapixels: Double?
+
+    @Option(name: .customLong("live-area"), help: "Live area as x,y,width,height in 0…1 (barn doors)")
+    var liveArea: String?
+
+    @Option(name: .customLong("process-area"), help: "Process/paste-back area as x,y,width,height in 0…1")
+    var processArea: String?
+
+    @Flag(name: .customLong("no-composite"), help: "Save raw model output without pasting into the original")
+    var noComposite: Bool = false
 
     func run() async throws {
         let startTime = Date()
@@ -518,30 +545,90 @@ struct ImageToImage: AsyncParsableCommand {
         actualSteps = steps ?? loraOverrides?.numSteps ?? modelVariant.defaultSteps
         actualGuidance = guidance ?? loraOverrides?.guidance ?? modelVariant.defaultGuidance
 
-        // Validate image count (model-specific limit)
-        let maxImages = modelVariant.maxReferenceImages
-        guard !images.isEmpty && images.count <= maxImages else {
-            if images.isEmpty {
-                throw ValidationError("Please provide 1-\(maxImages) reference images with --images")
-            } else {
-                throw ValidationError("Maximum \(maxImages) reference images allowed for \(modelVariant.displayName)")
-            }
-        }
-
         // Configure profiling
         if profile {
             Flux2Profiler.shared.enable()
         }
 
+        // Load optional project and resolve prompt / references / preparation.
+        let loadedProject = try project.map { try FluxGenerationProject.load(from: $0) }
+        let effectivePrompt = prompt.isEmpty ? (loadedProject?.prompt ?? "") : prompt
+        guard !effectivePrompt.isEmpty else {
+            throw ValidationError("Provide a prompt argument or --project containing a prompt")
+        }
+
+        let usesPreparation = ImageToImagePreparationSupport.usesPreparation(
+            prepared: prepared,
+            project: project,
+            favour: favour,
+            method: method,
+            scale: preparationScale,
+            megapixels: megapixels,
+            liveArea: liveArea,
+            processArea: processArea,
+            noComposite: noComposite
+        )
+
         // Load reference images (visual conditioning)
         var refImages: [CGImage] = []
-        for path in images {
-            guard let image = loadImage(from: path) else {
-                throw ValidationError("Failed to load image: \(path)")
+        if images.isEmpty {
+            guard let loadedProject else {
+                throw ValidationError("Provide --images or --project with reference images")
             }
-            refImages.append(image)
+            refImages = try loadedProject.loadReferenceCGImages()
+        } else {
+            for path in images {
+                guard let image = loadImage(from: path) else {
+                    throw ValidationError("Failed to load image: \(path)")
+                }
+                refImages.append(image)
+                if verbose {
+                    print("Loaded reference image: \(path) (\(image.width)x\(image.height))")
+                }
+            }
+        }
+
+        let prepSettings: ImagePreparationSettings?
+        let pipelineImages: [CGImage]
+        let outputWidth: Int
+        let outputHeight: Int
+        var compositionPlan: ImageCompositionPlan?
+
+        if usesPreparation {
+            let settings = try ImageToImagePreparationSupport.buildSettings(
+                project: loadedProject,
+                favour: favour,
+                method: method,
+                scale: preparationScale,
+                megapixels: megapixels,
+                liveArea: liveArea,
+                processArea: processArea,
+                noComposite: noComposite
+            )
+            let preparedInput = try ImagePreparation.prepare(referenceImages: refImages, settings: settings)
+            prepSettings = settings
+            pipelineImages = preparedInput.images
+            outputWidth = preparedInput.width
+            outputHeight = preparedInput.height
+            compositionPlan = preparedInput.compositionPlan
             if verbose {
-                print("Loaded reference image: \(path) (\(image.width)x\(image.height))")
+                print("Image Preparation: \(outputWidth)x\(outputHeight), composite=\(settings.compositeBack)")
+            }
+        } else {
+            prepSettings = nil
+            pipelineImages = refImages
+            outputWidth = width ?? refImages[0].width
+            outputHeight = height ?? refImages[0].height
+        }
+
+        _ = prepSettings
+
+        let maxImages = modelVariant.maxReferenceImages
+        guard !pipelineImages.isEmpty && pipelineImages.count <= maxImages else {
+            if pipelineImages.isEmpty {
+                throw ValidationError("Please provide 1-\(maxImages) reference images with --images or --project")
+            } else {
+                throw ValidationError("Maximum \(maxImages) reference images allowed for \(modelVariant.displayName)")
             }
         }
 
@@ -558,12 +645,9 @@ struct ImageToImage: AsyncParsableCommand {
         }
 
         // Show output dimensions
-        let outputWidth = width ?? refImages[0].width
-        let outputHeight = height ?? refImages[0].height
-
-        print("I2I \(outputWidth)x\(outputHeight), \(actualSteps) steps, guidance \(actualGuidance), \(refImages.count) ref image(s)\(seed.map { ", seed \($0)" } ?? "")...")
+        print("I2I \(outputWidth)x\(outputHeight), \(actualSteps) steps, guidance \(actualGuidance), \(pipelineImages.count) ref image(s)\(seed.map { ", seed \($0)" } ?? "")...")
         if verbose {
-            print("  Prompt: \"\(prompt)\"")
+            print("  Prompt: \"\(effectivePrompt)\"")
             if upsamplePrompt {
                 print("  Prompt upsampling: enabled")
             }
@@ -660,12 +744,12 @@ struct ImageToImage: AsyncParsableCommand {
             checkpointDir = nil
         }
 
-        let image = try await pipeline.generateImageToImage(
-            prompt: prompt,
-            images: refImages,
+        var image = try await pipeline.generateImageToImage(
+            prompt: effectivePrompt,
+            images: pipelineImages,
             interpretImagePaths: interpretImagePaths.isEmpty ? nil : interpretImagePaths,
-            height: height,
-            width: width,
+            height: outputHeight,
+            width: outputWidth,
             steps: actualSteps,
             guidance: actualGuidance,
             seed: seed,
@@ -690,6 +774,13 @@ struct ImageToImage: AsyncParsableCommand {
         )
 
         print()
+
+        if let compositionPlan {
+            image = try ImagePreparation.composite(image, using: compositionPlan)
+            if verbose {
+                print("Composited generated patch into \(compositionPlan.originalImage.width)x\(compositionPlan.originalImage.height) original")
+            }
+        }
 
         let elapsed = Date().timeIntervalSince(startTime)
         print("Generation completed in \(String(format: "%.1f", elapsed))s")
