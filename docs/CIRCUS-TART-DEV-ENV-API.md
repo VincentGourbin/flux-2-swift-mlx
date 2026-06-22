@@ -2,10 +2,9 @@
 
 **Status:** v1 interface frozen 2026-06-21 (see "v1 contract"). **Profiles
 implemented 2026-06-22** — file-authored, read-only in Circus, picked at launch.
-The `circus` CLI verbs (`ensure-ready` / `put` / `exec` / `wait` / `get`) are
-**not built yet**; they are the next phase. Until then the testable loop is:
-author a profile → launch Circus → pick it → start the VM → Circus applies RAM +
-`--dir` mounts and verifies them.
+**`circus` CLI shipped 2026-06-22** — `ensure-ready` / `put` / `exec` / `wait` /
+`get` talk to a running Circus.app session (`circus --api-version` → `1`).
+Consumer smoke scripts set `CIRCUS_PROFILE` (default `tart-av-dev`).
 **Audience:** the Circus (`utility-be-circus`) agent, plus any genAI app repo that
 smoke-tests inside the Tart guest (image, audio, DAW plugins, standalone apps).
 **Origin:** drafted from `flux-2-swift-mix` VM smoke work; generalized because the
@@ -111,6 +110,9 @@ Frozen behaviour:
 - **`exec`** runs one command in the active profile's guest. `--env` repeats and
   is injected into the guest process environment; everything after `--` is the
   command, run via `sh -lc`; stdout/stderr stream through. Circus never retries.
+  Background guest processes: GUI apps via `open -n`; long CLI work runs in the
+  foreground with a caller-sized `--timeout` (circus waits for the shell session
+  to finish if you use `nohup … &`).
 - `exec` is fire-and-return. To background a guest process, end the command with
   `&` and use `wait` for readiness — Circus does not track guest process
   lifecycle beyond `wait --process`.
@@ -268,11 +270,13 @@ Crossing into "control" does **not** drop the safety posture:
 ```bash
 circus ensure-ready --profile tart-av-dev
 circus put --host .build/.../Flux2App --guest /tmp/flux2-smoke/Flux2App
-circus exec --env F2SM_PROJECT=/tmp/.../project.json \
-            --env F2SM_SMOKE_MARKER=/tmp/flux2-smoke-ready -- \
-            "cd /tmp/flux2-smoke && ./Flux2App &"
-circus wait --guest /tmp/flux2-smoke-ready --timeout 30
-# app repo: read marker (ok/error), screencapture, scp back
+circus exec --timeout 30 -- \
+  'export F2SM_PROJECT=/tmp/.../project.json F2SM_SMOKE_MARKER=/tmp/flux2-smoke-ready; \
+   cd /tmp/flux2-smoke && open -n ./Flux2App'
+circus wait --guest /tmp/flux2-smoke-ready --timeout 60
+circus exec --timeout 30 -- screencapture -x /tmp/flux2-smoke.png
+circus get --guest /tmp/flux2-smoke.png --host /tmp/flux2-smoke.png
+# app repo: read marker (ok/error)
 ```
 
 ### DAW plugin smoke (same four steps)

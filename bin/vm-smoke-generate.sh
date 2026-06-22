@@ -3,7 +3,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VM="${VM:-tart-virtual-mac}"
+# shellcheck source=vm-smoke-circus.sh
+source "$ROOT/bin/vm-smoke-circus.sh"
+
 REMOTE_DIR="${REMOTE_DIR:-/tmp/flux2-smoke-gen}"
 VM_MODELS_DIR="${VM_MODELS_DIR:-/Volumes/My Shared Files/flux2-model-cache}"
 IMAGE="${IMAGE:-$ROOT/Tests/Fixtures/VMSmoke/reference.png}"
@@ -32,7 +34,7 @@ fi
 
 missing=()
 for rel in "${REQUIRED[@]}"; do
-  if ! ssh -o ControlPath=none "$VM" "test -d '$VM_MODELS_DIR/$rel'"; then
+  if ! circus_path_is_dir "$VM_MODELS_DIR/$rel"; then
     missing+=("$rel")
   fi
 done
@@ -48,16 +50,20 @@ cd "$ROOT"
 swift build --product Flux2CLI -c "$CONFIG_LC"
 "$ROOT/bin/build-mlx-metallib.sh"
 
-ssh -o ControlPath=none "$VM" "mkdir -p '$REMOTE_DIR'"
-scp "$BUILD_DIR/Flux2CLI" "$BUILD_DIR/mlx.metallib" "$IMAGE" "$VM:$REMOTE_DIR/"
+circus_ensure_ready 180
+
+circus_exec --timeout 30 -- "mkdir -p $(printf '%q' "$REMOTE_DIR")"
+circus_put "$BUILD_DIR/Flux2CLI" "$REMOTE_DIR/Flux2CLI"
+circus_put "$BUILD_DIR/mlx.metallib" "$REMOTE_DIR/mlx.metallib"
+circus_put "$IMAGE" "$REMOTE_DIR/reference.png"
 
 remote_out="$REMOTE_DIR/output.png"
-ssh -o ControlPath=none "$VM" "rm -f '$remote_out' '$REMOTE_DIR/generate.log'"
+circus_exec --timeout 30 -- "rm -f $(printf '%q' "$remote_out") $(printf '%q' "$REMOTE_DIR/generate.log")"
 
 echo "Running Klein 4B I2I in VM (qint8 / 4 steps; timeout ${GENERATE_TIMEOUT_SECONDS}s)…"
 
-ssh -o ControlPath=none "$VM" "cd '$REMOTE_DIR' && \
-  F2SM_MODELS_DIR='$VM_MODELS_DIR' nohup ./Flux2CLI i2i 'VM smoke i2i' \
+if ! circus_exec --timeout "$GENERATE_TIMEOUT_SECONDS" -- \
+  "cd $(printf '%q' "$REMOTE_DIR") && ./Flux2CLI i2i 'VM smoke i2i' \
   -i reference.png \
   -o output.png \
   --model klein-4b \
@@ -67,25 +73,18 @@ ssh -o ControlPath=none "$VM" "cd '$REMOTE_DIR' && \
   --steps 4 \
   -g 1.0 \
   -w 512 -h 384 \
-  >generate.log 2>&1 < /dev/null &"
-
-deadline=$((SECONDS + GENERATE_TIMEOUT_SECONDS))
-while (( SECONDS < deadline )); do
-  if ssh -o ControlPath=none "$VM" "test -s '$remote_out'"; then
-    break
-  fi
-  if ! ssh -o ControlPath=none "$VM" "pgrep -x Flux2CLI >/dev/null 2>&1"; then
-    break
-  fi
-  sleep 10
-done
-
-if ! ssh -o ControlPath=none "$VM" "test -s '$remote_out'"; then
-  echo "No output image produced at $remote_out" >&2
-  ssh -o ControlPath=none "$VM" "tail -80 '$REMOTE_DIR/generate.log' 2>/dev/null || true" >&2
+  >generate.log 2>&1"; then
+  echo "Flux2CLI generate failed" >&2
+  circus_exec --timeout 30 -- "tail -80 $(printf '%q' "$REMOTE_DIR/generate.log") 2>/dev/null || true" >&2
   exit 1
 fi
 
-scp "$VM:$remote_out" "$OUT"
+if ! circus_exec --timeout 30 -- "test -s $(printf '%q' "$remote_out")"; then
+  echo "No output image produced at $remote_out" >&2
+  circus_exec --timeout 30 -- "tail -80 $(printf '%q' "$REMOTE_DIR/generate.log") 2>/dev/null || true" >&2
+  exit 1
+fi
+
+circus_get "$remote_out" "$OUT"
 bytes="$(wc -c <"$OUT" | tr -d ' ')"
 echo "I2I output: $OUT ($bytes bytes)"

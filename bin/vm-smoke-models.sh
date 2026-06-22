@@ -3,25 +3,26 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VM="${VM:-tart-virtual-mac}"
+# shellcheck source=vm-smoke-circus.sh
+source "$ROOT/bin/vm-smoke-circus.sh"
+
 VM_MODELS_DIR="${VM_MODELS_DIR:-/Volumes/My Shared Files/flux2-model-cache}"
 
-check_guest() {
-  ssh -o ControlPath=none "$VM" "$@"
-}
+circus_ensure_ready 60
 
-if ! check_guest "test -d '$VM_MODELS_DIR'"; then
+if ! circus_path_is_dir "$VM_MODELS_DIR"; then
   echo "Mount missing: $VM_MODELS_DIR" >&2
+  echo "Pick profile $CIRCUS_PROFILE in Circus and restart the VM if shares changed." >&2
   exit 1
 fi
 
-echo "Mount: $VM_MODELS_DIR"
-check_guest "ls -1 '$VM_MODELS_DIR'"
+echo "Mount: $VM_MODELS_DIR (profile $CIRCUS_PROFILE)"
+circus_exec --timeout 30 -- "ls -1 $(printf '%q' "$VM_MODELS_DIR")"
 
 probe() {
   local label="$1"
   local rel="$2"
-  if check_guest "test -d '$VM_MODELS_DIR/$rel'"; then
+  if circus_path_is_dir "$VM_MODELS_DIR/$rel"; then
     echo "  ok  $label"
     return 0
   fi
