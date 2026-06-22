@@ -20,6 +20,26 @@ After rebasing onto `upstream/main`, this branch carries **both** fork features 
 
 ---
 
+## Repo boundary
+
+**This agent writes only to `flux-2-swift-mix`.** No files, commits, or handoff docs in
+`utility-be-circus`, `comfy-be-nodes`, `wp-be-*`, or any other repo — ever.
+
+Cross-app coordination goes through the human (relay a copy block), or read the other
+repo on ORIGIN after its owning agent commits. Do not build bash shims for another app's
+CLI while waiting for the real thing (e.g. no `bin/circus` in this repo).
+
+| Repo | Owner |
+| --- | --- |
+| `flux-2-swift-mix` | This agent |
+| `utility-be-circus` | Circus agent |
+| Everything else | Its own agent or the human |
+
+Circus / Tart VM environment is documented here for smoke tests; Circus source code is
+not in scope. Frozen consumer contract: [docs/CIRCUS-TART-DEV-ENV-API.md](docs/CIRCUS-TART-DEV-ENV-API.md).
+
+---
+
 ## Verification
 
 ### Build (minimum bar)
