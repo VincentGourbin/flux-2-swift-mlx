@@ -5,6 +5,7 @@
 
 import SwiftUI
 import Flux2Core
+import Flux2Chains
 import FluxTextEncoders
 import CoreGraphics
 import ImageIO
@@ -94,6 +95,9 @@ class ImageGenerationViewModel: ObservableObject {
     @Published var preparationOverlayOpacity: Double = 0.22
     @Published var processArea: CGRect?
     @Published var contextArea: CGRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+    @Published var editMode: ImageEditMode = .promptEdit
+    @Published var inpaintIntent: Flux2InpaintIntent = .modify
+    @Published var enrichInpaintPromptWithVLM: Bool = false
     /// Target generation budget in megapixels (the *maximum* total pixels). The
     /// barn doors set the aspect ratio; the generation fills this budget at that
     /// aspect, so a small barn-door region no longer shrinks the output — it just
@@ -177,7 +181,13 @@ class ImageGenerationViewModel: ObservableObject {
     }
 
     var canGenerate: Bool {
-        !prompt.isEmpty && !isPipelineBusy && isFamilySelected
+        guard !isPipelineBusy, isFamilySelected else { return false }
+        if !referenceImages.isEmpty, editMode == .generativeFill {
+            guard processArea != nil else { return false }
+            return !prompt.isEmpty || enrichInpaintPromptWithVLM
+        }
+        guard !prompt.isEmpty else { return false }
+        return true
     }
 
     var progress: Double {
@@ -250,15 +260,15 @@ class ImageGenerationViewModel: ObservableObject {
         )
     }
 
-    // Dormant until the pipeline has native mask/inpaint support.
     var processAreaDescription: String {
         guard let image = referenceImages.first?.image,
               let processArea else {
-            return "Process: none selected"
+            return editMode == .generativeFill ? "Fill region: none selected" : "Process: none selected"
         }
 
         let rect = pixelRect(from: processArea, in: image)
-        return "Process: \(Int(rect.width))x\(Int(rect.height)) at x=\(Int(rect.minX)) y=\(Int(rect.minY))"
+        let prefix = editMode == .generativeFill ? "Fill" : "Process"
+        return "\(prefix): \(Int(rect.width))x\(Int(rect.height)) at x=\(Int(rect.minX)) y=\(Int(rect.minY))"
     }
 
     var contextAreaDescription: String {
@@ -486,7 +496,7 @@ class ImageGenerationViewModel: ObservableObject {
         processArea = nil
     }
 
-    // Dormant until the pipeline has native mask/inpaint support.
+    // Dormant in prompt-edit mode until a paste-back marquee UI ships.
     func resetProcessContext() {
         resetContextArea()
     }
@@ -786,6 +796,9 @@ class ImageGenerationViewModel: ObservableObject {
         clearPromptAfterGeneration = project.clearPromptAfterGeneration ?? false
         processArea = project.processArea?.cgRect
         contextArea = Self.clampUnitRect(project.contextArea.cgRect)
+        editMode = ImageEditMode.fromProjectValue(project.editMode)
+        inpaintIntent = project.inpaintIntent.flatMap(Flux2InpaintIntent.init(rawValue:)) ?? .modify
+        enrichInpaintPromptWithVLM = project.enrichInpaintPromptWithVLM ?? (editMode == .generativeFill)
         interpretImageURLs = project.interpretImagePaths.map { URL(fileURLWithPath: $0) }
         referenceImages = restoredReferences
         generatedImage = nil
@@ -817,6 +830,9 @@ class ImageGenerationViewModel: ObservableObject {
             selectedFamily: selectedFamily?.rawValue,
             processArea: processArea.map(FluxGenerationProject.NormalizedRect.init),
             contextArea: FluxGenerationProject.NormalizedRect(contextArea),
+            editMode: editMode.rawValue,
+            inpaintIntent: inpaintIntent.rawValue,
+            enrichInpaintPromptWithVLM: enrichInpaintPromptWithVLM,
             interpretImagePaths: interpretImageURLs.map(\.path),
             referenceImages: try referenceImages.map { reference in
                 FluxGenerationProject.ReferenceImage(
@@ -956,8 +972,52 @@ class ImageGenerationViewModel: ObservableObject {
                 )
                 image = result.image
                 if result.wasUpsampled { upsampledPrompt = result.usedPrompt }
+            } else if editMode == .generativeFill {
+                guard let processArea else {
+                    throw Flux2Error.invalidConfiguration("Draw a fill region on the reference image before generating.")
+                }
+
+                if enrichInpaintPromptWithVLM {
+                    statusMessage = "Loading Qwen3.5 VLM..."
+                    try await ensureQwen35VLMLoaded()
+                }
+
+                let sourceImage = referenceImages[0].image
+                statusMessage = "Building fill mask..."
+                let mask = try ImageMaskBuilder.rectangularInpaintMask(
+                    width: sourceImage.width,
+                    height: sourceImage.height,
+                    normalizedRect: processArea
+                )
+
+                statusMessage = "Running generative fill..."
+                let maxPixels = Int(megapixelBudget * 1_000_000)
+                let chain = Flux2MaskedInpaintingChain(
+                    pipeline: pipeline!,
+                    prompt: prompt.isEmpty ? "fill in this region" : prompt,
+                    image: sourceImage,
+                    mask: mask,
+                    steps: steps,
+                    guidance: guidance,
+                    seed: seedValue,
+                    upsamplePrompt: upsamplePrompt,
+                    enrichPromptWithVLM: enrichInpaintPromptWithVLM,
+                    intent: inpaintIntent,
+                    maxPixels: maxPixels,
+                    onProgress: { current, total in
+                        Task { @MainActor in
+                            guard self.isGenerating else { return }
+                            self.currentStep = current
+                            self.totalSteps = total
+                            self.statusMessage = "Step \(current)/\(total)"
+                        }
+                    }
+                )
+                let result = try await chain.run()
+                image = result.image
+                if result.wasUpsampled { upsampledPrompt = result.usedPrompt }
             } else {
-                // Image-to-Image
+                // Image-to-Image (prompt edit + Image Preparation)
                 statusMessage = "Preparing image-to-image input..."
                 let preparedInput = try prepareImageToImageInput()
 
@@ -1117,6 +1177,23 @@ class ImageGenerationViewModel: ObservableObject {
         pipeline = nil
         Memory.clearCache()
         statusMessage = "Models unloaded"
+    }
+
+    /// Load Qwen3.5 VLM (4-bit) when generative fill requests VLM prompt enrichment.
+    private func ensureQwen35VLMLoaded() async throws {
+        if FluxTextEncoders.shared.isQwen35VLMLoaded { return }
+
+        let hfToken = ProcessInfo.processInfo.environment["HF_TOKEN"]
+            ?? UserDefaults.standard.string(forKey: "hfToken")
+
+        let downloader = TextEncoderModelDownloader(hfToken: hfToken)
+        let path = try await downloader.downloadQwen35(variant: .qwen35_4B_4bit) { progress, message in
+            Task { @MainActor in
+                guard self.isGenerating else { return }
+                self.statusMessage = "Qwen3.5: \(message) (\(Int(progress * 100))%)"
+            }
+        }
+        try await FluxTextEncoders.shared.loadQwen35VLM(from: path.path)
     }
 
     // MARK: - Recommended Defaults (Black Forest Labs)

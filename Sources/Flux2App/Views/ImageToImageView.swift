@@ -5,6 +5,7 @@
 
 import SwiftUI
 import Flux2Core
+import Flux2Chains
 import FluxTextEncoders
 import UniformTypeIdentifiers
 
@@ -43,7 +44,13 @@ struct ImageToImageView: View {
 
                     Divider()
 
-                    // Processing Area — barn doors + megapixel budget
+                    // Edit workflow — prompt I2I vs masked inpaint
+                    editModeSection
+
+                    Divider()
+
+                    // Processing Area — barn doors + megapixel budget (prompt edit)
+                    // or mask region + resolution cap (masked inpaint)
                     processingAreaSection
 
                     Divider()
@@ -108,6 +115,12 @@ struct ImageToImageView: View {
             saveProjectAs: { viewModel.saveProjectAs() }
         ))
         .focusedSceneValue(\.generationProjectName, viewModel.projectDisplayName)
+        .onChange(of: viewModel.editMode) { _, mode in
+            if mode == .generativeFill {
+                viewModel.enrichInpaintPromptWithVLM = true
+                viewModel.inpaintIntent = .modify
+            }
+        }
         .focusedSceneValue(\.generationUnloadModels) {
             Task { await viewModel.clearPipeline() }
         }
@@ -255,6 +268,54 @@ struct ImageToImageView: View {
         }
     }
 
+    // MARK: - Edit Mode Section
+
+    @ViewBuilder
+    private var editModeSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Edit workflow", systemImage: "square.dashed.inset.filled")
+                .font(.headline)
+
+            if viewModel.referenceImages.isEmpty {
+                Text("Add a reference image to choose how edits are applied.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Picker("Mode", selection: $viewModel.editMode) {
+                    ForEach(ImageEditMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
+                switch viewModel.editMode {
+                case .promptEdit:
+                    Text("Barn doors define the live area sent to the model; the result can be composited back into the full image.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .generativeFill:
+                    Text("Draw a rectangle over a blemish or bad patch. The model regenerates only that region; everything else is preserved.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Toggle("Enrich prompt with Qwen3.5 VLM", isOn: $viewModel.enrichInpaintPromptWithVLM)
+                        .font(.caption)
+
+                    if viewModel.processArea == nil {
+                        Text("Draw a fill region on the preview before generating.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text(viewModel.processAreaDescription)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - Processing Area Section
 
     @ViewBuilder
@@ -264,11 +325,18 @@ struct ImageToImageView: View {
                 .font(.headline)
 
             if !viewModel.referenceImages.isEmpty {
-                Text("Barn doors set the aspect ratio of the region sent to the model; the megapixel budget sets its resolution.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                switch viewModel.editMode {
+                case .promptEdit:
+                    Text("Barn doors set the aspect ratio of the region sent to the model; the megapixel budget sets its resolution.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .generativeFill:
+                    Text("The megapixel budget caps the working resolution for generative fill. Larger images are scaled down before denoising.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
-                GroupBox("Megapixel budget") {
+                GroupBox(viewModel.editMode == .generativeFill ? "Resolution cap" : "Megapixel budget") {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 10) {
                             Slider(
@@ -291,7 +359,11 @@ struct ImageToImageView: View {
                                 .foregroundStyle(.secondary)
                         }
 
-                        Text("Maximum total pixels to generate. The barn-door aspect ratio fills this budget.")
+                        Text(
+                            viewModel.editMode == .generativeFill
+                                ? "Maximum total pixels for the fill pass."
+                                : "Maximum total pixels to generate. The barn-door aspect ratio fills this budget."
+                        )
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -299,10 +371,18 @@ struct ImageToImageView: View {
                 }
 
                 HStack {
-                    Button("Reset Context") {
-                        viewModel.resetContextArea()
+                    if viewModel.editMode == .promptEdit {
+                        Button("Reset Context") {
+                            viewModel.resetContextArea()
+                        }
+                        .controlSize(.small)
+                    } else {
+                        Button("Clear Fill Region") {
+                            viewModel.clearProcessSelection()
+                        }
+                        .controlSize(.small)
+                        .disabled(viewModel.processArea == nil)
                     }
-                    .controlSize(.small)
 
                     Spacer()
                 }
@@ -793,9 +873,14 @@ struct ImageToImageView: View {
                             adjustedSize: viewModel.adjustedGenerationSize,
                             sizingMethod: viewModel.sizingMethod,
                             overlayOpacity: viewModel.preparationOverlayOpacity,
+                            editMode: viewModel.editMode,
                             contextArea: Binding(
                                 get: { viewModel.contextArea },
                                 set: { viewModel.setContextArea($0) }
+                            ),
+                            processArea: Binding(
+                                get: { viewModel.processArea },
+                                set: { viewModel.setProcessArea($0) }
                             )
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1070,13 +1155,16 @@ struct ImagePreparationPreview: View {
     let adjustedSize: (width: Int, height: Int)
     let sizingMethod: ImageSizingMethod
     let overlayOpacity: Double
+    let editMode: ImageEditMode
     @Binding var contextArea: CGRect
+    @Binding var processArea: CGRect?
 
     @State private var activeDrag: DragMode?
     @State private var selectionStart: CGPoint?
     /// Context rect captured at drag start, restored if the drag is too small
     /// to be an intentional new region (so a stray click doesn't collapse it).
     @State private var contextBeforeDrag: CGRect?
+    @State private var processBeforeDrag: CGRect?
 
     private enum DragMode {
         case contextLeft
@@ -1084,13 +1172,17 @@ struct ImagePreparationPreview: View {
         case contextTop
         case contextBottom
         case contextSelection
+        case processSelection
     }
+
+    private var usesBarnDoors: Bool { editMode == .promptEdit }
+    private var usesFillMask: Bool { editMode == .generativeFill }
 
     var body: some View {
         GeometryReader { geometry in
             let imageRect = fittedImageRect(in: geometry.size)
-            let showsFormattingOverlay = activeDrag == nil && !formattingExcludedRects().isEmpty
-            let showsBarnDoorOverlay = !isContextFullyOpen
+            let showsFormattingOverlay = usesBarnDoors && activeDrag == nil && !formattingExcludedRects().isEmpty
+            let showsBarnDoorOverlay = usesBarnDoors && !isContextFullyOpen
 
             ZStack {
                 Color(nsColor: .textBackgroundColor)
@@ -1120,6 +1212,11 @@ struct ImagePreparationPreview: View {
                             Color.black.opacity(0.72),
                             style: FillStyle(eoFill: false, antialiased: false)
                         )
+                        .allowsHitTesting(false)
+                }
+
+                if usesFillMask, let processArea {
+                    inpaintMaskOverlay(for: processArea, in: imageRect)
                         .allowsHitTesting(false)
                 }
             }
@@ -1360,6 +1457,8 @@ struct ImagePreparationPreview: View {
                     updateContextBottom(to: snapY(point.y), in: imageRect)
                 case .contextSelection:
                     updateContextSelection(to: point, in: imageRect)
+                case .processSelection:
+                    updateProcessSelection(to: point, in: imageRect)
                 case nil:
                     break
                 }
@@ -1368,6 +1467,7 @@ struct ImagePreparationPreview: View {
                 activeDrag = nil
                 selectionStart = nil
                 contextBeforeDrag = nil
+                processBeforeDrag = nil
                 #if canImport(AppKit)
                 NSCursor.arrow.set()
                 #endif
@@ -1375,16 +1475,38 @@ struct ImagePreparationPreview: View {
     }
 
     private func dragMode(for location: CGPoint, in imageRect: CGRect) -> DragMode? {
+        guard imageRect.contains(location) else { return nil }
+
+        if usesFillMask {
+            return .processSelection
+        }
+
         // Barn-door edges take priority within their 20px grab zone, so an edge
         // adjustment never starts a new region by accident.
         if let edge = contextEdge(at: location, in: imageRect) {
             return edge
         }
 
-        // Dragging anywhere else inside the image draws a new live region
-        // (the barn-door context). The whole region is what gets processed and
-        // composited back, so there is no separate paste-back selection.
-        return imageRect.contains(location) ? .contextSelection : nil
+        return .contextSelection
+    }
+
+    private func inpaintMaskOverlay(for normalizedRect: CGRect, in imageRect: CGRect) -> some View {
+        let rect = pixelAligned(displayRect(for: normalizedRect, in: imageRect))
+        return ZStack {
+            Path { path in
+                path.addRect(imageRect)
+                path.addRect(rect)
+            }
+            .fill(Color.black.opacity(0.45), style: FillStyle(eoFill: true, antialiased: false))
+
+            Path { path in
+                path.addRect(rect)
+            }
+            .stroke(
+                Color.accentColor,
+                style: StrokeStyle(lineWidth: 2, dash: [8, 6])
+            )
+        }
     }
 
     private func contextEdge(at location: CGPoint, in imageRect: CGRect) -> DragMode? {
@@ -1410,6 +1532,10 @@ struct ImagePreparationPreview: View {
 
     #if canImport(AppKit)
     private func cursor(for location: CGPoint, in imageRect: CGRect) -> NSCursor {
+        if usesFillMask {
+            return imageRect.contains(location) ? .crosshair : .arrow
+        }
+
         // Within 20px of a barn-door edge -> resize. Anywhere else on the image
         // -> crosshair (draw a new region). Outside image -> arrow.
         switch contextEdge(at: location, in: imageRect) {
@@ -1444,6 +1570,28 @@ struct ImagePreparationPreview: View {
             contextArea = rect
         } else if let snapshot = contextBeforeDrag {
             contextArea = snapshot
+        }
+    }
+
+    private func updateProcessSelection(to point: CGPoint, in imageRect: CGRect) {
+        guard let selectionStart else { return }
+        if processBeforeDrag == nil { processBeforeDrag = processArea }
+
+        let start = CGPoint(x: snapX(selectionStart.x), y: snapY(selectionStart.y))
+        let end = CGPoint(x: snapX(point.x), y: snapY(point.y))
+        let rect = CGRect(
+            x: min(start.x, end.x),
+            y: min(start.y, end.y),
+            width: abs(end.x - start.x),
+            height: abs(end.y - start.y)
+        )
+
+        let minWidthNorm = 12 / max(imageRect.width, 1)
+        let minHeightNorm = 12 / max(imageRect.height, 1)
+        if rect.width >= minWidthNorm, rect.height >= minHeightNorm {
+            processArea = rect
+        } else if let snapshot = processBeforeDrag {
+            processArea = snapshot
         }
     }
 
@@ -1731,6 +1879,7 @@ struct PreparationSizeInfoRow: View {
         }
     }
 }
+
 
 #Preview {
     ImageToImageView()

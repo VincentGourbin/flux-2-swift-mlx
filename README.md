@@ -8,13 +8,15 @@ A native Swift implementation of [Flux.2](https://blackforestlabs.ai/) image gen
 
 ## Fork additions (`mix/v2.4.0`)
 
-This repository is a fork focused on **single-image, prompt-based image editing** in Flux2App — not mask-and-inpaint workflows.
+**Private working repo** (`flux-2-swift-mix`). Image Preparation was offered upstream in [PR #98](https://github.com/VincentGourbin/flux-2-swift-mlx/pull/98). Further upstream contributions are selective — not everything leaves this repo.
+
+This repository is focused on **single-image, prompt-based image editing** in Flux2App.
 
 The headline feature is **Image Preparation** (formatting, Live Area barn doors, megapixel budget, composited paste-back). Full documentation:
 
 **[Image Preparation guide](docs/ImagePreparation.md)**
 
-Upstream contribution: [PR #98](https://github.com/VincentGourbin/flux-2-swift-mlx/pull/98) on [flux-2-swift-mlx](https://github.com/VincentGourbin/flux-2-swift-mlx).
+Upstream framework: [flux-2-swift-mlx](https://github.com/VincentGourbin/flux-2-swift-mlx) (MIT). Selective contributions back when explicitly chosen.
 
 ## Downloads
 

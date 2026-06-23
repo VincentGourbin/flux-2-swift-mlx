@@ -79,7 +79,7 @@ let package = Package(
         // MARK: - Main Application
         .executableTarget(
             name: "Flux2App",
-            dependencies: ["FluxTextEncoders", "Flux2Core"]
+            dependencies: ["FluxTextEncoders", "Flux2Core", "Flux2Chains"]
         ),
         // MARK: - Tests
         .testTarget(

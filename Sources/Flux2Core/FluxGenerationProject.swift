@@ -24,6 +24,9 @@ public struct FluxGenerationProject: Codable, Sendable {
     public var selectedFamily: String?
     public var processArea: NormalizedRect?
     public var contextArea: NormalizedRect
+    public var editMode: String?
+    public var inpaintIntent: String?
+    public var enrichInpaintPromptWithVLM: Bool?
     public var interpretImagePaths: [String]
     public var referenceImages: [ReferenceImage]
 
@@ -76,6 +79,9 @@ public struct FluxGenerationProject: Codable, Sendable {
         selectedFamily: String? = nil,
         processArea: NormalizedRect? = nil,
         contextArea: NormalizedRect,
+        editMode: String? = nil,
+        inpaintIntent: String? = nil,
+        enrichInpaintPromptWithVLM: Bool? = nil,
         interpretImagePaths: [String],
         referenceImages: [ReferenceImage]
     ) {
@@ -99,6 +105,9 @@ public struct FluxGenerationProject: Codable, Sendable {
         self.selectedFamily = selectedFamily
         self.processArea = processArea
         self.contextArea = contextArea
+        self.editMode = editMode
+        self.inpaintIntent = inpaintIntent
+        self.enrichInpaintPromptWithVLM = enrichInpaintPromptWithVLM
         self.interpretImagePaths = interpretImagePaths
         self.referenceImages = referenceImages
     }

@@ -1,6 +1,8 @@
 # Agent guide for `flux-2-swift-mix`
 
-Fork of [flux-2-swift-mlx](https://github.com/VincentGourbin/flux-2-swift-mlx) focused on **single-image, prompt-based editing** in Flux2App. See [docs/ImagePreparation.md](docs/ImagePreparation.md) for the headline workflow.
+Fork of [flux-2-swift-mlx](https://github.com/VincentGourbin/flux-2-swift-mlx) focused on **single-image, prompt-based editing** in Flux2App. See [docs/ImagePreparation.md](docs/ImagePreparation.md) for the headline workflow and **Operator intent** (how barn doors are actually used).
+
+**Private personal repo** (`origin`). Day-to-day work lands here first. Vincent shares the MIT framework; we share **selected** work back — reciprocal, but not on autopilot (not unpaid FluxForge product development).
 
 Single developer, macOS, one machine.
 
@@ -10,13 +12,26 @@ Single developer, macOS, one machine.
 
 | Remote | Repo | Role |
 | --- | --- | --- |
-| `origin` | `realnotsteve/flux-2-swift-mix` | This fork (standalone GitHub repo) |
-| `fork` | `realnotsteve/flux-2-swift-mlx` | GitHub fork used for upstream PRs |
-| `upstream` | `VincentGourbin/flux-2-swift-mlx` | Main project |
+| `origin` | `realnotsteve/flux-2-swift-mix` | **Private** working copy and backup |
+| `fork` | `realnotsteve/flux-2-swift-mlx-1` | **Public GitHub fork** of Vincent's repo — push here only when deliberately opening/updating an upstream PR |
+| `upstream` | `VincentGourbin/flux-2-swift-mlx` | Pull/rebase for framework updates. Push disabled locally (`no_push`) — use `fork` + PR instead |
 
-Feature branch: `mix/v2.4.0`. Upstream PR: [#98](https://github.com/VincentGourbin/flux-2-swift-mlx/pull/98).
+**Legacy:** `realnotsteve/flux-2-swift-mlx` still exists but is **not** attached to GitHub's fork network (`parent: null`), so cross-repo PRs from it fail. Upstream offers use **`flux-2-swift-mlx-1`** instead (created 2026-06-23).
 
-After rebasing onto `upstream/main`, this branch carries **both** fork features (Image Preparation, projects, save service) **and** upstream additions (`Flux2Chains`, small-decoder VAE, profiling, etc.). Do not remove upstream features when extending the fork.
+Feature branch: `mix/v2.4.0`. Active upstream offer: **[PR #99](https://github.com/VincentGourbin/flux-2-swift-mlx/pull/99)** (supersedes closed #98).
+
+### Upstream policy (2026-06-22)
+
+Reciprocal open source, bounded scope: pull his framework improvements freely; push **only what you choose** to offer. The goal is good citizenship in a shared MIT tree — not building his commercial app surface for free.
+
+- **Default:** new work stays on private `origin`. Agents do **not** auto-open PRs, auto-push to `fork`, or withdraw offers without you saying so.
+- **Offer upstream when you ask:** framework fixes, general-purpose library/CLI improvements, tests, docs that belong in the shared repo.
+- **Keep private unless you ask:** personal editing workflow polish, app UX tuned to your habits.
+- **Do not offer upstream** (duplicates Vincent's or parallel product work — even if the code is good):
+  - **FluxForge Studio parity** — project files, save/export services, app shell / window workflow, download UX tuned like a shipped studio app, anything that is product surface rather than framework.
+  - **Circus / Tart dev environment** — `circus` CLI integration, VM smoke orchestration, `docs/CIRCUS-TART-DEV-ENV-API.md`, profile/mount contracts. Circus owns that stack (`utility-be-circus`); this repo only *consumes* it for smoke tests.
+- **PR #99** ([Image Preparation](https://github.com/VincentGourbin/flux-2-swift-mlx/pull/99)) supersedes closed #98. Offer branch `mix/v2.4.0` lives on `fork` (`flux-2-swift-mlx-1`). It predates the carve-outs below and includes some studio plumbing — do not add more of that category to upstream offers without explicit intent.
+- **Rebase freely** onto `upstream/main` for his MIT changes (`Flux2Chains`, etc.). Do not remove upstream library features when extending the fork.
 
 ---
 
@@ -184,7 +199,15 @@ Pause so the user can see what's happening (VM off, tunnel down, app not install
 | `ImageSaveService`, project files | Small Decoder VAE, profiling CLI |
 | `ImageCoordinateMapper`, compositing | VLM training scoring, mlx 0.31.4 pin |
 
-Dormant `processArea` plumbing is intentional — reserved for future mask-based inpaint (e.g. Photoshop filter), not barn-door Live Area.
+Dormant `processArea` plumbing in prompt-edit mode is intentional — reserved for future paste-back UI, not barn-door Live Area.
+
+### Flux2App product intent (prompt edit)
+
+The primary workflow is **Image Preparation**: barn doors + megapixel budget + prompt I2I + composite back. Barn doors define a **minimum sufficient scene** (light path, room volume, shadow landing zones) and **megapixel/aspect economics** — not tight selection of edit targets. See [docs/ImagePreparation.md — Operator intent](docs/ImagePreparation.md#operator-intent-how-barn-doors-are-actually-used).
+
+**Generative fill** (rectangle over a blemish, optional Qwen3.5 VLM, RePaint chain) is the in-app surgical path. Full inpaint intent control stays **CLI** (`flux2 inpaint`). See [docs/ImagePreparation.md — Generative fill](docs/ImagePreparation.md#generative-fill).
+
+**Do not propose** unless the user asks: Apple Vision integration, polygon mask UI, or FluxForge Studio parity.
 
 ---
 
