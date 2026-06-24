@@ -531,8 +531,16 @@ struct ImageToImageView: View {
     @ViewBuilder
     private var promptSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("AI Prompt", systemImage: "text.cursor")
-                .font(.headline)
+            if viewModel.editMode == .generativeFill {
+                Label("Optional hint", systemImage: "text.cursor")
+                    .font(.headline)
+                Text("With Qwen3.5 VLM on, leave this empty — the VLM writes the Flux prompt from the image. Add a short hint only if you want to steer the fill.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Label("AI Prompt", systemImage: "text.cursor")
+                    .font(.headline)
+            }
 
             TextEditor(text: $viewModel.prompt)
                 .font(.body)
@@ -548,8 +556,10 @@ struct ImageToImageView: View {
                 .frame(minHeight: 96, maxHeight: 160)
 
             HStack(spacing: 16) {
-                Toggle("Upsample prompt", isOn: $viewModel.upsamplePrompt)
-                    .help("Enhance prompt using VLM to analyze reference images")
+                if viewModel.editMode != .generativeFill {
+                    Toggle("Upsample prompt", isOn: $viewModel.upsamplePrompt)
+                        .help("Enhance prompt using VLM to analyze reference images")
+                }
 
                 Toggle("Clear prompt after generation", isOn: $viewModel.clearPromptAfterGeneration)
                     .help("Empty the prompt automatically once a run finishes successfully")
@@ -971,9 +981,8 @@ struct ImageToImageView: View {
     // MARK: - Helpers
 
     private var canGenerate: Bool {
-        !viewModel.prompt.isEmpty &&
+        viewModel.canGenerate &&
         !viewModel.referenceImages.isEmpty &&
-        !viewModel.isPipelineBusy &&
         modelManager.isTransformerDownloaded(viewModel.selectedTransformerVariant) &&
         modelManager.isVAEDownloaded
     }

@@ -73,6 +73,16 @@ bin/build-mlx-metallib.sh
 
 That `xcodebuild`s mlx-swift’s `Cmlx` scheme and copies `default.metallib` beside `Flux2App` as `mlx.metallib` (runtime loads it via `@loader_path`).
 
+**App icon + `.app` bundle** (Dock/Finder icon; bare `swift build` binary has no icon):
+
+```bash
+bin/package-flux2app.sh
+# → Flux2App.app in repo root (gitignored build product)
+open Flux2App.app
+```
+
+Source art: `Assets/AppIcon/Flux2App-1024.png`. `bin/build-app-icon.sh` regenerates `AppIcon.icns`.
+
 ### Smoke testing in the Tart VM
 
 VM smoke uses the **`circus` CLI** (Circus.app must be running). Set
