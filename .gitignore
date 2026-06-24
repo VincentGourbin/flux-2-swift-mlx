@@ -22,6 +22,7 @@ output/
 !docs/examples/**/*.png
 !docs/screenshots/**/*.png
 !examples/tarot-style/**/*.png
+!Tests/Fixtures/VMSmoke/*.png
 
 # Profiling
 *.profraw

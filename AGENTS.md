@@ -149,6 +149,15 @@ bin/vm-smoke-generate.sh
 
 Uses `Tests/Fixtures/VMSmoke/reference.png`, `--model klein-4b`, 4 steps at 512×384. Download Klein weights to the **host** cache first (`flux2 download --model klein-4b`). Dev bf16 will not fit the 64 GB guest.
 
+**CLI generative-fill smoke** (Klein 4B inpaint + Qwen3.5 4-bit VLM when weights exist on the shared cache):
+
+```bash
+bin/vm-smoke-generate-fill.sh
+# → /tmp/flux2-smoke-fill.png  (exit 2 = skipped, Klein or Qwen3.5 missing)
+```
+
+Uses `Tests/Fixtures/VMSmoke/reference.png` + `fill-mask.png`, `flux2 inpaint` with `--enrich-prompt-with-vlm --qwen35-variant 4bit --intent modify`. If Qwen3.5 4-bit is absent, the script tries a host download when `HF_TOKEN` is set; otherwise pre-cache via `flux2 test-qwen35 smoke --variant 4bit --no-think --max-tokens 8` on the **host** (populates the shared cache).
+
 Shares are fixed at **launch** — shut down and **Start** from Circus after changing the list. A VM already running without the share will not see host weights until restart.
 
 **Manual recipe** (same primitives as `bin/vm-smoke.sh`):
