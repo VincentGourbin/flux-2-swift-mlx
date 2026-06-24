@@ -13,7 +13,7 @@ import AppKit
 
 struct TextToImageView: View {
     @EnvironmentObject var modelManager: ModelManager
-    @StateObject private var viewModel = ImageGenerationViewModel()
+    @StateObject private var viewModel = ImageGenerationViewModel(workflow: .textToImage)
     @AppStorage("imageSaveUpscaleBy") private var imageSaveUpscaleBy = 1.0
 
     var body: some View {
@@ -86,6 +86,12 @@ struct TextToImageView: View {
         .focusedSceneValue(\.generationProjectName, viewModel.projectDisplayName)
         .focusedSceneValue(\.generationUnloadModels) {
             Task { await viewModel.clearPipeline() }
+        }
+        .onDisappear {
+            viewModel.persistSessionState()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .flux2PersistSession)) { _ in
+            viewModel.persistSessionState()
         }
     }
 
@@ -531,17 +537,14 @@ struct TextToImageView: View {
             // Main image display
             GeometryReader { geometry in
                 if let cgImage = viewModel.generatedImage {
-                    ScrollView([.horizontal, .vertical]) {
-                        Image(decorative: cgImage, scale: 1.0)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(
-                                maxWidth: geometry.size.width,
-                                maxHeight: geometry.size.height
-                            )
-                    }
+                    PreviewZoomableImageView(
+                        image: cgImage,
+                        zoomScale: Binding(
+                            get: { CGFloat(viewModel.previewZoomScale) },
+                            set: { viewModel.previewZoomScale = Double($0) }
+                        )
+                    )
                     .frame(width: geometry.size.width, height: geometry.size.height)
-                    .background(Color(nsColor: .windowBackgroundColor))
                 } else {
                     VStack {
                         Image(systemName: "photo.on.rectangle.angled")

@@ -72,3 +72,27 @@ public enum Flux2InpaintIntent: String, Sendable, CaseIterable, Codable {
     /// from a "pool" cue), which is the wrong direction here.
     case changeScene
 }
+
+extension Flux2InpaintIntent {
+    public var displayName: String {
+        switch self {
+        case .replace: "Replace"
+        case .remove: "Remove"
+        case .modify: "Modify"
+        case .changeScene: "Change scene"
+        }
+    }
+
+    public var fillHelp: String {
+        switch self {
+        case .replace:
+            "Swap what is inside the mask for a new subject named in the prompt."
+        case .remove:
+            "Clear the masked region and continue the surrounding surface."
+        case .modify:
+            "Repair or adjust what is inside the mask while keeping it recognisable."
+        case .changeScene:
+            "Keep the detected subject and repaint the scene around it."
+        }
+    }
+}

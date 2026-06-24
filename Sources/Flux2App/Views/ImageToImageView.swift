@@ -15,7 +15,7 @@ import AppKit
 
 struct ImageToImageView: View {
     @EnvironmentObject var modelManager: ModelManager
-    @StateObject private var viewModel = ImageGenerationViewModel(loadsEnvironmentProject: true)
+    @StateObject private var viewModel = ImageGenerationViewModel(loadsEnvironmentProject: true, workflow: .imageToImage)
     @State private var isTargetedForDrop = false
     @AppStorage("imageSaveUpscaleBy") private var imageSaveUpscaleBy = 1.0
 
@@ -119,10 +119,28 @@ struct ImageToImageView: View {
             if mode == .generativeFill {
                 viewModel.enrichInpaintPromptWithVLM = true
                 viewModel.inpaintIntent = .modify
+                viewModel.vlmContextManual = false
+                viewModel.syncAutoVLMContextArea()
+            }
+        }
+        .onChange(of: viewModel.enrichInpaintPromptWithVLM) { _, enabled in
+            guard viewModel.editMode == .generativeFill else { return }
+            if enabled {
+                if !viewModel.vlmContextManual {
+                    viewModel.syncAutoVLMContextArea()
+                }
+            } else {
+                viewModel.vlmContextManual = false
             }
         }
         .focusedSceneValue(\.generationUnloadModels) {
             Task { await viewModel.clearPipeline() }
+        }
+        .onDisappear {
+            viewModel.persistSessionState()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .flux2PersistSession)) { _ in
+            viewModel.persistSessionState()
         }
     }
 
@@ -295,15 +313,71 @@ struct ImageToImageView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 case .generativeFill:
-                    Text("Draw a rectangle over a blemish or bad patch. The model regenerates only that region; everything else is preserved.")
+                    Text("Mask the region to regenerate. Rectangle and polygon define the area; Subject uses Apple Vision. Stack masks with Add or Clip.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Picker("Intent", selection: $viewModel.inpaintIntent) {
+                        ForEach(Flux2InpaintIntent.allCases, id: \.self) { intent in
+                            Text(intent.displayName).tag(intent)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    Text(viewModel.inpaintIntent.fillHelp)
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
                     Toggle("Enrich prompt with Qwen3.5 VLM", isOn: $viewModel.enrichInpaintPromptWithVLM)
                         .font(.caption)
 
-                    if viewModel.processArea == nil {
-                        Text("Draw a fill region on the preview before generating.")
+                    if viewModel.enrichInpaintPromptWithVLM {
+                        Text("Barn doors frame what Qwen sees when writing the prompt. Generative fill still uses the full image.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Picker("Mask tool", selection: $viewModel.inpaintMaskTool) {
+                        ForEach(InpaintMaskTool.allCases) { tool in
+                            Text(tool.displayName).tag(tool)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    if !viewModel.inpaintMaskLayers.isEmpty {
+                        Picker("Next mask", selection: $viewModel.inpaintMaskCombineMode) {
+                            ForEach(InpaintMaskCombineMode.allCases) { mode in
+                                Text(mode.displayName).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .help("Add extends the fill region; Clip narrows it.")
+                    }
+
+                    HStack(spacing: 8) {
+                        if viewModel.inpaintMaskTool == .visionSubject {
+                            Button("Add subject mask") {
+                                viewModel.addVisionSubjectMaskLayer()
+                            }
+                            .controlSize(.small)
+                            .help("Uses Apple Vision to detect the main subject.")
+                        }
+
+                        if viewModel.inpaintMaskTool == .polygon {
+                            if viewModel.draftPolygonPoints.count >= 3 {
+                                Button("Close polygon") {
+                                    viewModel.closeDraftPolygon()
+                                }
+                                .controlSize(.small)
+                            }
+                            Text(polygonDraftHelp)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    if !viewModel.hasFillMask {
+                        Text("Draw or add a fill mask on the preview before generating.")
                             .font(.caption)
                             .foregroundStyle(.orange)
                     } else {
@@ -314,6 +388,13 @@ struct ImageToImageView: View {
                 }
             }
         }
+    }
+
+    private var polygonDraftHelp: String {
+        let count = viewModel.draftPolygonPoints.count
+        if count == 0 { return "Click corners on the preview." }
+        if count < 3 { return "\(count) point\(count == 1 ? "" : "s") — need at least 3." }
+        return "\(count) points — Close polygon when ready."
     }
 
     // MARK: - Processing Area Section
@@ -331,9 +412,15 @@ struct ImageToImageView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 case .generativeFill:
-                    Text("The megapixel budget caps the working resolution for generative fill. Larger images are scaled down before denoising.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if viewModel.enrichInpaintPromptWithVLM {
+                        Text("Barn doors set what Qwen sees for prompt writing. The resolution cap limits the fill pass on the full image.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("The megapixel budget caps the working resolution for generative fill. Larger images are scaled down before denoising.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 GroupBox(viewModel.editMode == .generativeFill ? "Resolution cap" : "Megapixel budget") {
@@ -366,6 +453,14 @@ struct ImageToImageView: View {
                         )
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+
+                        if viewModel.editMode == .generativeFill,
+                           let firstRef = viewModel.referenceImages.first {
+                            FillResolutionInfoRow(
+                                image: firstRef.image,
+                                megapixelBudget: viewModel.megapixelBudget
+                            )
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -381,7 +476,14 @@ struct ImageToImageView: View {
                             viewModel.clearProcessSelection()
                         }
                         .controlSize(.small)
-                        .disabled(viewModel.processArea == nil)
+                        .disabled(!viewModel.hasFillMask)
+
+                        if viewModel.enrichInpaintPromptWithVLM {
+                            Button("Reset Context") {
+                                viewModel.resetVLMContextArea()
+                            }
+                            .controlSize(.small)
+                        }
                     }
 
                     Spacer()
@@ -568,15 +670,15 @@ struct ImageToImageView: View {
             .toggleStyle(.checkbox)
 
             if let upsampled = viewModel.upsampledPrompt {
-                upsampledPromptView(upsampled)
+                upsampledPromptView(upsampled, title: viewModel.editMode == .generativeFill ? "VLM prompt" : "Upsampled prompt")
             }
         }
     }
 
     @ViewBuilder
-    private func upsampledPromptView(_ text: String) -> some View {
+    private func upsampledPromptView(_ text: String, title: String = "Upsampled prompt") -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Label("Upsampled prompt", systemImage: "sparkles")
+            Label(title, systemImage: "sparkles")
                 .font(.caption.bold())
                 .foregroundStyle(.secondary)
 
@@ -798,13 +900,21 @@ struct ImageToImageView: View {
     private var outputSection: some View {
         VStack(spacing: 0) {
             HStack {
-                Label(
-                    viewModel.generatedImage == nil && !viewModel.referenceImages.isEmpty ? "Image Preview" : "Generated Image",
-                    systemImage: "photo"
-                )
+                Label(outputPreviewTitle, systemImage: "photo")
                     .font(.headline)
 
                 Spacer()
+
+                if viewModel.canTogglePreviewComparison {
+                    Picker("Compare", selection: $viewModel.previewComparisonSide) {
+                        Text("A").tag(PreviewComparisonSide.formatted)
+                        Text("B").tag(PreviewComparisonSide.processed)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 72)
+                    .help("A: formatted input aligned to output · B: processed result")
+                }
 
                 if viewModel.generatedImage != nil {
                     Button(action: { viewModel.saveImage() }) {
@@ -829,7 +939,6 @@ struct ImageToImageView: View {
                 .disabled(!viewModel.hasPreviewContent)
                 .help("Clear the generated image from the preview pane")
 
-                // Save-related controls (flush-right) once there's an image to work with.
                 if !viewModel.referenceImages.isEmpty {
                     Divider()
                         .frame(height: 16)
@@ -848,8 +957,19 @@ struct ImageToImageView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(viewModel.lastSavedImageURL == nil)
-                    .help("Save the formatted input (before barn doors) as <name>-input")
+                    .help("Save the selected input variant (raw, formatted, or prepared)")
+
+                    Picker(selection: $viewModel.inputSaveSource) {
+                        ForEach(ImageInputSaveSource.allCases) { source in
+                            Text(source.menuLabel).tag(source)
+                        }
+                    } label: {
+                        Text(viewModel.inputSaveSource.menuLabel)
+                    }
+                    .pickerStyle(.menu)
+                    .controlSize(.small)
+                    .fixedSize()
+                    .help("Input variant for Save Input: raw reference, formatted (crop/pad), or prepared (model input)")
                 }
             }
             .padding()
@@ -857,25 +977,23 @@ struct ImageToImageView: View {
             Divider()
 
             // Checkpoints row (if available)
-            if viewModel.showCheckpoints && !viewModel.checkpointImages.isEmpty {
+            if viewModel.showCheckpoints && (viewModel.isGenerating || !viewModel.checkpointImages.isEmpty) {
                 checkpointsSection
+                    .layoutPriority(1)
                 Divider()
             }
 
             // Main image display
             GeometryReader { geometry in
-                if let cgImage = viewModel.generatedImage {
-                    ScrollView([.horizontal, .vertical]) {
-                        Image(decorative: cgImage, scale: 1.0)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(
-                                maxWidth: geometry.size.width,
-                                maxHeight: geometry.size.height
-                            )
-                    }
+                if let cgImage = viewModel.previewDisplayImage ?? viewModel.generatedImage {
+                    PreviewZoomableImageView(
+                        image: cgImage,
+                        zoomScale: Binding(
+                            get: { CGFloat(viewModel.previewZoomScale) },
+                            set: { viewModel.previewZoomScale = Double($0) }
+                        )
+                    )
                     .frame(width: geometry.size.width, height: geometry.size.height)
-                    .background(Color(nsColor: .windowBackgroundColor))
                 } else if let firstRef = viewModel.referenceImages.first {
                     VStack(spacing: 10) {
                         ImagePreparationPreview(
@@ -884,6 +1002,10 @@ struct ImageToImageView: View {
                             sizingMethod: viewModel.sizingMethod,
                             overlayOpacity: viewModel.preparationOverlayOpacity,
                             editMode: viewModel.editMode,
+                            maskTool: viewModel.inpaintMaskTool,
+                            maskLayers: viewModel.inpaintMaskLayers,
+                            draftPolygonPoints: viewModel.draftPolygonPoints,
+                            enrichInpaintPromptWithVLM: viewModel.enrichInpaintPromptWithVLM,
                             contextArea: Binding(
                                 get: { viewModel.contextArea },
                                 set: { viewModel.setContextArea($0) }
@@ -891,17 +1013,28 @@ struct ImageToImageView: View {
                             processArea: Binding(
                                 get: { viewModel.processArea },
                                 set: { viewModel.setProcessArea($0) }
-                            )
+                            ),
+                            onCommitFillRectangle: { viewModel.commitFillRectangle($0) },
+                            onPolygonPoint: { viewModel.addDraftPolygonPoint($0) }
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                        PreparationSizeInfoRow(
-                            image: firstRef.image,
-                            contextArea: viewModel.contextArea,
-                            adjustedSize: viewModel.adjustedGenerationSize
-                        )
-                        .padding(.horizontal)
-                        .padding(.bottom, 10)
+                        if viewModel.editMode == .generativeFill {
+                            FillResolutionInfoRow(
+                                image: firstRef.image,
+                                megapixelBudget: viewModel.megapixelBudget
+                            )
+                            .padding(.horizontal)
+                            .padding(.bottom, 10)
+                        } else {
+                            PreparationSizeInfoRow(
+                                image: firstRef.image,
+                                contextArea: viewModel.contextArea,
+                                adjustedSize: viewModel.adjustedGenerationSize
+                            )
+                            .padding(.horizontal)
+                            .padding(.bottom, 10)
+                        }
                     }
                     .padding()
                     .frame(width: geometry.size.width, height: geometry.size.height)
@@ -929,6 +1062,18 @@ struct ImageToImageView: View {
         }
     }
 
+    private var outputPreviewTitle: String {
+        if viewModel.generatedImage != nil {
+            switch viewModel.previewComparisonSide {
+            case .formatted:
+                return "Formatted (A)"
+            case .processed:
+                return "Processed (B)"
+            }
+        }
+        return viewModel.referenceImages.isEmpty ? "Image Preview" : "Image Preview"
+    }
+
     // MARK: - Checkpoints Section
 
     @ViewBuilder
@@ -953,6 +1098,21 @@ struct ImageToImageView: View {
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
+                    if viewModel.isGenerating && viewModel.checkpointImages.isEmpty {
+                        VStack(spacing: 4) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text(
+                                viewModel.totalSteps > 0
+                                    ? "Step \(viewModel.currentStep)/\(viewModel.totalSteps)"
+                                    : "Generating…"
+                            )
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        }
+                        .frame(width: 80, height: 80)
+                    }
+
                     ForEach(viewModel.checkpointImages) { checkpoint in
                         VStack(spacing: 2) {
                             Image(decorative: checkpoint.image, scale: 1.0)
@@ -1165,8 +1325,14 @@ struct ImagePreparationPreview: View {
     let sizingMethod: ImageSizingMethod
     let overlayOpacity: Double
     let editMode: ImageEditMode
+    var maskTool: InpaintMaskTool = .rectangle
+    var maskLayers: [InpaintMaskLayer] = []
+    var draftPolygonPoints: [CGPoint] = []
+    var enrichInpaintPromptWithVLM: Bool = false
     @Binding var contextArea: CGRect
     @Binding var processArea: CGRect?
+    var onCommitFillRectangle: ((CGRect) -> Void)?
+    var onPolygonPoint: ((CGPoint) -> Void)?
 
     @State private var activeDrag: DragMode?
     @State private var selectionStart: CGPoint?
@@ -1184,7 +1350,9 @@ struct ImagePreparationPreview: View {
         case processSelection
     }
 
-    private var usesBarnDoors: Bool { editMode == .promptEdit }
+    private var usesBarnDoors: Bool {
+        editMode == .promptEdit || (editMode == .generativeFill && enrichInpaintPromptWithVLM)
+    }
     private var usesFillMask: Bool { editMode == .generativeFill }
 
     var body: some View {
@@ -1224,9 +1392,19 @@ struct ImagePreparationPreview: View {
                         .allowsHitTesting(false)
                 }
 
-                if usesFillMask, let processArea {
-                    inpaintMaskOverlay(for: processArea, in: imageRect)
+                if usesFillMask {
+                    committedMaskOverlays(in: imageRect)
                         .allowsHitTesting(false)
+
+                    if maskTool == .rectangle, let processArea {
+                        inpaintMaskOverlay(for: processArea, in: imageRect, isDraft: true)
+                            .allowsHitTesting(false)
+                    }
+
+                    if maskTool == .polygon, !draftPolygonPoints.isEmpty {
+                        draftPolygonOverlay(in: imageRect)
+                            .allowsHitTesting(false)
+                    }
                 }
             }
             .compositingGroup()
@@ -1472,7 +1650,18 @@ struct ImagePreparationPreview: View {
                     break
                 }
             }
-            .onEnded { _ in
+            .onEnded { value in
+                if usesFillMask && maskTool == .polygon {
+                    let point = normalizedPoint(for: value.location, in: imageRect)
+                    onPolygonPoint?(point)
+                } else if activeDrag == .processSelection, let rect = processArea {
+                    let minWidthNorm = 12 / max(imageRect.width, 1)
+                    let minHeightNorm = 12 / max(imageRect.height, 1)
+                    if rect.width >= minWidthNorm, rect.height >= minHeightNorm {
+                        onCommitFillRectangle?(rect)
+                    }
+                }
+
                 activeDrag = nil
                 selectionStart = nil
                 contextBeforeDrag = nil
@@ -1486,8 +1675,21 @@ struct ImagePreparationPreview: View {
     private func dragMode(for location: CGPoint, in imageRect: CGRect) -> DragMode? {
         guard imageRect.contains(location) else { return nil }
 
+        if usesFillMask && enrichInpaintPromptWithVLM {
+            if let edge = contextEdge(at: location, in: imageRect) {
+                return edge
+            }
+            if maskTool == .rectangle {
+                return .processSelection
+            }
+            return .contextSelection
+        }
+
         if usesFillMask {
-            return .processSelection
+            if maskTool == .rectangle {
+                return .processSelection
+            }
+            return nil
         }
 
         // Barn-door edges take priority within their 20px grab zone, so an edge
@@ -1499,23 +1701,114 @@ struct ImagePreparationPreview: View {
         return .contextSelection
     }
 
-    private func inpaintMaskOverlay(for normalizedRect: CGRect, in imageRect: CGRect) -> some View {
+    private func inpaintMaskOverlay(for normalizedRect: CGRect, in imageRect: CGRect, isDraft: Bool = false) -> some View {
         let rect = pixelAligned(displayRect(for: normalizedRect, in: imageRect))
+        let strokeColor = isDraft ? Color.accentColor : Color.orange
         return ZStack {
-            Path { path in
-                path.addRect(imageRect)
-                path.addRect(rect)
+            if isDraft {
+                Path { path in
+                    path.addRect(imageRect)
+                    path.addRect(rect)
+                }
+                .fill(Color.black.opacity(0.45), style: FillStyle(eoFill: true, antialiased: false))
             }
-            .fill(Color.black.opacity(0.45), style: FillStyle(eoFill: true, antialiased: false))
 
             Path { path in
                 path.addRect(rect)
             }
             .stroke(
-                Color.accentColor,
+                strokeColor,
                 style: StrokeStyle(lineWidth: 2, dash: [8, 6])
             )
         }
+    }
+
+    @ViewBuilder
+    private func committedMaskOverlays(in imageRect: CGRect) -> some View {
+        ForEach(maskLayers) { layer in
+            switch layer.primitive {
+            case .rectangle(let rect):
+                inpaintMaskOverlay(for: rect.cgRect, in: imageRect, isDraft: false)
+            case .polygon(let points):
+                polygonOverlay(points: points.map(\.cgPoint), in: imageRect, combineMode: layer.combineMode)
+            case .visionSubject:
+                visionSubjectOverlay(in: imageRect, combineMode: layer.combineMode)
+            }
+        }
+    }
+
+    private func polygonOverlay(
+        points: [CGPoint],
+        in imageRect: CGRect,
+        combineMode: InpaintMaskCombineMode
+    ) -> some View {
+        let color = combineMode == .clip ? Color.purple : Color.orange
+        return ZStack {
+            Path { path in
+                guard let first = points.first else { return }
+                path.move(to: displayPoint(first, in: imageRect))
+                for point in points.dropFirst() {
+                    path.addLine(to: displayPoint(point, in: imageRect))
+                }
+                path.closeSubpath()
+            }
+            .stroke(color, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+
+            ForEach(Array(points.enumerated()), id: \.offset) { _, point in
+                Circle()
+                    .fill(color)
+                    .frame(width: 6, height: 6)
+                    .position(displayPoint(point, in: imageRect))
+            }
+        }
+    }
+
+    private func draftPolygonOverlay(in imageRect: CGRect) -> some View {
+        ZStack {
+            Path { path in
+                guard let first = draftPolygonPoints.first else { return }
+                path.move(to: displayPoint(first, in: imageRect))
+                for point in draftPolygonPoints.dropFirst() {
+                    path.addLine(to: displayPoint(point, in: imageRect))
+                }
+                if draftPolygonPoints.count >= 3 {
+                    path.closeSubpath()
+                }
+            }
+            .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [4, 4]))
+
+            ForEach(Array(draftPolygonPoints.enumerated()), id: \.offset) { _, point in
+                Circle()
+                    .fill(Color.accentColor)
+                    .frame(width: 7, height: 7)
+                    .position(displayPoint(point, in: imageRect))
+            }
+        }
+    }
+
+    private func visionSubjectOverlay(in imageRect: CGRect, combineMode: InpaintMaskCombineMode) -> some View {
+        let color = combineMode == .clip ? Color.purple : Color.teal
+        return ZStack {
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(color, style: StrokeStyle(lineWidth: 2, dash: [10, 6]))
+                .frame(width: imageRect.width - 8, height: imageRect.height - 8)
+                .position(x: imageRect.midX, y: imageRect.midY)
+
+            Text("Vision subject")
+                .font(.caption2.weight(.semibold))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(color.opacity(0.2))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .position(x: imageRect.midX, y: imageRect.minY + 14)
+        }
+    }
+
+    private func displayPoint(_ normalized: CGPoint, in imageRect: CGRect) -> CGPoint {
+        CGPoint(
+            x: imageRect.minX + normalized.x * imageRect.width,
+            y: imageRect.minY + normalized.y * imageRect.height
+        )
     }
 
     private func contextEdge(at location: CGPoint, in imageRect: CGRect) -> DragMode? {
@@ -1542,6 +1835,19 @@ struct ImagePreparationPreview: View {
     #if canImport(AppKit)
     private func cursor(for location: CGPoint, in imageRect: CGRect) -> NSCursor {
         if usesFillMask {
+            if enrichInpaintPromptWithVLM, let edge = contextEdge(at: location, in: imageRect) {
+                switch edge {
+                case .contextLeft, .contextRight:
+                    return .resizeLeftRight
+                case .contextTop, .contextBottom:
+                    return .resizeUpDown
+                default:
+                    break
+                }
+            }
+            if maskTool == .visionSubject {
+                return enrichInpaintPromptWithVLM && contextEdge(at: location, in: imageRect) != nil ? .resizeLeftRight : .arrow
+            }
             return imageRect.contains(location) ? .crosshair : .arrow
         }
 
@@ -1886,6 +2192,44 @@ struct PreparationSizeInfoRow: View {
             Text(value)
                 .monospacedDigit()
         }
+    }
+}
+
+/// Warns when generative fill must downscale the source to fit the resolution cap.
+struct FillResolutionInfoRow: View {
+    let image: CGImage
+    let megapixelBudget: Double
+
+    var body: some View {
+        let factor = downscaleFactor
+        if factor < 0.99 {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "arrow.down.forward.square")
+                    .foregroundStyle(.yellow)
+                Text(
+                    String(
+                        format: "Resolution cap downscales the image to %.0f%% before fill — very fine detail may soften.",
+                        factor * 100
+                    )
+                )
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .font(.caption.weight(.medium))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.yellow.opacity(0.14))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+    }
+
+    private var downscaleFactor: Double {
+        let area = Double(image.width * image.height)
+        let cap = megapixelBudget * 1_000_000
+        guard area > cap, area > 0 else { return 1 }
+        return (cap / area).squareRoot()
     }
 }
 

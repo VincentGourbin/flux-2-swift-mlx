@@ -188,6 +188,28 @@ final class Flux2VLMPromptBuilderTests: XCTestCase {
         XCTAssertEqual(Flux2VLMPromptBuilder.cleanFinalPrompt("a sign reading \"OPEN\""), "a sign reading \"OPEN\"")
     }
 
+    func testValidatedPromptRejectsSafetyRefusal() {
+        XCTAssertNil(
+            Flux2VLMPromptBuilder.validatedPrompt(
+                from: "I cannot generate content related to smoking or tobacco."
+            )
+        )
+    }
+
+    func testValidatedPromptAcceptsNormalPrompt() {
+        XCTAssertEqual(
+            Flux2VLMPromptBuilder.validatedPrompt(
+                from: "Weathered grey asphalt pavement in soft midday sunlight."
+            ),
+            "Weathered grey asphalt pavement in soft midday sunlight."
+        )
+    }
+
+    func testLooksLikeVLMRefusalDetectsCommonPrefixes() {
+        XCTAssertTrue(Flux2VLMPromptBuilder.looksLikeVLMRefusal("I'm sorry, but I can't help with that."))
+        XCTAssertFalse(Flux2VLMPromptBuilder.looksLikeVLMRefusal("A mallard duck on grey concrete in soft light."))
+    }
+
     // MARK: - Helpers
 
     private func solidImage(width: Int, height: Int, value: UInt8 = 128) -> CGImage {

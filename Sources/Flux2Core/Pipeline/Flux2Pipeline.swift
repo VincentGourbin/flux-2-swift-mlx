@@ -82,11 +82,21 @@ public struct Flux2GenerationResult: Sendable {
     /// The original prompt before any enhancement
     public let originalPrompt: String
 
-    public init(image: CGImage, usedPrompt: String, wasUpsampled: Bool, originalPrompt: String) {
+    /// Optional user-facing notice (e.g. VLM safety refusal → fallback).
+    public let notice: String?
+
+    public init(
+        image: CGImage,
+        usedPrompt: String,
+        wasUpsampled: Bool,
+        originalPrompt: String,
+        notice: String? = nil
+    ) {
         self.image = image
         self.usedPrompt = usedPrompt
         self.wasUpsampled = wasUpsampled
         self.originalPrompt = originalPrompt
+        self.notice = notice
     }
 }
 

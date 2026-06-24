@@ -85,6 +85,35 @@ public enum ImagePreparation {
         )
     }
 
+    /// Apply Image Formatting (Favour + crop/pad) to the full reference frame at an
+    /// explicit canvas size. Used for aligned A/B preview and variant saves.
+    public static func formatToCanvas(
+        referenceImage: CGImage,
+        settings: ImagePreparationSettings,
+        targetWidth: Int,
+        targetHeight: Int
+    ) throws -> CGImage {
+        var settings = settings
+        settings.clampValues()
+        settings.contextArea = CGRect(x: 0, y: 0, width: 1, height: 1)
+
+        let contextRect = integralPixelRect(from: settings.contextArea, in: referenceImage)
+        let contextImage = try cropImage(referenceImage, to: contextRect)
+        let transform = preparationTransform(
+            sourceWidth: contextImage.width,
+            sourceHeight: contextImage.height,
+            targetWidth: targetWidth,
+            targetHeight: targetHeight,
+            method: settings.sizingMethod
+        )
+        return try renderImage(
+            contextImage,
+            targetWidth: targetWidth,
+            targetHeight: targetHeight,
+            transform: transform
+        )
+    }
+
     public static func prepare(
         referenceImages: [CGImage],
         settings: ImagePreparationSettings
@@ -335,5 +364,87 @@ public enum ImagePreparation {
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         )
+    }
+
+    /// Crop a reference image to a normalized top-left unit rectangle.
+    public static func cropReferenceImage(_ image: CGImage, normalizedRect: CGRect) throws -> CGImage {
+        let rect = integralPixelRect(from: normalizedRect, in: image)
+        return try cropImage(image, to: rect)
+    }
+
+    /// Default barn-door region for Qwen prompt writing: mask bounds plus padding.
+    public static func autoVLMContextArea(
+        maskLayers: [InpaintMaskLayer],
+        processArea: CGRect?,
+        draftPolygonPoints: [CGPoint] = []
+    ) -> CGRect {
+        if maskLayers.contains(where: {
+            if case .visionSubject = $0.primitive { return true }
+            return false
+        }) {
+            return CGRect(x: 0, y: 0, width: 1, height: 1)
+        }
+
+        var bbox: CGRect?
+        func union(_ rect: CGRect) {
+            guard rect.width > 0, rect.height > 0 else { return }
+            if let existing = bbox {
+                bbox = existing.union(rect)
+            } else {
+                bbox = rect
+            }
+        }
+
+        for layer in maskLayers {
+            switch layer.primitive {
+            case .rectangle(let rect):
+                union(rect.cgRect)
+            case .polygon(let points):
+                guard let first = points.first else { continue }
+                var minX = first.x
+                var maxX = first.x
+                var minY = first.y
+                var maxY = first.y
+                for point in points {
+                    minX = min(minX, point.x)
+                    maxX = max(maxX, point.x)
+                    minY = min(minY, point.y)
+                    maxY = max(maxY, point.y)
+                }
+                union(CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY))
+            case .visionSubject:
+                return CGRect(x: 0, y: 0, width: 1, height: 1)
+            }
+        }
+
+        if let processArea {
+            union(processArea)
+        }
+
+        for point in draftPolygonPoints {
+            union(CGRect(x: point.x - 0.005, y: point.y - 0.005, width: 0.01, height: 0.01))
+        }
+
+        guard var bounds = bbox else {
+            return CGRect(x: 0, y: 0, width: 1, height: 1)
+        }
+
+        let padX = bounds.width * 0.75
+        let padY = bounds.height * 0.75
+        bounds = bounds.insetBy(dx: -padX, dy: -padY)
+
+        let minSize: CGFloat = 0.15
+        if bounds.width < minSize {
+            let extra = (minSize - bounds.width) / 2
+            bounds.origin.x -= extra
+            bounds.size.width = minSize
+        }
+        if bounds.height < minSize {
+            let extra = (minSize - bounds.height) / 2
+            bounds.origin.y -= extra
+            bounds.size.height = minSize
+        }
+
+        return clampUnitRect(bounds)
     }
 }

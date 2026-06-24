@@ -18,6 +18,11 @@ import AppKit
 
 // MARK: - Generation Mode
 
+enum GenerationWorkflow {
+    case textToImage
+    case imageToImage
+}
+
 enum GenerationMode: String, CaseIterable {
     case textToImage = "Text to Image"
     case imageToImage = "Image to Image"
@@ -98,6 +103,11 @@ class ImageGenerationViewModel: ObservableObject {
     @Published var editMode: ImageEditMode = .promptEdit
     @Published var inpaintIntent: Flux2InpaintIntent = .modify
     @Published var enrichInpaintPromptWithVLM: Bool = false
+    @Published var vlmContextManual: Bool = false
+    @Published var inpaintMaskLayers: [InpaintMaskLayer] = []
+    @Published var inpaintMaskTool: InpaintMaskTool = .rectangle
+    @Published var inpaintMaskCombineMode: InpaintMaskCombineMode = .add
+    @Published var draftPolygonPoints: [CGPoint] = []
     /// Target generation budget in megapixels (the *maximum* total pixels). The
     /// barn doors set the aspect ratio; the generation fills this budget at that
     /// aspect, so a small barn-door region no longer shrinks the output — it just
@@ -131,6 +141,11 @@ class ImageGenerationViewModel: ObservableObject {
     @Published var currentStep: Int = 0
     @Published var totalSteps: Int = 0
     @Published var generatedImage: CGImage?
+    /// Formatted input scaled to match the latest output dimensions for aligned A/B preview.
+    @Published private(set) var formattedComparisonImage: CGImage?
+    @Published var previewZoomScale: Double = 1.0
+    @Published var previewComparisonSide: PreviewComparisonSide = .processed
+    @Published var inputSaveSource: ImageInputSaveSource = .formatted
     @Published var errorMessage: String?
     @Published var statusMessage: String = ""
     @Published var currentProjectURL: URL?
@@ -143,6 +158,19 @@ class ImageGenerationViewModel: ObservableObject {
     /// placeholder when nothing has been saved/opened yet.
     var projectDisplayName: String {
         currentProjectURL?.deletingPathExtension().lastPathComponent ?? "Untitled Project"
+    }
+
+    /// Image shown in the output preview (processed result or aligned formatted comparison).
+    var previewDisplayImage: CGImage? {
+        guard let generatedImage else { return nil }
+        if previewComparisonSide == .formatted, let formattedComparisonImage {
+            return formattedComparisonImage
+        }
+        return generatedImage
+    }
+
+    var canTogglePreviewComparison: Bool {
+        generatedImage != nil && formattedComparisonImage != nil
     }
 
     /// Whether the preview pane is showing a generation result (or checkpoints).
@@ -162,15 +190,18 @@ class ImageGenerationViewModel: ObservableObject {
 
     // MARK: - Init with defaults
     private let loadsEnvironmentProject: Bool
+    private let workflow: GenerationWorkflow
 
-    init(loadsEnvironmentProject: Bool = false) {
+    init(loadsEnvironmentProject: Bool = false, workflow: GenerationWorkflow = .textToImage) {
         self.loadsEnvironmentProject = loadsEnvironmentProject
+        self.workflow = workflow
         applyRecommendedDefaults(for: selectedModel)
         if loadsEnvironmentProject {
             loadStartupProjectIfAvailable()
         } else {
             loadLastProjectIfAvailable()
         }
+        restoreSessionStateIfNeeded()
     }
 
     // MARK: - Computed Properties
@@ -183,7 +214,7 @@ class ImageGenerationViewModel: ObservableObject {
     var canGenerate: Bool {
         guard !isPipelineBusy, isFamilySelected else { return false }
         if !referenceImages.isEmpty, editMode == .generativeFill {
-            guard processArea != nil else { return false }
+            guard hasFillMask else { return false }
             return !prompt.isEmpty || enrichInpaintPromptWithVLM
         }
         guard !prompt.isEmpty else { return false }
@@ -261,6 +292,14 @@ class ImageGenerationViewModel: ObservableObject {
     }
 
     var processAreaDescription: String {
+        guard referenceImages.first?.image != nil else {
+            return editMode == .generativeFill ? "Fill region: none selected" : "Process: none selected"
+        }
+
+        if editMode == .generativeFill, !inpaintMaskLayers.isEmpty {
+            return "Fill mask: \(inpaintMaskLayers.count) layer\(inpaintMaskLayers.count == 1 ? "" : "s")"
+        }
+
         guard let image = referenceImages.first?.image,
               let processArea else {
             return editMode == .generativeFill ? "Fill region: none selected" : "Process: none selected"
@@ -269,6 +308,19 @@ class ImageGenerationViewModel: ObservableObject {
         let rect = pixelRect(from: processArea, in: image)
         let prefix = editMode == .generativeFill ? "Fill" : "Process"
         return "\(prefix): \(Int(rect.width))x\(Int(rect.height)) at x=\(Int(rect.minX)) y=\(Int(rect.minY))"
+    }
+
+    var hasFillMask: Bool {
+        !inpaintMaskLayers.isEmpty || processArea != nil
+    }
+
+    /// How much the resolution cap shrinks the working image before generative fill.
+    var fillDownscaleFactor: Double {
+        guard let image = referenceImages.first?.image else { return 1 }
+        let area = Double(image.width * image.height)
+        let cap = megapixelBudget * 1_000_000
+        guard area > cap, area > 0 else { return 1 }
+        return (cap / area).squareRoot()
     }
 
     var contextAreaDescription: String {
@@ -369,7 +421,11 @@ class ImageGenerationViewModel: ObservableObject {
 
     func applySizingControls() {
         guard let image = referenceImages.first?.image else { return }
-        let size = ImagePreparation.generationSize(referenceImage: image, settings: currentPreparationSettings())
+        var settings = currentPreparationSettings()
+        if editMode == .generativeFill {
+            settings.contextArea = CGRect(x: 0, y: 0, width: 1, height: 1)
+        }
+        let size = ImagePreparation.generationSize(referenceImage: image, settings: settings)
         width = size.width
         height = size.height
     }
@@ -480,7 +536,28 @@ class ImageGenerationViewModel: ObservableObject {
     /// Update the barn-door (context) region from a barn-door edge drag.
     func setContextArea(_ rect: CGRect) {
         contextArea = Self.clampUnitRect(rect)
+        if editMode == .generativeFill {
+            if enrichInpaintPromptWithVLM {
+                vlmContextManual = true
+            }
+            return
+        }
         applySizingControls()
+    }
+
+    func resetVLMContextArea() {
+        guard editMode == .generativeFill else { return }
+        vlmContextManual = false
+        syncAutoVLMContextArea()
+    }
+
+    func syncAutoVLMContextArea() {
+        guard editMode == .generativeFill, enrichInpaintPromptWithVLM, !vlmContextManual else { return }
+        contextArea = ImagePreparation.autoVLMContextArea(
+            maskLayers: inpaintMaskLayers,
+            processArea: processArea,
+            draftPolygonPoints: draftPolygonPoints
+        )
     }
 
     /// Set or update the process selection (the dashed marquee).
@@ -493,7 +570,86 @@ class ImageGenerationViewModel: ObservableObject {
     }
 
     func clearProcessSelection() {
+        clearFillMask()
+    }
+
+    func commitFillRectangle(_ rect: CGRect) {
+        let clamped = Self.clampUnitRect(rect)
+        inpaintMaskLayers.append(
+            InpaintMaskLayer(
+                combineMode: inpaintMaskCombineMode,
+                primitive: .rectangle(.init(clamped))
+            )
+        )
+        processArea = clamped
+        syncAutoVLMContextArea()
+    }
+
+    func addDraftPolygonPoint(_ point: CGPoint) {
+        draftPolygonPoints.append(Self.clampUnitPoint(point))
+    }
+
+    func closeDraftPolygon() {
+        guard draftPolygonPoints.count >= 3 else { return }
+        let points = draftPolygonPoints.map { FluxGenerationProject.NormalizedPoint($0) }
+        inpaintMaskLayers.append(
+            InpaintMaskLayer(
+                combineMode: inpaintMaskCombineMode,
+                primitive: .polygon(points)
+            )
+        )
+        draftPolygonPoints.removeAll()
+        syncAutoVLMContextArea()
+    }
+
+    func addVisionSubjectMaskLayer() {
+        inpaintMaskLayers.append(
+            InpaintMaskLayer(
+                combineMode: inpaintMaskCombineMode,
+                primitive: .visionSubject
+            )
+        )
+        syncAutoVLMContextArea()
+    }
+
+    func clearFillMask() {
+        inpaintMaskLayers.removeAll()
+        draftPolygonPoints.removeAll()
         processArea = nil
+        syncAutoVLMContextArea()
+    }
+
+    func buildGenerativeFillMask(for image: CGImage) throws -> CGImage {
+        var visionMask: CGImage?
+        let needsVision = inpaintMaskLayers.contains {
+            if case .visionSubject = $0.primitive { return true }
+            return false
+        }
+        if needsVision {
+            if #available(macOS 14.0, *) {
+                if inpaintIntent == .changeScene {
+                    visionMask = try Flux2SubjectMask.makeChangeSceneMask(from: image, edgeSoftnessPixels: 0)
+                } else {
+                    visionMask = try Flux2SubjectMask.makeSubjectInpaintMask(from: image, edgeSoftnessPixels: 0)
+                }
+            } else {
+                throw Flux2Error.invalidConfiguration("Apple Vision subject masks require macOS 14 or later.")
+            }
+        }
+
+        return try ImageMaskBuilder.buildInpaintMask(
+            definition: InpaintMaskDefinition(layers: inpaintMaskLayers),
+            image: image,
+            legacyRectangle: processArea,
+            visionMask: visionMask
+        )
+    }
+
+    static func clampUnitPoint(_ point: CGPoint) -> CGPoint {
+        CGPoint(
+            x: min(max(point.x, 0), 1),
+            y: min(max(point.y, 0), 1)
+        )
     }
 
     // Dormant in prompt-edit mode until a paste-back marquee UI ships.
@@ -799,9 +955,16 @@ class ImageGenerationViewModel: ObservableObject {
         editMode = ImageEditMode.fromProjectValue(project.editMode)
         inpaintIntent = project.inpaintIntent.flatMap(Flux2InpaintIntent.init(rawValue:)) ?? .modify
         enrichInpaintPromptWithVLM = project.enrichInpaintPromptWithVLM ?? (editMode == .generativeFill)
+        vlmContextManual = project.vlmContextManual ?? false
+        inpaintMaskLayers = project.inpaintMaskLayers ?? []
+        draftPolygonPoints.removeAll()
+        if editMode == .generativeFill, enrichInpaintPromptWithVLM, !vlmContextManual {
+            syncAutoVLMContextArea()
+        }
         interpretImageURLs = project.interpretImagePaths.map { URL(fileURLWithPath: $0) }
         referenceImages = restoredReferences
         generatedImage = nil
+        formattedComparisonImage = nil
         upsampledPrompt = nil
         checkpointImages.removeAll()
         errorMessage = nil
@@ -833,6 +996,8 @@ class ImageGenerationViewModel: ObservableObject {
             editMode: editMode.rawValue,
             inpaintIntent: inpaintIntent.rawValue,
             enrichInpaintPromptWithVLM: enrichInpaintPromptWithVLM,
+            vlmContextManual: vlmContextManual,
+            inpaintMaskLayers: inpaintMaskLayers.isEmpty ? nil : inpaintMaskLayers,
             interpretImagePaths: interpretImageURLs.map(\.path),
             referenceImages: try referenceImages.map { reference in
                 FluxGenerationProject.ReferenceImage(
@@ -973,7 +1138,7 @@ class ImageGenerationViewModel: ObservableObject {
                 image = result.image
                 if result.wasUpsampled { upsampledPrompt = result.usedPrompt }
             } else if editMode == .generativeFill {
-                guard let processArea else {
+                guard hasFillMask else {
                     throw Flux2Error.invalidConfiguration("Draw a fill region on the reference image before generating.")
                 }
 
@@ -984,11 +1149,7 @@ class ImageGenerationViewModel: ObservableObject {
 
                 let sourceImage = referenceImages[0].image
                 statusMessage = "Building fill mask..."
-                let mask = try ImageMaskBuilder.rectangularInpaintMask(
-                    width: sourceImage.width,
-                    height: sourceImage.height,
-                    normalizedRect: processArea
-                )
+                let mask = try buildGenerativeFillMask(for: sourceImage)
 
                 statusMessage = "Running generative fill..."
                 let maxPixels = Int(megapixelBudget * 1_000_000)
@@ -1003,7 +1164,9 @@ class ImageGenerationViewModel: ObservableObject {
                     upsamplePrompt: upsamplePrompt,
                     enrichPromptWithVLM: enrichInpaintPromptWithVLM,
                     intent: inpaintIntent,
+                    vlmContextArea: enrichInpaintPromptWithVLM ? contextArea : nil,
                     maxPixels: maxPixels,
+                    checkpointInterval: showCheckpoints ? checkpointInterval : nil,
                     onProgress: { current, total in
                         Task { @MainActor in
                             guard self.isGenerating else { return }
@@ -1011,11 +1174,21 @@ class ImageGenerationViewModel: ObservableObject {
                             self.totalSteps = total
                             self.statusMessage = "Step \(current)/\(total)"
                         }
-                    }
+                    },
+                    onCheckpoint: checkpointCallback
                 )
                 let result = try await chain.run()
                 image = result.image
-                if result.wasUpsampled { upsampledPrompt = result.usedPrompt }
+                if result.wasUpsampled {
+                    upsampledPrompt = result.usedPrompt
+                } else if enrichInpaintPromptWithVLM,
+                          result.usedPrompt != prompt,
+                          !result.usedPrompt.isEmpty {
+                    upsampledPrompt = result.usedPrompt
+                }
+                if let notice = result.notice {
+                    statusMessage = "Generation complete — \(notice)"
+                }
             } else {
                 // Image-to-Image (prompt edit + Image Preparation)
                 statusMessage = "Preparing image-to-image input..."
@@ -1057,8 +1230,12 @@ class ImageGenerationViewModel: ObservableObject {
             // pressed during the final step, `isGenerating` is already false and
             // we discard the result rather than flashing it over "Cancelled".
             if isGenerating {
+                cacheFormattedComparisonImage(for: image)
                 generatedImage = image
-                statusMessage = "Generation complete!"
+                previewComparisonSide = .processed
+                if statusMessage.isEmpty || statusMessage.hasPrefix("Step ") {
+                    statusMessage = "Generation complete!"
+                }
                 if clearPromptAfterGeneration {
                     prompt = ""
                 }
@@ -1116,6 +1293,35 @@ class ImageGenerationViewModel: ObservableObject {
         }
     }
 
+    /// Save the input variant chosen in the Save Input picker (raw / formatted / prepared).
+    func saveInputImage() {
+        do {
+            let (image, suffix) = try resolveInputSaveImage(for: inputSaveSource)
+            let url = try ImageSaveService.save(
+                image,
+                metadata: ImageSaveMetadata(prompt: prompt),
+                stemSuffix: suffix
+            )
+            statusMessage = "Saved \(inputSaveSource.rawValue.lowercased()) input to \(url.lastPathComponent)"
+        } catch {
+            errorMessage = "Failed to save input: \(error.localizedDescription)"
+        }
+    }
+
+    private func resolveInputSaveImage(for source: ImageInputSaveSource) throws -> (CGImage, String?) {
+        switch source {
+        case .raw:
+            guard let image = referenceImages.first?.image else {
+                throw Flux2Error.invalidConfiguration("Add a reference image before saving the raw input.")
+            }
+            return (image, "-raw")
+        case .formatted:
+            return (try formattedFullInputImage(), "-formatted")
+        case .prepared:
+            return (try preparedInputImage(), "-prepared")
+        }
+    }
+
     /// Open the configured output folder in Finder, selecting the last save when known.
     func openOutputFolder() {
         #if canImport(AppKit)
@@ -1135,26 +1341,10 @@ class ImageGenerationViewModel: ObservableObject {
     /// Clear the generated image and checkpoints from the preview pane.
     func clearPreview() {
         generatedImage = nil
+        formattedComparisonImage = nil
+        previewComparisonSide = .processed
         checkpointImages.removeAll()
         statusMessage = "Preview cleared"
-    }
-
-    /// Save the formatted input image (Image Formatting applied to the whole
-    /// reference, ignoring the barn doors) next to the last saved output, sharing
-    /// its name + extension with a "-input" suffix.
-    func saveInputImage() {
-        guard let outputURL = lastSavedImageURL else {
-            errorMessage = "Save the generated image first so the input can share its name."
-            return
-        }
-
-        do {
-            let input = try formattedFullInputImage()
-            let url = try ImageSaveService.saveCompanion(input, alongside: outputURL, suffix: "-input")
-            statusMessage = "Saved input to \(url.lastPathComponent)"
-        } catch {
-            errorMessage = "Failed to save input: \(error.localizedDescription)"
-        }
     }
 
     /// The reference image formatted per Image Formatting (Favour + crop/pad)
@@ -1169,6 +1359,160 @@ class ImageGenerationViewModel: ObservableObject {
         var settings = currentPreparationSettings()
         settings.contextArea = CGRect(x: 0, y: 0, width: 1, height: 1)
         return try ImagePreparation.prepare(referenceImages: [original], settings: settings).images[0]
+    }
+
+    /// The barn-door crop plus formatting — the first reference image sent to the model.
+    func preparedInputImage() throws -> CGImage {
+        guard !referenceImages.isEmpty else {
+            throw Flux2Error.invalidConfiguration("Add a reference image before saving the prepared input")
+        }
+        return try prepareImageToImageInput().images[0]
+    }
+
+    private func cacheFormattedComparisonImage(for output: CGImage) {
+        guard let original = referenceImages.first?.image else {
+            formattedComparisonImage = nil
+            return
+        }
+
+        formattedComparisonImage = try? ImagePreparation.formatToCanvas(
+            referenceImage: original,
+            settings: currentPreparationSettings(),
+            targetWidth: output.width,
+            targetHeight: output.height
+        )
+    }
+
+    func persistSessionState() {
+        let state = captureGUIState()
+        switch workflow {
+        case .imageToImage:
+            Flux2AppSessionStore.saveImageToImage(state)
+        case .textToImage:
+            Flux2AppSessionStore.saveTextToImage(state)
+        }
+    }
+
+    private func restoreSessionStateIfNeeded() {
+        if loadsEnvironmentProject,
+           let projectPath = ProcessInfo.processInfo.environment["F2SM_PROJECT"],
+           !projectPath.isEmpty {
+            return
+        }
+
+        let state: Flux2GenerationGUIState?
+        switch workflow {
+        case .imageToImage:
+            state = Flux2AppSessionStore.loadImageToImage()
+        case .textToImage:
+            state = Flux2AppSessionStore.loadTextToImage()
+        }
+
+        guard let state else { return }
+        applyGUIState(state, projectLoaded: currentProjectURL != nil)
+    }
+
+    private func captureGUIState() -> Flux2GenerationGUIState {
+        Flux2GenerationGUIState(
+            selectedFamily: selectedFamily?.rawValue,
+            selectedModel: selectedModel.rawValue,
+            textQuantization: textQuantization.rawValue,
+            transformerQuantization: transformerQuantization.rawValue,
+            prompt: prompt,
+            upsamplePrompt: upsamplePrompt,
+            clearPromptAfterGeneration: clearPromptAfterGeneration,
+            width: width,
+            height: height,
+            steps: steps,
+            guidance: guidance,
+            seed: seed,
+            sizingFavor: sizingFavor.rawValue,
+            sizingMethod: sizingMethod.rawValue,
+            preparationScale: preparationScale,
+            preparationOverlayOpacity: preparationOverlayOpacity,
+            megapixelBudget: megapixelBudget,
+            contextAreaX: Double(contextArea.minX),
+            contextAreaY: Double(contextArea.minY),
+            contextAreaWidth: Double(contextArea.width),
+            contextAreaHeight: Double(contextArea.height),
+            processAreaX: processArea.map { Double($0.minX) },
+            processAreaY: processArea.map { Double($0.minY) },
+            processAreaWidth: processArea.map { Double($0.width) },
+            processAreaHeight: processArea.map { Double($0.height) },
+            hasProcessArea: processArea != nil,
+            editMode: editMode.rawValue,
+            inpaintIntent: inpaintIntent.rawValue,
+            enrichInpaintPromptWithVLM: enrichInpaintPromptWithVLM,
+            vlmContextManual: vlmContextManual,
+            interpretImagePaths: interpretImageURLs.map(\.path),
+            showCheckpoints: showCheckpoints,
+            checkpointInterval: checkpointInterval,
+            previewZoomScale: previewZoomScale,
+            previewComparisonSide: previewComparisonSide.rawValue,
+            inputSaveSource: inputSaveSource.rawValue
+        )
+    }
+
+    private func applyGUIState(_ state: Flux2GenerationGUIState, projectLoaded: Bool) {
+        if !projectLoaded {
+            skipNextModelDefaultApplication = true
+            if let family = state.selectedFamily.flatMap(ModelFamily.init(rawValue:)) {
+                selectedFamily = family
+            }
+            selectedModel = Flux2Model(rawValue: state.selectedModel) ?? selectedModel
+            textQuantization = MistralQuantization(rawValue: state.textQuantization) ?? textQuantization
+            transformerQuantization = TransformerQuantization(rawValue: state.transformerQuantization) ?? transformerQuantization
+            prompt = state.prompt
+            upsamplePrompt = state.upsamplePrompt
+            clearPromptAfterGeneration = state.clearPromptAfterGeneration
+            width = state.width
+            height = state.height
+            steps = state.steps
+            guidance = state.guidance
+            seed = state.seed
+            interpretImageURLs = state.interpretImagePaths.map { URL(fileURLWithPath: $0) }
+
+            if workflow == .imageToImage {
+                sizingFavor = ImageSizingFavor(rawValue: state.sizingFavor ?? sizingFavor.rawValue) ?? sizingFavor
+                sizingMethod = ImageSizingMethod(rawValue: state.sizingMethod ?? sizingMethod.rawValue) ?? sizingMethod
+                preparationScale = state.preparationScale ?? preparationScale
+                preparationOverlayOpacity = state.preparationOverlayOpacity ?? preparationOverlayOpacity
+                megapixelBudget = state.megapixelBudget ?? megapixelBudget
+                contextArea = Self.clampUnitRect(CGRect(
+                    x: state.contextAreaX ?? contextArea.minX,
+                    y: state.contextAreaY ?? contextArea.minY,
+                    width: state.contextAreaWidth ?? contextArea.width,
+                    height: state.contextAreaHeight ?? contextArea.height
+                ))
+                if state.hasProcessArea,
+                   let x = state.processAreaX,
+                   let y = state.processAreaY,
+                   let width = state.processAreaWidth,
+                   let height = state.processAreaHeight {
+                    processArea = Self.clampUnitRect(CGRect(x: x, y: y, width: width, height: height))
+                } else {
+                    processArea = nil
+                }
+                editMode = ImageEditMode.fromProjectValue(state.editMode)
+                inpaintIntent = state.inpaintIntent.flatMap(Flux2InpaintIntent.init(rawValue:)) ?? inpaintIntent
+                enrichInpaintPromptWithVLM = state.enrichInpaintPromptWithVLM ?? enrichInpaintPromptWithVLM
+                vlmContextManual = state.vlmContextManual
+                if editMode == .generativeFill, enrichInpaintPromptWithVLM, !vlmContextManual {
+                    syncAutoVLMContextArea()
+                }
+                applySizingControls()
+            }
+        } else if workflow == .imageToImage {
+            preparationOverlayOpacity = state.preparationOverlayOpacity ?? preparationOverlayOpacity
+        }
+
+        showCheckpoints = state.showCheckpoints
+        checkpointInterval = max(1, state.checkpointInterval)
+        previewZoomScale = min(max(state.previewZoomScale, 0.25), 8.0)
+        previewComparisonSide = PreviewComparisonSide(rawValue: state.previewComparisonSide) ?? .processed
+        if let input = ImageInputSaveSource(rawValue: state.inputSaveSource) {
+            inputSaveSource = input
+        }
     }
 
     /// Clear pipeline to free memory

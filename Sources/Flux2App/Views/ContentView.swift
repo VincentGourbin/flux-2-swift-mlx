@@ -17,7 +17,7 @@ struct ContentView: View {
         if let path = ProcessInfo.processInfo.environment["F2SM_PROJECT"], !path.isEmpty {
             return 5
         }
-        return 0
+        return Flux2AppSessionStore.loadShell()?.selectedTab ?? 0
     }
     @State private var selectedTab = Self.initialSelectedTab
     // Set by the focused image view; falls back to the app name on other tabs.
@@ -100,6 +100,9 @@ struct ContentView: View {
             }
         }
         .navigationTitle(projectName ?? "FLUX.2 Text Encoders")
+        .onChange(of: selectedTab) { _, tab in
+            Flux2AppSessionStore.saveShell(selectedTab: tab)
+        }
     }
 }
 

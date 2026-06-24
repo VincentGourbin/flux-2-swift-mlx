@@ -137,7 +137,7 @@ enum ImageSaveService {
     }
 
     @MainActor
-    static func save(_ image: CGImage, metadata: ImageSaveMetadata) throws -> URL {
+    static func save(_ image: CGImage, metadata: ImageSaveMetadata, stemSuffix: String? = nil) throws -> URL {
         let defaults = UserDefaults.standard
         let format = savedFormat(from: defaults)
         let directory = try outputDirectory()
@@ -152,7 +152,12 @@ enum ImageSaveService {
             imageToSave = image
         }
 
-        let filename = try resolveUniqueFilename(in: directory, format: format, metadata: metadata)
+        let filename = try resolveUniqueFilename(
+            in: directory,
+            format: format,
+            metadata: metadata,
+            stemSuffix: stemSuffix
+        )
         let url = directory.appendingPathComponent(filename)
         try write(imageToSave, to: url, format: format)
         return url
@@ -203,15 +208,24 @@ enum ImageSaveService {
         }
     }
 
-    private static func resolveUniqueFilename(in directory: URL, format: ImageSaveFormat, metadata: ImageSaveMetadata) throws -> String {
+    private static func resolveUniqueFilename(
+        in directory: URL,
+        format: ImageSaveFormat,
+        metadata: ImageSaveMetadata,
+        stemSuffix: String? = nil
+    ) throws -> String {
         let defaults = UserDefaults.standard
         let usesIncrement = defaults.bool(forKey: "imageSaveUseAutoIncrement")
         let fileExtension = format.fileExtension
+        let normalizedSuffix = stemSuffix.flatMap { suffix in
+            let trimmed = suffix.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
 
         if usesIncrement {
             var index = 0
             while true {
-                let stem = composeStem(metadata: metadata, incrementIndex: index)
+                let stem = composeStem(metadata: metadata, incrementIndex: index, stemSuffix: normalizedSuffix)
                 let filename = "\(stem).\(fileExtension)"
                 if !FileManager.default.fileExists(atPath: directory.appendingPathComponent(filename).path) {
                     return filename
@@ -220,7 +234,7 @@ enum ImageSaveService {
             }
         }
 
-        let stem = composeStem(metadata: metadata, incrementIndex: 0)
+        let stem = composeStem(metadata: metadata, incrementIndex: 0, stemSuffix: normalizedSuffix)
         var filename = "\(stem).\(fileExtension)"
         var suffix = 2
         while FileManager.default.fileExists(atPath: directory.appendingPathComponent(filename).path) {
@@ -230,7 +244,7 @@ enum ImageSaveService {
         return filename
     }
 
-    private static func composeStem(metadata: ImageSaveMetadata, incrementIndex: Int) -> String {
+    private static func composeStem(metadata: ImageSaveMetadata, incrementIndex: Int, stemSuffix: String? = nil) -> String {
         let defaults = UserDefaults.standard
         let baseMode = ImageSaveInputBase(rawValue: nonEmpty(defaults.string(forKey: "imageSaveInputBase"), fallback: ImageSaveInputBase.staticPrefix.rawValue)) ?? .staticPrefix
         let baseValue: String
@@ -264,7 +278,9 @@ enum ImageSaveService {
         }
 
         let stem = segments.filter { !$0.isEmpty }.joined(separator: "-")
-        return stem.isEmpty ? "image" : stem
+        let base = stem.isEmpty ? "image" : stem
+        guard let stemSuffix, !stemSuffix.isEmpty else { return base }
+        return "\(base)\(stemSuffix)"
     }
 
     private static func write(_ image: CGImage, to url: URL, format: ImageSaveFormat) throws {

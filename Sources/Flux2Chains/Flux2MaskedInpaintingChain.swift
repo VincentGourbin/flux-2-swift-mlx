@@ -143,8 +143,16 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
     ///
     /// Default `.replace` (most common case: swap object X for Y).
     public let intent: Flux2InpaintIntent
+    /// Normalized barn-door region Qwen sees when enriching the prompt.
+    /// `nil` or full-frame means the entire source image. Does not affect
+    /// the fill pass itself — only VLM prompt writing.
+    public let vlmContextArea: CGRect?
     /// Optional progress callback forwarded to `generateWithResult`.
     public let onProgress: Flux2ProgressCallback?
+    /// Optional checkpoint callback forwarded to `generateWithResult`.
+    public let onCheckpoint: Flux2CheckpointCallback?
+    /// When set, the pipeline emits intermediate decodes every N steps.
+    public let checkpointInterval: Int?
 
     /// Maximum total pixel count for the working resolution. Larger inputs are
     /// scaled down (preserving aspect) before being clamped to a multiple of
@@ -214,8 +222,11 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
         upsamplePrompt: Bool = false,
         enrichPromptWithVLM: Bool = false,
         intent: Flux2InpaintIntent = .replace,
+        vlmContextArea: CGRect? = nil,
         maxPixels: Int = 1024 * 1024,
-        onProgress: Flux2ProgressCallback? = nil
+        checkpointInterval: Int? = nil,
+        onProgress: Flux2ProgressCallback? = nil,
+        onCheckpoint: Flux2CheckpointCallback? = nil
     ) {
         self.pipeline = pipeline
         self.prompt = prompt
@@ -230,8 +241,11 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
         self.upsamplePrompt = upsamplePrompt
         self.enrichPromptWithVLM = enrichPromptWithVLM
         self.intent = intent
+        self.vlmContextArea = vlmContextArea
         self.maxPixels = maxPixels
+        self.checkpointInterval = checkpointInterval
         self.onProgress = onProgress
+        self.onCheckpoint = onCheckpoint
     }
 
     /// Execute the chain.
@@ -251,7 +265,7 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
         // Resolve which prompt + upsample flag actually reach the pipeline.
         // VLM enrichment is strictly opt-in and gracefully falls back when
         // the VLM is not loaded — never throws or auto-loads.
-        let (resolvedPrompt, resolvedUpsample) = await resolveFinalPromptAndUpsample()
+        let (resolvedPrompt, resolvedUpsample, enrichmentNotice) = await resolveFinalPromptAndUpsample()
 
         let (targetH, targetW) = Flux2Pipeline.resolveChainDimensions(
             width: image.width,
@@ -300,7 +314,7 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
             mode = .textToImage
         }
 
-        return try await pipeline.generateWithResult(
+        let result = try await pipeline.generateWithResult(
             mode: mode,
             prompt: resolvedPrompt,
             interpretImagePaths: nil,
@@ -311,10 +325,18 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
             seed: seed,
             upsamplePrompt: resolvedUpsample,
             precomputedEmbeddings: nil,
-            checkpointInterval: nil,
+            checkpointInterval: checkpointInterval,
             onProgress: onProgress,
-            onCheckpoint: nil,
+            onCheckpoint: onCheckpoint,
             onStep: onStep
+        )
+
+        return Flux2GenerationResult(
+            image: result.image,
+            usedPrompt: result.usedPrompt,
+            wasUpsampled: result.wasUpsampled,
+            originalPrompt: result.originalPrompt,
+            notice: enrichmentNotice
         )
     }
 
@@ -335,13 +357,13 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
     ///    warning, fall through to (3).
     /// 3. Default → caller's prompt + caller's ``upsamplePrompt`` (existing
     ///    behaviour, byte-identical to before this feature).
-    private func resolveFinalPromptAndUpsample() async -> (String, Bool) {
+    private func resolveFinalPromptAndUpsample() async -> (String, Bool, String?) {
         guard enrichPromptWithVLM else {
-            return (prompt, upsamplePrompt)
+            return (prompt, upsamplePrompt, nil)
         }
         guard FluxTextEncoders.shared.isQwen35VLMLoaded else {
             FluxDebug.error("[Flux2MaskedInpaintingChain] enrichPromptWithVLM=true but Qwen3.5 VLM is not loaded. Falling back to caller's prompt. Load the VLM via FluxTextEncoders.shared.loadQwen35VLM(from:) before run() to enable image-aware prompt enrichment.")
-            return (prompt, upsamplePrompt)
+            return (prompt, upsamplePrompt, nil)
         }
         if upsamplePrompt {
             FluxDebug.error("[Flux2MaskedInpaintingChain] Both enrichPromptWithVLM and upsamplePrompt are true — VLM wins (image-aware enrichment supersedes text-only upsampling). Disable one of the two to silence this warning.")
@@ -350,17 +372,22 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
             let built = try await Flux2VLMPromptBuilder.buildInpaintPrompt(
                 source: image,
                 userInstruction: prompt,
-                intent: intent
+                intent: intent,
+                vlmContextArea: vlmContextArea
             )
             guard let final = built?.trimmingCharacters(in: .whitespacesAndNewlines), !final.isEmpty else {
-                FluxDebug.error("[Flux2MaskedInpaintingChain] VLM returned an empty prompt — falling back to caller's prompt.")
-                return (prompt, upsamplePrompt)
+                FluxDebug.error("[Flux2MaskedInpaintingChain] VLM returned no usable prompt (empty or safety refusal) — falling back to caller's prompt.")
+                return (
+                    prompt,
+                    upsamplePrompt,
+                    "Qwen3.5 could not write a prompt for this image (often a safety filter). Used your hint or a generic fill prompt instead."
+                )
             }
             FluxDebug.info("[Flux2MaskedInpaintingChain] VLM-enriched prompt (\(intent.rawValue)): \(final)")
-            return (final, false)
+            return (final, false, nil)
         } catch {
             FluxDebug.error("[Flux2MaskedInpaintingChain] VLM enrichment failed: \(error). Falling back to caller's prompt.")
-            return (prompt, upsamplePrompt)
+            return (prompt, upsamplePrompt, nil)
         }
     }
 }

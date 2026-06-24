@@ -27,10 +27,12 @@ public struct FluxGenerationProject: Codable, Sendable {
     public var editMode: String?
     public var inpaintIntent: String?
     public var enrichInpaintPromptWithVLM: Bool?
+    public var vlmContextManual: Bool?
+    public var inpaintMaskLayers: [InpaintMaskLayer]?
     public var interpretImagePaths: [String]
     public var referenceImages: [ReferenceImage]
 
-    public struct NormalizedRect: Codable, Sendable {
+    public struct NormalizedRect: Codable, Sendable, Equatable {
         public var x: Double
         public var y: Double
         public var width: Double
@@ -82,6 +84,8 @@ public struct FluxGenerationProject: Codable, Sendable {
         editMode: String? = nil,
         inpaintIntent: String? = nil,
         enrichInpaintPromptWithVLM: Bool? = nil,
+        vlmContextManual: Bool? = nil,
+        inpaintMaskLayers: [InpaintMaskLayer]? = nil,
         interpretImagePaths: [String],
         referenceImages: [ReferenceImage]
     ) {
@@ -108,6 +112,8 @@ public struct FluxGenerationProject: Codable, Sendable {
         self.editMode = editMode
         self.inpaintIntent = inpaintIntent
         self.enrichInpaintPromptWithVLM = enrichInpaintPromptWithVLM
+        self.vlmContextManual = vlmContextManual
+        self.inpaintMaskLayers = inpaintMaskLayers
         self.interpretImagePaths = interpretImagePaths
         self.referenceImages = referenceImages
     }
