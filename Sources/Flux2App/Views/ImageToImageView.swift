@@ -16,6 +16,7 @@ import AppKit
 struct ImageToImageView: View {
     @EnvironmentObject var modelManager: ModelManager
     @StateObject private var viewModel = ImageGenerationViewModel(loadsEnvironmentProject: true, workflow: .imageToImage)
+    @StateObject private var paletteCoordinator = PaletteDetachCoordinator()
     @State private var isTargetedForDrop = false
     @AppStorage("imageSaveUpscaleBy") private var imageSaveUpscaleBy = 1.0
 
@@ -25,57 +26,67 @@ struct ImageToImageView: View {
     private static let showManualDimensions = false
 
     var body: some View {
-        HSplitView {
-            // Left panel: Controls
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    // Reference Images
-                    referenceImagesSection
+        ZStack(alignment: .topLeading) {
+            HSplitView {
+                PaletteColumn {
+                    PalettePanel(
+                        storageKey: "i2i.reference",
+                        title: referenceImagesPaletteTitle,
+                        systemImage: "photo.stack",
+                        coordinator: paletteCoordinator,
+                        headerTrailing: { referenceImagesHeaderTrailing },
+                        content: { referenceImagesPaletteContent }
+                    )
 
-                    Divider()
+                    PalettePanel(
+                        storageKey: "i2i.formatting",
+                        title: "Image Formatting",
+                        systemImage: "crop",
+                        coordinator: paletteCoordinator,
+                        content: { imageFormattingPaletteContent }
+                    )
 
-                    // Image Formatting — crop / pad / favour of the input image
-                    imageFormattingSection
+                    if !viewModel.referenceImages.isEmpty {
+                        PalettePanel(
+                            storageKey: "i2i.workflow",
+                            title: "Workflow",
+                            systemImage: "arrow.triangle.branch",
+                            coordinator: paletteCoordinator,
+                            content: { workflowContextPaletteContent }
+                        )
+                    }
 
-                    Divider()
+                    PalettePanel(
+                        storageKey: "i2i.processing",
+                        title: "Processing Area",
+                        systemImage: "rectangle.dashed",
+                        coordinator: paletteCoordinator,
+                        content: { processingAreaPaletteContent }
+                    )
 
-                    // Selection / crop tools (always visible)
-                    selectionToolsSection
+                    PalettePanel(
+                        storageKey: "i2i.parameters",
+                        title: "Generation Parameters",
+                        systemImage: "slider.horizontal.3",
+                        coordinator: paletteCoordinator,
+                        content: { parametersPaletteContent }
+                    )
 
-                    Divider()
-
-                    // Contextual controls for inferred workflow
-                    workflowContextSection
-
-                    Divider()
-
-                    // Processing Area — barn doors + megapixel budget (prompt edit)
-                    // or mask region + resolution cap (masked inpaint)
-                    processingAreaSection
-
-                    Divider()
-
-                    // Generation Parameters
-                    parametersSection
-
-                    Divider()
-
-                    // AI Prompt
-                    promptSection
-
-                    Divider()
-
-                    // Generate Button
-                    generateSection
+                    PalettePanel(
+                        storageKey: "i2i.outputOptions",
+                        title: "Output Options",
+                        systemImage: "slider.horizontal.below.rectangle",
+                        coordinator: paletteCoordinator,
+                        content: { outputOptionsPaletteContent }
+                    )
                 }
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(minWidth: 380, idealWidth: 450, maxWidth: 550)
-            .clipped()
+                .frame(minWidth: 380, idealWidth: 450, maxWidth: 550)
+                .clipped()
 
-            // Right panel: Output
-            outputSection
+                outputSection
+            }
+
+            floatingPalettes
         }
         .onAppear {
             modelManager.refreshDownloadedModels()
@@ -149,27 +160,95 @@ struct ImageToImageView: View {
         }
     }
 
-    // MARK: - Reference Images Section
+    // MARK: - Palette titles & floating overlays
+
+    private var referenceImagesPaletteTitle: String {
+        "Reference Images (1-\(viewModel.selectedModel.maxReferenceImages))"
+    }
 
     @ViewBuilder
-    private var referenceImagesSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("Reference Images (1-\(viewModel.selectedModel.maxReferenceImages))", systemImage: "photo.stack")
-                    .font(.headline)
-
-                Spacer()
-
-                if !viewModel.referenceImages.isEmpty {
-                    Button(action: { viewModel.clearReferenceImages() }) {
-                        Label("Clear All", systemImage: "trash")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
+    private var referenceImagesHeaderTrailing: some View {
+        if !viewModel.referenceImages.isEmpty {
+            Button(action: { viewModel.clearReferenceImages() }) {
+                Label("Clear All", systemImage: "trash")
             }
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
+            .labelStyle(.titleOnly)
+        }
+    }
 
-            Text("Drop images here or click to add. The model will use these as reference for generation.")
+    @ViewBuilder
+    private var floatingPalettes: some View {
+        if paletteCoordinator.isDetached("i2i.reference") {
+            PaletteFloatingPanel(
+                storageKey: "i2i.reference",
+                title: referenceImagesPaletteTitle,
+                systemImage: "photo.stack",
+                position: paletteCoordinator.positionBinding(for: "i2i.reference"),
+                coordinator: paletteCoordinator,
+                headerTrailing: { referenceImagesHeaderTrailing },
+                content: { referenceImagesPaletteContent }
+            )
+        }
+        if paletteCoordinator.isDetached("i2i.formatting") {
+            PaletteFloatingPanel(
+                storageKey: "i2i.formatting",
+                title: "Image Formatting",
+                systemImage: "crop",
+                position: paletteCoordinator.positionBinding(for: "i2i.formatting"),
+                coordinator: paletteCoordinator,
+                content: { imageFormattingPaletteContent }
+            )
+        }
+        if paletteCoordinator.isDetached("i2i.workflow"), !viewModel.referenceImages.isEmpty {
+            PaletteFloatingPanel(
+                storageKey: "i2i.workflow",
+                title: "Workflow",
+                systemImage: "arrow.triangle.branch",
+                position: paletteCoordinator.positionBinding(for: "i2i.workflow"),
+                coordinator: paletteCoordinator,
+                content: { workflowContextPaletteContent }
+            )
+        }
+        if paletteCoordinator.isDetached("i2i.processing") {
+            PaletteFloatingPanel(
+                storageKey: "i2i.processing",
+                title: "Processing Area",
+                systemImage: "rectangle.dashed",
+                position: paletteCoordinator.positionBinding(for: "i2i.processing"),
+                coordinator: paletteCoordinator,
+                content: { processingAreaPaletteContent }
+            )
+        }
+        if paletteCoordinator.isDetached("i2i.parameters") {
+            PaletteFloatingPanel(
+                storageKey: "i2i.parameters",
+                title: "Generation Parameters",
+                systemImage: "slider.horizontal.3",
+                position: paletteCoordinator.positionBinding(for: "i2i.parameters"),
+                coordinator: paletteCoordinator,
+                content: { parametersPaletteContent }
+            )
+        }
+        if paletteCoordinator.isDetached("i2i.outputOptions") {
+            PaletteFloatingPanel(
+                storageKey: "i2i.outputOptions",
+                title: "Output Options",
+                systemImage: "slider.horizontal.below.rectangle",
+                position: paletteCoordinator.positionBinding(for: "i2i.outputOptions"),
+                coordinator: paletteCoordinator,
+                content: { outputOptionsPaletteContent }
+            )
+        }
+    }
+
+    // MARK: - Reference Images
+
+    @ViewBuilder
+    private var referenceImagesPaletteContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Drop images here or click to add. Image Formatting applies to every reference on generate; Live Area and canvas tools use the first image only.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -198,10 +277,11 @@ struct ImageToImageView: View {
                         }
                     }
                 }
-                .padding(.vertical, 2)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 8)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: 120)
+            .frame(height: 124)
 
             Divider()
 
@@ -209,14 +289,11 @@ struct ImageToImageView: View {
         }
     }
 
-    // MARK: - Image Formatting Section
+    // MARK: - Image Formatting
 
     @ViewBuilder
-    private var imageFormattingSection: some View {
+    private var imageFormattingPaletteContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Image Formatting", systemImage: "crop")
-                .font(.headline)
-
             if !viewModel.referenceImages.isEmpty {
                 GroupBox("Aspect Ratio") {
                     VStack(alignment: .leading, spacing: 10) {
@@ -296,55 +373,31 @@ struct ImageToImageView: View {
         }
     }
 
-    // MARK: - Selection Tools
-
-    @ViewBuilder
-    private var selectionToolsSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label("Tools", systemImage: "cursorarrow")
-                .font(.headline)
-
-            SelectionToolBar(
-                selectedTool: $viewModel.inpaintMaskTool,
-                onSelect: { viewModel.selectMaskTool($0) },
-                isToolEnabled: { viewModel.isMaskToolEnabled($0) }
-            )
-
-            if viewModel.referenceImages.isEmpty {
-                Text("Add a reference image to enable the tools.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("Live Area sets barn doors. Rectangle and Polygon draw selections. Subject is a lasso. Crop expands the canvas for outpainting.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
     // MARK: - Contextual controls (inferred from tool + selection)
 
     @ViewBuilder
-    private var workflowContextSection: some View {
+    private var workflowContextPaletteContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if viewModel.referenceImages.isEmpty {
-                EmptyView()
-            } else {
-                switch viewModel.generateRoute {
-                case .fullImage:
-                    Text("Barn doors on the preview define the live area. Select the Live Area tool to adjust them.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                case .localFill:
-                    selectionControls
-                case .outpaint:
-                    Text(viewModel.outpaintCanvasDescription)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("Drag the outer canvas edges on the preview. Padding snaps to 32 px and is capped by the megapixel budget.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+            switch viewModel.generateRoute {
+            case .fullImage:
+                Text("Barn doors on the preview define the live area. Select the Live Area tool to adjust them.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .localFill:
+                selectionControls
+            case .outpaint:
+                Text(viewModel.outpaintCanvasDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Drag the outer canvas edges on the preview. Padding snaps to 32 px and is capped by the megapixel budget.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                Button("Reset Canvas") {
+                    viewModel.resetOutpaintCanvas()
                 }
+                .controlSize(.small)
+                .disabled(!viewModel.outpaintCanvasIsDefined)
             }
         }
     }
@@ -406,6 +459,11 @@ struct ImageToImageView: View {
             Text(viewModel.processAreaDescription)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            Button("Reset Selection") {
+                viewModel.clearProcessSelection()
+            }
+            .controlSize(.small)
         }
     }
 
@@ -430,14 +488,11 @@ struct ImageToImageView: View {
         }
     }
 
-    // MARK: - Processing Area Section
+    // MARK: - Processing Area
 
     @ViewBuilder
-    private var processingAreaSection: some View {
+    private var processingAreaPaletteContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Processing Area", systemImage: "rectangle.dashed")
-                .font(.headline)
-
             if !viewModel.referenceImages.isEmpty {
                 switch viewModel.generateRoute {
                 case .fullImage:
@@ -446,85 +501,23 @@ struct ImageToImageView: View {
                         .foregroundStyle(.secondary)
                 case .localFill:
                     if viewModel.enrichInpaintPromptWithVLM {
-                        Text("Barn doors set what Qwen sees for prompt writing. The resolution cap limits the fill pass on the full image.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("The megapixel budget caps the working resolution for the selection fill. Larger images are scaled down before denoising.")
+                        Text("Barn doors set what Qwen sees for prompt writing.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+
                 case .outpaint:
                     Text("Megapixel budget caps the expanded canvas size for the outpaint pass.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
-                GroupBox(viewModel.hasLocalFillSelection ? "Resolution cap" : "Megapixel budget") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 10) {
-                            Slider(
-                                value: $viewModel.megapixelBudget,
-                                in: ImageGenerationViewModel.minMegapixelBudget...ImageGenerationViewModel.maxMegapixelBudget,
-                                step: 0.25
-                            )
-
-                            TextField(
-                                "MP",
-                                value: $viewModel.megapixelBudget,
-                                format: .number.precision(.fractionLength(2))
-                            )
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 64)
-                            .multilineTextAlignment(.trailing)
-
-                            Text("MP")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-
-                        Text(
-                            viewModel.hasLocalFillSelection
-                                ? "Maximum total pixels for the selection fill pass."
-                                : "Maximum total pixels to generate. The barn-door aspect ratio fills this budget."
+                if !viewModel.hasLocalFillSelection {
+                    GroupBox("Megapixel budget") {
+                        megapixelBudgetControls(
+                            help: "Maximum total pixels to generate. The barn-door aspect ratio fills this budget."
                         )
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-
-                        if viewModel.hasLocalFillSelection,
-                           let firstRef = viewModel.referenceImages.first {
-                            FillResolutionInfoRow(
-                                image: firstRef.image,
-                                megapixelBudget: viewModel.megapixelBudget
-                            )
-                        }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                HStack {
-                    if viewModel.generateRoute == .outpaint {
-                        Button("Reset Canvas") {
-                            viewModel.resetOutpaintCanvas()
-                        }
-                        .controlSize(.small)
-                        .disabled(!viewModel.outpaintCanvasIsDefined)
-
-                        Spacer()
-
-                        Text(viewModel.outpaintCanvasDescription)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    } else if viewModel.hasLocalFillSelection {
-                        Button("Clear Selection") {
-                            viewModel.clearProcessSelection()
-                        }
-                        .controlSize(.small)
-                        .disabled(!viewModel.hasFillMask)
-                    }
-
-                    Spacer()
                 }
             } else {
                 Text("Add a reference image to set the processing area.")
@@ -534,105 +527,44 @@ struct ImageToImageView: View {
         }
     }
 
-    // MARK: - Prompt Section
+    // MARK: - Megapixel budget / resolution cap
 
     @ViewBuilder
-    private var promptSection: some View {
-        promptSectionBody
-    }
-
-    @ViewBuilder
-    private var promptSectionBody: some View {
+    private func megapixelBudgetControls(help: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            if viewModel.hasLocalFillSelection {
-                if viewModel.enrichInpaintPromptWithVLM {
-                    Label("Optional hint", systemImage: "text.cursor")
-                        .font(.headline)
-                    Text("Leave empty for Qwen to write the Flux prompt from the image, or add a short hint to steer the fill.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Label("Fill prompt", systemImage: "text.cursor")
-                        .font(.headline)
-                    Text("Describe what should appear inside the selection.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                Label("AI Prompt", systemImage: "text.cursor")
-                    .font(.headline)
-            }
-
-            TextEditor(text: $viewModel.prompt)
-                .font(.body)
-                .scrollContentBackground(.hidden)
-                .padding(8)
-                .background(Color(nsColor: .textBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.black.opacity(0.22), lineWidth: 1)
+            HStack(spacing: 10) {
+                Slider(
+                    value: $viewModel.megapixelBudget,
+                    in: ImageGenerationViewModel.minMegapixelBudget...ImageGenerationViewModel.maxMegapixelBudget,
+                    step: 0.25
                 )
-                .shadow(color: .black.opacity(0.18), radius: 2, x: 0, y: 1)
-                .frame(minHeight: 96, maxHeight: 160)
 
-            HStack(spacing: 16) {
-                Toggle("Upsample prompt", isOn: $viewModel.upsamplePrompt)
-                    .disabled(!viewModel.isUpsamplePromptApplicable)
-                    .opacity(viewModel.isUpsamplePromptApplicable ? 1 : 0.45)
-                    .help("Enhance prompt using Mistral VLM to analyze reference images")
+                TextField(
+                    "MP",
+                    value: $viewModel.megapixelBudget,
+                    format: .number.precision(.fractionLength(2))
+                )
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 64)
+                .multilineTextAlignment(.trailing)
 
-                Toggle("Enrich prompt with Qwen3.5 VLM", isOn: $viewModel.enrichInpaintPromptWithVLM)
-                    .disabled(!viewModel.isEnrichInpaintPromptApplicable)
-                    .opacity(viewModel.isEnrichInpaintPromptApplicable ? 1 : 0.45)
-                    .help("Write the inpaint prompt from the image and selection using Qwen3.5 VLM")
-
-                Toggle("Clear prompt after generation", isOn: $viewModel.clearPromptAfterGeneration)
-                    .help("Empty the prompt automatically once a run finishes successfully")
-            }
-            .font(.caption)
-            .toggleStyle(.checkbox)
-
-            if let upsampled = viewModel.upsampledPrompt {
-                upsampledPromptView(upsampled, title: viewModel.hasLocalFillSelection ? "VLM prompt" : "Upsampled prompt")
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func upsampledPromptView(_ text: String, title: String = "Upsampled prompt") -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Label(title, systemImage: "sparkles")
-                .font(.caption.bold())
-                .foregroundStyle(.secondary)
-
-            ScrollView {
-                Text(text)
+                Text("MP")
                     .font(.caption)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .foregroundStyle(.secondary)
             }
-            .frame(maxHeight: 120)
-            .padding(8)
-            .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .overlay(
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(Color.accentColor.opacity(0.3), lineWidth: 1)
-            )
-        }
-    }
 
-    // MARK: - I2I Parameters Section (removed - strength is not used by Flux.2 conditioning mode)
+            Text(help)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
 
     // MARK: - Parameters Section
 
     @ViewBuilder
-    private var parametersSection: some View {
+    private var parametersPaletteContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Generation Parameters", systemImage: "slider.horizontal.3")
-                .font(.headline)
-
             // Dimensions — hidden: the barn-door aspect ratio + megapixel budget
             // now determine width/height. Kept behind a flag, not deleted.
             if Self.showManualDimensions {
@@ -697,6 +629,21 @@ struct ImageToImageView: View {
                 }
             }
 
+            if viewModel.hasLocalFillSelection, !viewModel.referenceImages.isEmpty {
+                GroupBox("Resolution cap") {
+                    megapixelBudgetControls(
+                        help: "Maximum total pixels for the selection fill pass. Larger images are scaled down before denoising."
+                    )
+
+                    if let firstRef = viewModel.referenceImages.first {
+                        FillResolutionInfoRow(
+                            image: firstRef.image,
+                            megapixelBudget: viewModel.megapixelBudget
+                        )
+                    }
+                }
+            }
+
             Divider()
 
             // Seed
@@ -748,98 +695,33 @@ struct ImageToImageView: View {
                             }
                         }
                     }
-                }
-                .frame(height: 60)
-            }
-        }
-    }
-
-    // MARK: - Generate Section
-
-    @ViewBuilder
-    private var generateSection: some View {
-        VStack(spacing: 12) {
-            if viewModel.isResetting {
-                ProgressView("Resetting…")
-                    .progressViewStyle(.linear)
-                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 6)
                     .padding(.vertical, 8)
-            } else {
-                Button(action: {
-                    viewModel.startGeneration()
-                }) {
-                    HStack {
-                        if viewModel.isGenerating {
-                            ProgressView()
-                                .scaleEffect(0.8)
-                        }
-                        Text(viewModel.isGenerating ? "Generating..." : "Generate Image")
-                    }
-                    .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(!canGenerate)
-            }
-
-            if viewModel.isGenerating {
-                Button(role: .cancel) {
-                    viewModel.cancel()
-                } label: {
-                    Text("Cancel")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-                .tint(.red)
-            }
-
-            if viewModel.isGenerating {
-                VStack(spacing: 4) {
-                    ProgressView(value: viewModel.progress)
-                    Text(viewModel.statusMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            if let error = viewModel.errorMessage {
-                HStack {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red)
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-                .padding(8)
-                .background(Color.red.opacity(0.1))
-                .cornerRadius(8)
+                .frame(height: 68)
             }
         }
     }
 
-    // MARK: - Output Section
+    // MARK: - Output Options
 
     @ViewBuilder
-    private var outputSection: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Label(outputPreviewTitle, systemImage: "photo")
-                    .font(.headline)
+    private var outputOptionsPaletteContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(outputPreviewTitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
-                Spacer()
-
-                if viewModel.canTogglePreviewComparison {
-                    Picker("Compare", selection: $viewModel.previewComparisonSide) {
-                        Text("A").tag(PreviewComparisonSide.formatted)
-                        Text("B").tag(PreviewComparisonSide.processed)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(width: 72)
-                    .help("A: formatted input aligned to output · B: processed result")
+            if viewModel.canTogglePreviewComparison {
+                Picker("Compare", selection: $viewModel.previewComparisonSide) {
+                    Text("A").tag(PreviewComparisonSide.formatted)
+                    Text("B").tag(PreviewComparisonSide.processed)
                 }
+                .pickerStyle(.segmented)
+                .help("A: formatted input aligned to output · B: processed result")
+            }
 
+            HStack(spacing: 8) {
                 if viewModel.generatedImage != nil {
                     Button(action: { viewModel.saveImage() }) {
                         Label("Save", systemImage: "square.and.arrow.down")
@@ -862,13 +744,12 @@ struct ImageToImageView: View {
                 .controlSize(.small)
                 .disabled(!viewModel.hasPreviewContent)
                 .help("Clear the generated image from the preview pane")
+            }
 
-                if !viewModel.referenceImages.isEmpty {
-                    Divider()
-                        .frame(height: 16)
+            if !viewModel.referenceImages.isEmpty {
+                LanczosUpscaleField(factor: $imageSaveUpscaleBy)
 
-                    LanczosUpscaleField(factor: $imageSaveUpscaleBy)
-
+                HStack(spacing: 8) {
                     Button(action: { viewModel.openOutputFolder() }) {
                         Label("Open Folder", systemImage: "folder")
                     }
@@ -894,7 +775,15 @@ struct ImageToImageView: View {
                     .help("Input variant for Save Input: raw reference, formatted (crop/pad), or prepared (model input)")
                 }
             }
-            .padding()
+        }
+    }
+
+    // MARK: - Output Section
+
+    @ViewBuilder
+    private var outputSection: some View {
+        VStack(spacing: 0) {
+            ImageGenerationPromptSection(viewModel: viewModel)
 
             Divider()
 
@@ -1081,13 +970,6 @@ struct ImageToImageView: View {
 
     // MARK: - Helpers
 
-    private var canGenerate: Bool {
-        viewModel.canGenerate &&
-        !viewModel.referenceImages.isEmpty &&
-        modelManager.isTransformerDownloaded(viewModel.selectedTransformerVariant) &&
-        modelManager.isVAEDownloaded
-    }
-
     private func selectImage() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
@@ -1139,26 +1021,26 @@ struct ReferenceImageSlot: View {
     let onRemove: () -> Void
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            Image(nsImage: image.thumbnail)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(width: 100, height: 100)
-                .clipped()
-                .cornerRadius(8)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.accentColor, lineWidth: 2)
-                )
-
-            Button(action: onRemove) {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(.white)
-                    .background(Circle().fill(.red))
+        Image(nsImage: image.thumbnail)
+            .resizable()
+            .aspectRatio(contentMode: .fill)
+            .frame(width: 100, height: 100)
+            .clipped()
+            .cornerRadius(8)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.accentColor, lineWidth: 2)
+            )
+            .overlay(alignment: .topTrailing) {
+                Button(action: onRemove) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 18))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, .red)
+                }
+                .buttonStyle(.plain)
+                .padding(4)
             }
-            .buttonStyle(.plain)
-            .offset(x: 8, y: -8)
-        }
     }
 }
 
@@ -1201,29 +1083,28 @@ struct InterpretImageThumbnail: View {
     let onRemove: () -> Void
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
+        Group {
             if let nsImage = NSImage(contentsOf: url) {
                 Image(nsImage: nsImage)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .frame(width: 50, height: 50)
-                    .clipped()
-                    .cornerRadius(4)
             } else {
                 Rectangle()
                     .fill(.secondary.opacity(0.2))
-                    .frame(width: 50, height: 50)
-                    .cornerRadius(4)
             }
-
+        }
+        .frame(width: 50, height: 50)
+        .clipped()
+        .cornerRadius(4)
+        .overlay(alignment: .topTrailing) {
             Button(action: onRemove) {
                 Image(systemName: "xmark.circle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.white)
-                    .background(Circle().fill(.red).frame(width: 14, height: 14))
+                    .font(.system(size: 14))
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, .red)
             }
             .buttonStyle(.plain)
-            .offset(x: 4, y: -4)
+            .padding(2)
         }
     }
 }

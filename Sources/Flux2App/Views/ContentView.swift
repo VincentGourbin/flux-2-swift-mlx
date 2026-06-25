@@ -22,15 +22,15 @@ struct ContentView: View {
     @State private var selectedTab = Self.initialSelectedTab
     // Set by the focused image view; falls back to the app name on other tabs.
     @FocusedValue(\.generationProjectName) private var projectName
+    @FocusedValue(\.generationModelConfiguration) private var generationViewModel
 
     var body: some View {
         NavigationSplitView {
-            // Sidebar
             List(selection: Binding(
                 get: { selectedTab },
                 set: { selectedTab = $0 }
             )) {
-                Section("Text Encoders") {
+                Section("Mode") {
                     Label("Chat", systemImage: "bubble.left.and.bubble.right")
                         .tag(0)
                     Label("Generate", systemImage: "text.cursor")
@@ -40,25 +40,27 @@ struct ContentView: View {
                     Label("Qwen3 Chat", systemImage: "message.fill")
                         .tag(3)
                         .foregroundStyle(.orange)
-                }
-
-                Section("Image Generation") {
                     Label("Text to Image", systemImage: "photo.badge.plus")
                         .tag(4)
                         .foregroundStyle(.purple)
                     Label("Image to Image", systemImage: "photo.on.rectangle.angled")
                         .tag(5)
                         .foregroundStyle(.purple)
-                }
-
-                Section("Tools") {
                     Label("FLUX.2 Tools", systemImage: "cube.transparent")
                         .tag(6)
-                }
-
-                Section("Settings") {
                     Label("Models", systemImage: "square.stack.3d.down.right")
                         .tag(7)
+                }
+
+                if selectedTab == 5, let generationViewModel {
+                    Section {
+                        ImageToImageCanvasToolsSidebar(viewModel: generationViewModel)
+                            .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 12, trailing: 12))
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                    } header: {
+                        canvasToolsSectionDivider
+                    }
                 }
             }
             .listStyle(.sidebar)
@@ -103,6 +105,12 @@ struct ContentView: View {
         .onChange(of: selectedTab) { _, tab in
             Flux2AppSessionStore.saveShell(selectedTab: tab)
         }
+    }
+
+    private var canvasToolsSectionDivider: some View {
+        Rectangle()
+            .fill(Color(nsColor: .separatorColor).opacity(0.55))
+            .frame(height: 10)
     }
 }
 

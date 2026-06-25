@@ -144,7 +144,9 @@ public enum ImagePreparation {
             transform: transform
         )
 
-        let remainingImages = referenceImages.dropFirst()
+        let preparedAdditionalImages = try referenceImages.dropFirst().map { image in
+            try formatFullFrameReference(image, settings: settings)
+        }
         let plan = ImageCompositionPlan(
             originalImage: original,
             contextRect: contextRect,
@@ -153,10 +155,29 @@ public enum ImagePreparation {
         )
 
         return PreparedImageToImageInput(
-            images: [preparedFirstImage] + remainingImages,
+            images: [preparedFirstImage] + preparedAdditionalImages,
             width: targetSize.width,
             height: targetSize.height,
             compositionPlan: settings.compositeBack ? plan : nil
+        )
+    }
+
+    /// Apply Image Formatting to a full-frame reference (Favour, Method, scale, megapixel budget).
+    /// Used for additional conditioning images that do not use Live Area.
+    public static func formatFullFrameReference(
+        _ referenceImage: CGImage,
+        settings: ImagePreparationSettings
+    ) throws -> CGImage {
+        var settings = settings
+        settings.clampValues()
+        settings.contextArea = CGRect(x: 0, y: 0, width: 1, height: 1)
+
+        let targetSize = generationSize(referenceImage: referenceImage, settings: settings)
+        return try formatToCanvas(
+            referenceImage: referenceImage,
+            settings: settings,
+            targetWidth: targetSize.width,
+            targetHeight: targetSize.height
         )
     }
 

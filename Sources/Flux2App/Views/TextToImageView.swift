@@ -14,32 +14,35 @@ import AppKit
 struct TextToImageView: View {
     @EnvironmentObject var modelManager: ModelManager
     @StateObject private var viewModel = ImageGenerationViewModel(workflow: .textToImage)
+    @StateObject private var paletteCoordinator = PaletteDetachCoordinator()
     @AppStorage("imageSaveUpscaleBy") private var imageSaveUpscaleBy = 1.0
 
     var body: some View {
-        HSplitView {
-            // Left panel: Controls
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    // Prompt Section
-                    promptSection
+        ZStack(alignment: .topLeading) {
+            HSplitView {
+                PaletteColumn {
+                    PalettePanel(
+                        storageKey: "t2i.parameters",
+                        title: "Generation Parameters",
+                        systemImage: "slider.horizontal.3",
+                        coordinator: paletteCoordinator,
+                        content: { parametersPaletteContent }
+                    )
 
-                    Divider()
-
-                    // Parameters Section
-                    parametersSection
-
-                    Divider()
-
-                    // Generate Button
-                    generateSection
+                    PalettePanel(
+                        storageKey: "t2i.outputOptions",
+                        title: "Output Options",
+                        systemImage: "slider.horizontal.below.rectangle",
+                        coordinator: paletteCoordinator,
+                        content: { outputOptionsPaletteContent }
+                    )
                 }
-                .padding()
-            }
-            .frame(minWidth: 350, idealWidth: 400, maxWidth: 500)
+                .frame(minWidth: 350, idealWidth: 400, maxWidth: 500)
 
-            // Right panel: Output
-            outputSection
+                outputSection
+            }
+
+            floatingPalettes
         }
         .onAppear {
             // Refresh diffusion model status
@@ -91,63 +94,28 @@ struct TextToImageView: View {
         }
     }
 
-    // MARK: - Prompt Section
+    // MARK: - Floating palettes
 
     @ViewBuilder
-    private var promptSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("AI Prompt", systemImage: "text.cursor")
-                .font(.headline)
-
-            TextEditor(text: $viewModel.prompt)
-                .font(.body)
-                .scrollContentBackground(.hidden)
-                .padding(8)
-                .background(Color(nsColor: .textBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.black.opacity(0.22), lineWidth: 1)
-                )
-                .shadow(color: .black.opacity(0.18), radius: 2, x: 0, y: 1)
-                .frame(minHeight: 116, maxHeight: 210)
-
-            HStack(spacing: 16) {
-                Toggle("Upsample prompt", isOn: $viewModel.upsamplePrompt)
-                    .help("Enhance prompt with visual details using Mistral")
-
-                Toggle("Clear prompt after generation", isOn: $viewModel.clearPromptAfterGeneration)
-                    .help("Empty the prompt automatically once a run finishes successfully")
-            }
-            .font(.caption)
-            .toggleStyle(.checkbox)
-
-            if let upsampled = viewModel.upsampledPrompt {
-                upsampledPromptView(upsampled)
-            }
+    private var floatingPalettes: some View {
+        if paletteCoordinator.isDetached("t2i.parameters") {
+            PaletteFloatingPanel(
+                storageKey: "t2i.parameters",
+                title: "Generation Parameters",
+                systemImage: "slider.horizontal.3",
+                position: paletteCoordinator.positionBinding(for: "t2i.parameters"),
+                coordinator: paletteCoordinator,
+                content: { parametersPaletteContent }
+            )
         }
-    }
-
-    @ViewBuilder
-    private func upsampledPromptView(_ text: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Label("Upsampled prompt", systemImage: "sparkles")
-                .font(.caption.bold())
-                .foregroundStyle(.secondary)
-
-            ScrollView {
-                Text(text)
-                    .font(.caption)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(maxHeight: 120)
-            .padding(8)
-            .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .overlay(
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(Color.accentColor.opacity(0.3), lineWidth: 1)
+        if paletteCoordinator.isDetached("t2i.outputOptions") {
+            PaletteFloatingPanel(
+                storageKey: "t2i.outputOptions",
+                title: "Output Options",
+                systemImage: "slider.horizontal.below.rectangle",
+                position: paletteCoordinator.positionBinding(for: "t2i.outputOptions"),
+                coordinator: paletteCoordinator,
+                content: { outputOptionsPaletteContent }
             )
         }
     }
@@ -155,11 +123,8 @@ struct TextToImageView: View {
     // MARK: - Parameters Section
 
     @ViewBuilder
-    private var parametersSection: some View {
+    private var parametersPaletteContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Generation Parameters", systemImage: "slider.horizontal.3")
-                .font(.headline)
-
             // Dimensions
             HStack(spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -261,85 +226,12 @@ struct TextToImageView: View {
         }
     }
 
-    // MARK: - Generate Section
+    // MARK: - Output Options
 
     @ViewBuilder
-    private var generateSection: some View {
-        VStack(spacing: 12) {
-            if viewModel.isResetting {
-                ProgressView("Resetting…")
-                    .progressViewStyle(.linear)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-            } else {
-                // Generate button
-                Button(action: {
-                    viewModel.startGeneration()
-                }) {
-                    HStack {
-                        if viewModel.isGenerating {
-                            ProgressView()
-                                .scaleEffect(0.8)
-                        }
-                        Text(viewModel.isGenerating ? "Generating..." : "Generate Image")
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(!viewModel.canGenerate || !modelManager.isTransformerDownloaded(viewModel.selectedTransformerVariant) || !modelManager.isVAEDownloaded)
-            }
-
-            if viewModel.isGenerating {
-                Button(role: .cancel) {
-                    viewModel.cancel()
-                } label: {
-                    Text("Cancel")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-                .tint(.red)
-            }
-
-            // Progress
-            if viewModel.isGenerating {
-                VStack(spacing: 4) {
-                    ProgressView(value: viewModel.progress)
-                    Text(viewModel.statusMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            // Error message
-            if let error = viewModel.errorMessage {
-                HStack {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red)
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-                .padding(8)
-                .background(Color.red.opacity(0.1))
-                .cornerRadius(8)
-            }
-        }
-    }
-
-    // MARK: - Output Section
-
-    @ViewBuilder
-    private var outputSection: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack {
-                Label("Generated Image", systemImage: "photo")
-                    .font(.headline)
-
-                Spacer()
-
+    private var outputOptionsPaletteContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
                 if viewModel.generatedImage != nil {
                     Button(action: { viewModel.saveImage() }) {
                         Label("Save", systemImage: "square.and.arrow.down")
@@ -355,22 +247,27 @@ struct TextToImageView: View {
                 .controlSize(.small)
                 .disabled(!viewModel.hasPreviewContent)
                 .help("Clear the generated image from the preview pane")
-
-                if viewModel.generatedImage != nil {
-                    Divider()
-                        .frame(height: 16)
-
-                    LanczosUpscaleField(factor: $imageSaveUpscaleBy)
-
-                    Button(action: { viewModel.openOutputFolder() }) {
-                        Label("Open Folder", systemImage: "folder")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .help("Open the image output folder in Finder")
-                }
             }
-            .padding()
+
+            if viewModel.generatedImage != nil {
+                LanczosUpscaleField(factor: $imageSaveUpscaleBy)
+
+                Button(action: { viewModel.openOutputFolder() }) {
+                    Label("Open Folder", systemImage: "folder")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Open the image output folder in Finder")
+            }
+        }
+    }
+
+    // MARK: - Output Section
+
+    @ViewBuilder
+    private var outputSection: some View {
+        VStack(spacing: 0) {
+            ImageGenerationPromptSection(viewModel: viewModel)
 
             Divider()
 

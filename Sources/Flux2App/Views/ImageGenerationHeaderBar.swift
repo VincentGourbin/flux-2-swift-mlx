@@ -172,6 +172,17 @@ struct ImageGenerationModelHeaderControls: View {
                 .disabled(!viewModel.isFamilySelected)
             }
 
+            Button("Unload Models", action: onUnload)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!unloadEnabled)
+                .help("Unload diffusion models from memory. The next Generate reloads them.")
+
+            if modelManager.isDownloading {
+                ProgressView(value: modelManager.downloadProgress)
+                    .frame(width: 56)
+            }
+
             HStack(spacing: 4) {
                 Image(systemName: "memorychip")
                     .font(.caption)
@@ -184,16 +195,10 @@ struct ImageGenerationModelHeaderControls: View {
 
             readyIndicator
 
-            Button("Unload Models", action: onUnload)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(!unloadEnabled)
-                .help("Unload diffusion models from memory. The next Generate reloads them.")
+            Divider()
+                .frame(height: 16)
 
-            if modelManager.isDownloading {
-                ProgressView(value: modelManager.downloadProgress)
-                    .frame(width: 56)
-            }
+            ImageGenerationHeaderGenerateControls(viewModel: viewModel)
         }
     }
 
@@ -256,6 +261,64 @@ struct ImageGenerationModelHeaderControls: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             content()
+        }
+    }
+}
+
+/// Generate / cancel / progress — flush right in the purple header after the Ready divider.
+struct ImageGenerationHeaderGenerateControls: View {
+    @ObservedObject var viewModel: ImageGenerationViewModel
+    @EnvironmentObject var modelManager: ModelManager
+
+    private var generateEnabled: Bool {
+        guard viewModel.canGenerate,
+              modelManager.isTransformerDownloaded(viewModel.selectedTransformerVariant),
+              modelManager.isVAEDownloaded else {
+            return false
+        }
+        if viewModel.requiresReferenceImages {
+            return !viewModel.referenceImages.isEmpty
+        }
+        return true
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let error = viewModel.errorMessage, !viewModel.isGenerating {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                    .help(error)
+            }
+
+            if viewModel.isResetting {
+                ProgressView()
+                    .controlSize(.small)
+            } else if viewModel.isGenerating {
+                ProgressView(value: viewModel.progress)
+                    .frame(width: 64)
+
+                Text(viewModel.statusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: 140, alignment: .leading)
+
+                Button("Cancel", role: .cancel) {
+                    viewModel.cancel()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(.red)
+            } else {
+                Button {
+                    viewModel.startGeneration()
+                } label: {
+                    Text("Generate")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
+                .disabled(!generateEnabled)
+            }
         }
     }
 }

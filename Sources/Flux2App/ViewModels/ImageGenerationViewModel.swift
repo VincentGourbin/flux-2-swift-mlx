@@ -216,6 +216,10 @@ class ImageGenerationViewModel: ObservableObject {
 
     // MARK: - Computed Properties
 
+    var requiresReferenceImages: Bool {
+        workflow == .imageToImage
+    }
+
     var seedValue: UInt64? {
         guard !seed.isEmpty else { return nil }
         return UInt64(seed)
