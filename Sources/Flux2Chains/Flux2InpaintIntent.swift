@@ -28,10 +28,14 @@ import Foundation
 ///   photographic identity, including a cast shadow consistent with the
 ///   existing light direction.
 ///
-/// - ``remove``: describe *only* the surface that should continue under
-///   what is being removed. The VLM looks at the pixels around the
-///   masked region and writes a prompt about that surface alone — naming
-///   the object would make it reappear.
+/// - ``remove``: erase an object in the mask; describe *only* the surface
+///   that should continue in its place. The user's hint (if any) names what
+///   to clear — it must not appear in the produced prompt.
+///
+/// - ``fill``: generative-fill style — a missing, empty, or damaged patch
+///   should be completed from surrounding context (Photoshop-style). Same
+///   surface-only prompt shape as ``remove`` today; kept separate so VLM
+///   wording and future chain tuning can diverge.
 ///
 /// - ``modify``: keep the existing subject recognisable but apply the
 ///   user's modification (colour change, outfit swap, expression
@@ -46,10 +50,15 @@ public enum Flux2InpaintIntent: String, Sendable, CaseIterable, Codable {
     /// The masked region currently contains an object the user wants
     /// gone, with the surrounding surface continuing seamlessly into the
     /// gap. Example: removing a person from a beach photo so only the
-    /// sand remains. The user's prompt (if any) is consumed as context
-    /// only; the produced FLUX.2 prompt never mentions the removed
-    /// subject.
+    /// sand remains. The user's prompt (if any) names what to clear; the
+    /// produced FLUX.2 prompt never mentions that subject.
     case remove
+
+    /// The masked region is missing content, empty, or damaged and should
+    /// be completed from surrounding context (generative fill). Example:
+    /// filling a torn corner, blank patch, or gap in pavement. The user's
+    /// hint (if any) steers the material or texture to continue.
+    case fill
 
     /// The masked region contains an existing subject the user wants to
     /// modify in place (colour, outfit, expression…) while keeping it
@@ -78,6 +87,7 @@ extension Flux2InpaintIntent {
         switch self {
         case .replace: "Replace"
         case .remove: "Remove"
+        case .fill: "Fill"
         case .modify: "Modify"
         case .changeScene: "Change scene"
         }
@@ -88,7 +98,9 @@ extension Flux2InpaintIntent {
         case .replace:
             "Swap what is inside the mask for a new subject named in the prompt."
         case .remove:
-            "Clear the masked region and continue the surrounding surface."
+            "Erase what is inside the mask; the surrounding surface continues through the gap."
+        case .fill:
+            "Complete a missing, empty, or damaged patch from surrounding context."
         case .modify:
             "Repair or adjust what is inside the mask while keeping it recognisable."
         case .changeScene:

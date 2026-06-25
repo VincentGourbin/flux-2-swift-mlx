@@ -378,13 +378,6 @@ public enum ImagePreparation {
         processArea: CGRect?,
         draftPolygonPoints: [CGPoint] = []
     ) -> CGRect {
-        if maskLayers.contains(where: {
-            if case .visionSubject = $0.primitive { return true }
-            return false
-        }) {
-            return CGRect(x: 0, y: 0, width: 1, height: 1)
-        }
-
         var bbox: CGRect?
         func union(_ rect: CGRect) {
             guard rect.width > 0, rect.height > 0 else { return }
@@ -412,8 +405,8 @@ public enum ImagePreparation {
                     maxY = max(maxY, point.y)
                 }
                 union(CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY))
-            case .visionSubject:
-                return CGRect(x: 0, y: 0, width: 1, height: 1)
+            case .visionSubject(let selection):
+                union(selection.boundingRect)
             }
         }
 

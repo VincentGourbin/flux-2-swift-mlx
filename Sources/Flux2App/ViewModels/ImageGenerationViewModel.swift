@@ -100,14 +100,20 @@ class ImageGenerationViewModel: ObservableObject {
     @Published var preparationOverlayOpacity: Double = 0.22
     @Published var processArea: CGRect?
     @Published var contextArea: CGRect = CGRect(x: 0, y: 0, width: 1, height: 1)
-    @Published var editMode: ImageEditMode = .promptEdit
     @Published var inpaintIntent: Flux2InpaintIntent = .modify
     @Published var enrichInpaintPromptWithVLM: Bool = false
     @Published var vlmContextManual: Bool = false
     @Published var inpaintMaskLayers: [InpaintMaskLayer] = []
-    @Published var inpaintMaskTool: InpaintMaskTool = .rectangle
-    @Published var inpaintMaskCombineMode: InpaintMaskCombineMode = .add
+    @Published var inpaintMaskTool: InpaintMaskTool = .pointer
     @Published var draftPolygonPoints: [CGPoint] = []
+    @Published var draftLassoPoints: [CGPoint] = []
+    @Published var isDrawingSelection: Bool = false
+    /// Set when the user defines an expanded canvas for outpainting (Crop tool).
+    @Published var outpaintCanvasIsDefined: Bool = false
+    @Published var outpaintPadding: OutpaintPadding = .zero
+    /// Resolved Vision silhouettes keyed by mask-layer id (preview + generate).
+    @Published var visionSubjectMasks: [UUID: CGImage] = [:]
+    @Published var visionSubjectStatusMessage: String?
     /// Target generation budget in megapixels (the *maximum* total pixels). The
     /// barn doors set the aspect ratio; the generation fills this budget at that
     /// aspect, so a small barn-door region no longer shrinks the output — it just
@@ -125,6 +131,10 @@ class ImageGenerationViewModel: ObservableObject {
             guard clamped == megapixelBudget else {
                 megapixelBudget = clamped
                 return
+            }
+            cancelBarnDoorsIfActive()
+            if outpaintPadding.hasExpansion {
+                updateOutpaintPadding(outpaintPadding)
             }
             applySizingControls()
         }
@@ -213,12 +223,76 @@ class ImageGenerationViewModel: ObservableObject {
 
     var canGenerate: Bool {
         guard !isPipelineBusy, isFamilySelected else { return false }
-        if !referenceImages.isEmpty, editMode == .generativeFill {
-            guard hasFillMask else { return false }
-            return !prompt.isEmpty || enrichInpaintPromptWithVLM
+        if !referenceImages.isEmpty {
+            switch generateRoute {
+            case .localFill:
+                guard hasFillMask else { return false }
+                return !prompt.isEmpty || enrichInpaintPromptWithVLM
+            case .outpaint:
+                return outpaintCanvasIsDefined && !prompt.isEmpty
+            case .fullImage:
+                break
+            }
         }
         guard !prompt.isEmpty else { return false }
         return true
+    }
+
+    /// Inferred from the active tool and whether a selection exists — not user-facing.
+    var generateRoute: I2IGenerateRoute {
+        if inpaintMaskTool == .cropCanvas { return .outpaint }
+        if hasLocalFillSelection { return .localFill }
+        return .fullImage
+    }
+
+    var hasLocalFillSelection: Bool {
+        isDrawingSelection || hasActiveSelection
+    }
+
+    var canUseCanvasTools: Bool {
+        !referenceImages.isEmpty
+    }
+
+    /// Barn-door chrome applies on full-image runs and local fills with VLM framing.
+    var barnDoorToolsApply: Bool {
+        guard canUseCanvasTools, inpaintMaskTool != .cropCanvas else { return false }
+        if hasLocalFillSelection {
+            return enrichInpaintPromptWithVLM
+        }
+        return true
+    }
+
+    func isMaskToolEnabled(_ tool: InpaintMaskTool) -> Bool {
+        guard canUseCanvasTools else { return false }
+        switch tool {
+        case .liveArea:
+            return barnDoorToolsApply
+        case .rectangle, .polygon, .visionSubject, .cropCanvas:
+            return true
+        case .pointer:
+            return false
+        }
+    }
+
+    var hasActiveSelection: Bool {
+        !inpaintMaskLayers.isEmpty
+            || !draftPolygonPoints.isEmpty
+            || !draftLassoPoints.isEmpty
+            || processArea != nil
+    }
+
+    /// Mistral text-only upsampling — full-image I2I and outpaint, not masked fill.
+    var isUpsamplePromptApplicable: Bool {
+        guard workflow == .imageToImage else { return true }
+        switch generateRoute {
+        case .fullImage, .outpaint: return true
+        case .localFill: return false
+        }
+    }
+
+    /// Qwen image-aware inpaint prompt — masked fill only.
+    var isEnrichInpaintPromptApplicable: Bool {
+        workflow == .imageToImage && generateRoute == .localFill
     }
 
     var progress: Double {
@@ -293,25 +367,22 @@ class ImageGenerationViewModel: ObservableObject {
 
     var processAreaDescription: String {
         guard referenceImages.first?.image != nil else {
-            return editMode == .generativeFill ? "Fill region: none selected" : "Process: none selected"
+            return "Selection: none"
         }
 
-        if editMode == .generativeFill, !inpaintMaskLayers.isEmpty {
-            return "Fill mask: \(inpaintMaskLayers.count) layer\(inpaintMaskLayers.count == 1 ? "" : "s")"
+        if hasLocalFillSelection, !inpaintMaskLayers.isEmpty {
+            return "Selection active"
         }
 
-        guard let image = referenceImages.first?.image,
-              let processArea else {
-            return editMode == .generativeFill ? "Fill region: none selected" : "Process: none selected"
+        if processArea != nil {
+            return "Drawing selection…"
         }
 
-        let rect = pixelRect(from: processArea, in: image)
-        let prefix = editMode == .generativeFill ? "Fill" : "Process"
-        return "\(prefix): \(Int(rect.width))x\(Int(rect.height)) at x=\(Int(rect.minX)) y=\(Int(rect.minY))"
+        return "Selection: none"
     }
 
     var hasFillMask: Bool {
-        !inpaintMaskLayers.isEmpty || processArea != nil
+        !inpaintMaskLayers.isEmpty
     }
 
     /// How much the resolution cap shrinks the working image before generative fill.
@@ -330,6 +401,18 @@ class ImageGenerationViewModel: ObservableObject {
 
         let size = adjustedGenerationSize
         return "Context sent to model: \(size.width)x\(size.height)"
+    }
+
+    var outpaintCanvasDescription: String {
+        guard let image = referenceImages.first?.image else {
+            return "Canvas: add a reference image"
+        }
+        guard outpaintPadding.hasExpansion else {
+            return "Canvas: drag edges on the preview to expand"
+        }
+        let size = outpaintPadding.canvasSize(sourceWidth: image.width, sourceHeight: image.height)
+        let mp = Double(outpaintPadding.totalPixels(sourceWidth: image.width, sourceHeight: image.height)) / 1_000_000
+        return "Canvas: \(size.width)×\(size.height) (\(String(format: "%.2f", mp)) MP) — +L\(outpaintPadding.left) +R\(outpaintPadding.right) +T\(outpaintPadding.top) +B\(outpaintPadding.bottom)"
     }
 
     private static let lastProjectURLKey = "lastGenerationProjectURL"
@@ -360,6 +443,8 @@ class ImageGenerationViewModel: ObservableObject {
             thumbnail: createThumbnail(from: nsImage)
         )
         referenceImages.append(refImage)
+        resetOutpaintCanvas()
+        cancelBarnDoorsIfActive()
         ensurePreparationDefaults()
     }
 
@@ -382,6 +467,8 @@ class ImageGenerationViewModel: ObservableObject {
             thumbnail: createThumbnail(from: nsImage)
         )
         referenceImages.append(refImage)
+        resetOutpaintCanvas()
+        cancelBarnDoorsIfActive()
         ensurePreparationDefaults()
     }
 
@@ -398,6 +485,8 @@ class ImageGenerationViewModel: ObservableObject {
             thumbnail: createThumbnail(from: nsImage)
         )
         referenceImages.append(refImage)
+        resetOutpaintCanvas()
+        cancelBarnDoorsIfActive()
         ensurePreparationDefaults()
     }
 
@@ -407,6 +496,7 @@ class ImageGenerationViewModel: ObservableObject {
         if referenceImages.isEmpty {
             processArea = nil
             contextArea = CGRect(x: 0, y: 0, width: 1, height: 1)
+            inpaintMaskTool = .pointer
         } else {
             ensurePreparationDefaults()
         }
@@ -417,12 +507,14 @@ class ImageGenerationViewModel: ObservableObject {
         referenceImages.removeAll()
         processArea = nil
         contextArea = CGRect(x: 0, y: 0, width: 1, height: 1)
+        inpaintMaskTool = .pointer
+        resetOutpaintCanvas()
     }
 
     func applySizingControls() {
         guard let image = referenceImages.first?.image else { return }
         var settings = currentPreparationSettings()
-        if editMode == .generativeFill {
+        if hasLocalFillSelection {
             settings.contextArea = CGRect(x: 0, y: 0, width: 1, height: 1)
         }
         let size = ImagePreparation.generationSize(referenceImage: image, settings: settings)
@@ -445,11 +537,13 @@ class ImageGenerationViewModel: ObservableObject {
 
 
     func setSizingFavor(_ favor: ImageSizingFavor) {
+        cancelBarnDoorsIfActive()
         sizingFavor = favor
         applySizingControls()
     }
 
     func setSizingMethod(_ method: ImageSizingMethod) {
+        cancelBarnDoorsIfActive()
         sizingMethod = method
         applySizingControls()
     }
@@ -526,6 +620,15 @@ class ImageGenerationViewModel: ObservableObject {
         return true
     }
 
+    /// Restore barn doors to their default (full frame, or auto VLM framing when a selection exists).
+    func resetBarnDoors() {
+        if hasLocalFillSelection, enrichInpaintPromptWithVLM {
+            resetVLMContextArea()
+        } else {
+            resetContextArea()
+        }
+    }
+
     /// Reopen the barn doors (full image) and clear any selection.
     func resetContextArea() {
         contextArea = CGRect(x: 0, y: 0, width: 1, height: 1)
@@ -533,10 +636,39 @@ class ImageGenerationViewModel: ObservableObject {
         applySizingControls()
     }
 
+    /// Barn doors reset when the working canvas changes (budget, sizing, outpaint).
+    func cancelBarnDoorsIfActive() {
+        let fullFrame = CGRect(x: 0, y: 0, width: 1, height: 1)
+        guard contextArea != fullFrame else { return }
+        contextArea = fullFrame
+        vlmContextManual = false
+    }
+
+    func updateOutpaintPadding(_ padding: OutpaintPadding) {
+        guard let image = referenceImages.first?.image else { return }
+        let maxPixels = Int(megapixelBudget * 1_000_000)
+        let clamped = padding.clamped(
+            sourceWidth: image.width,
+            sourceHeight: image.height,
+            maxPixels: maxPixels
+        )
+        let changed = clamped != outpaintPadding
+        outpaintPadding = clamped
+        outpaintCanvasIsDefined = clamped.hasExpansion
+        if changed {
+            cancelBarnDoorsIfActive()
+        }
+    }
+
+    func resetOutpaintCanvas() {
+        outpaintPadding = .zero
+        outpaintCanvasIsDefined = false
+    }
+
     /// Update the barn-door (context) region from a barn-door edge drag.
     func setContextArea(_ rect: CGRect) {
         contextArea = Self.clampUnitRect(rect)
-        if editMode == .generativeFill {
+        if hasLocalFillSelection {
             if enrichInpaintPromptWithVLM {
                 vlmContextManual = true
             }
@@ -546,13 +678,13 @@ class ImageGenerationViewModel: ObservableObject {
     }
 
     func resetVLMContextArea() {
-        guard editMode == .generativeFill else { return }
+        guard hasLocalFillSelection else { return }
         vlmContextManual = false
         syncAutoVLMContextArea()
     }
 
     func syncAutoVLMContextArea() {
-        guard editMode == .generativeFill, enrichInpaintPromptWithVLM, !vlmContextManual else { return }
+        guard hasLocalFillSelection, enrichInpaintPromptWithVLM, !vlmContextManual else { return }
         contextArea = ImagePreparation.autoVLMContextArea(
             maskLayers: inpaintMaskLayers,
             processArea: processArea,
@@ -569,20 +701,84 @@ class ImageGenerationViewModel: ObservableObject {
         processArea = Self.clampUnitRect(rect)
     }
 
-    func clearProcessSelection() {
-        clearFillMask()
+    func selectMaskTool(_ tool: InpaintMaskTool) {
+        guard isMaskToolEnabled(tool) else { return }
+        if tool == .cropCanvas {
+            deselectSelections()
+            resetOutpaintCanvas()
+            cancelBarnDoorsIfActive()
+        }
+        inpaintMaskTool = tool
+    }
+
+    /// Drop back to pointer when the active toolbar tool is no longer usable.
+    func clearActiveToolIfDisabled() {
+        guard inpaintMaskTool != .pointer else { return }
+        if !isMaskToolEnabled(inpaintMaskTool) {
+            inpaintMaskTool = .pointer
+        }
+    }
+
+    func deselectSelections() {
+        inpaintMaskLayers.removeAll()
+        draftPolygonPoints.removeAll()
+        draftLassoPoints.removeAll()
+        visionSubjectMasks.removeAll()
+        visionSubjectStatusMessage = nil
+        processArea = nil
+        isDrawingSelection = false
+        inpaintMaskTool = .pointer
+        syncAutoVLMContextArea()
+    }
+
+    private func applyGenerativeFillDefaultsIfNeeded() {
+        guard hasLocalFillSelection else { return }
+        enrichInpaintPromptWithVLM = true
+        inpaintIntent = .fill
+        vlmContextManual = false
+        syncAutoVLMContextArea()
+    }
+
+    #if canImport(AppKit)
+    static func selectionModeFromModifierFlags(_ flags: NSEvent.ModifierFlags) -> SelectionMode {
+        if flags.contains(.option) { return .subtract }
+        if flags.contains(.shift) { return .add }
+        return .replace
+    }
+
+    private static var currentSelectionCommitMode: SelectionMode {
+        selectionModeFromModifierFlags(NSEvent.modifierFlags)
+    }
+    #else
+    private static var currentSelectionCommitMode: SelectionMode { .replace }
+    #endif
+
+    private func prepareSelectionCommit(mode: SelectionMode) {
+        if mode == .replace {
+            inpaintMaskLayers.removeAll()
+            visionSubjectMasks.removeAll()
+            visionSubjectStatusMessage = nil
+        }
+    }
+
+    private func appendCommittedLayer(_ primitive: InpaintMaskPrimitive, mode: SelectionMode) {
+        prepareSelectionCommit(mode: mode)
+        inpaintMaskLayers.append(
+            InpaintMaskLayer(
+                combineMode: mode.combineMode,
+                primitive: primitive
+            )
+        )
+        processArea = nil
+        applyGenerativeFillDefaultsIfNeeded()
+        syncAutoVLMContextArea()
     }
 
     func commitFillRectangle(_ rect: CGRect) {
+        guard inpaintMaskTool != .visionSubject else { return }
+        let mode = Self.currentSelectionCommitMode
         let clamped = Self.clampUnitRect(rect)
-        inpaintMaskLayers.append(
-            InpaintMaskLayer(
-                combineMode: inpaintMaskCombineMode,
-                primitive: .rectangle(.init(clamped))
-            )
-        )
-        processArea = clamped
-        syncAutoVLMContextArea()
+        appendCommittedLayer(.rectangle(.init(clamped)), mode: mode)
     }
 
     func addDraftPolygonPoint(_ point: CGPoint) {
@@ -592,56 +788,149 @@ class ImageGenerationViewModel: ObservableObject {
     func closeDraftPolygon() {
         guard draftPolygonPoints.count >= 3 else { return }
         let points = draftPolygonPoints.map { FluxGenerationProject.NormalizedPoint($0) }
-        inpaintMaskLayers.append(
-            InpaintMaskLayer(
-                combineMode: inpaintMaskCombineMode,
-                primitive: .polygon(points)
-            )
-        )
+        let mode = Self.currentSelectionCommitMode
+        if inpaintMaskTool == .visionSubject {
+            commitVisionSubject(selection: .polygon(points), mode: mode)
+            return
+        }
+        appendCommittedLayer(.polygon(points), mode: mode)
         draftPolygonPoints.removeAll()
-        syncAutoVLMContextArea()
     }
 
-    func addVisionSubjectMaskLayer() {
-        inpaintMaskLayers.append(
-            InpaintMaskLayer(
-                combineMode: inpaintMaskCombineMode,
-                primitive: .visionSubject
+    func commitLassoSelection() {
+        guard inpaintMaskTool == .visionSubject, draftLassoPoints.count >= 3 else { return }
+        let mode = Self.currentSelectionCommitMode
+        let points = draftLassoPoints.map { FluxGenerationProject.NormalizedPoint($0) }
+        draftLassoPoints.removeAll()
+        isDrawingSelection = false
+        commitVisionSubject(selection: .polygon(points), mode: mode)
+    }
+
+    func appendLassoPoint(_ point: CGPoint) {
+        draftLassoPoints.append(Self.clampUnitPoint(point))
+    }
+
+    func commitVisionSubject(
+        selection: VisionSubjectSelection,
+        mode: SelectionMode? = nil
+    ) {
+        guard let image = referenceImages.first?.image else { return }
+        let mode = mode ?? Self.currentSelectionCommitMode
+        Task {
+            await resolveVisionSubjectLayer(selection: selection, image: image, selectionMode: mode)
+        }
+    }
+
+    @MainActor
+    private func resolveVisionSubjectLayer(
+        selection: VisionSubjectSelection,
+        image: CGImage,
+        selectionMode: SelectionMode
+    ) async {
+        visionSubjectStatusMessage = "Finding subject…"
+        let layerID = UUID()
+        do {
+            let mask = try await Task.detached(priority: .userInitiated) { [inpaintIntent] in
+                try Self.resolveVisionSubjectMask(
+                    selection: selection,
+                    image: image,
+                    inpaintIntent: inpaintIntent
+                )
+            }.value
+            if selectionMode == .replace {
+                inpaintMaskLayers.removeAll()
+                visionSubjectMasks.removeAll()
+                visionSubjectStatusMessage = nil
+            }
+            inpaintMaskLayers.append(
+                InpaintMaskLayer(
+                    id: layerID,
+                    combineMode: selectionMode.combineMode,
+                    primitive: .visionSubject(selection)
+                )
             )
-        )
-        syncAutoVLMContextArea()
+            visionSubjectMasks[layerID] = mask
+            processArea = nil
+            draftPolygonPoints.removeAll()
+            visionSubjectStatusMessage = nil
+            applyGenerativeFillDefaultsIfNeeded()
+            syncAutoVLMContextArea()
+        } catch {
+            processArea = nil
+            draftPolygonPoints.removeAll()
+            visionSubjectStatusMessage = "No subject in selection"
+        }
+    }
+
+    nonisolated private static func resolveVisionSubjectMask(
+        selection: VisionSubjectSelection,
+        image: CGImage,
+        inpaintIntent: Flux2InpaintIntent
+    ) throws -> CGImage {
+        if #available(macOS 14.0, *) {
+            let region = selection.visionRegion
+            if inpaintIntent == .changeScene {
+                return try Flux2SubjectMask.pickChangeSceneMask(from: image, region: region)
+            }
+            return try Flux2SubjectMask.pickSubjectInpaintMask(from: image, region: region)
+        }
+        throw Flux2Error.invalidConfiguration("Apple Vision subject masks require macOS 14 or later.")
+    }
+
+    @MainActor
+    func refreshVisionSubjectMaskCache() async {
+        guard let image = referenceImages.first?.image else { return }
+        for layer in inpaintMaskLayers {
+            guard case .visionSubject(let selection) = layer.primitive else { continue }
+            if let cached = visionSubjectMasks[layer.id],
+               cached.width == image.width,
+               cached.height == image.height {
+                continue
+            }
+            do {
+                let mask = try await Task.detached(priority: .userInitiated) { [inpaintIntent] in
+                    try Self.resolveVisionSubjectMask(
+                        selection: selection,
+                        image: image,
+                        inpaintIntent: inpaintIntent
+                    )
+                }.value
+                visionSubjectMasks[layer.id] = mask
+            } catch {
+                continue
+            }
+        }
     }
 
     func clearFillMask() {
-        inpaintMaskLayers.removeAll()
-        draftPolygonPoints.removeAll()
-        processArea = nil
-        syncAutoVLMContextArea()
+        deselectSelections()
+    }
+
+    func clearProcessSelection() {
+        deselectSelections()
     }
 
     func buildGenerativeFillMask(for image: CGImage) throws -> CGImage {
-        var visionMask: CGImage?
-        let needsVision = inpaintMaskLayers.contains {
-            if case .visionSubject = $0.primitive { return true }
-            return false
-        }
-        if needsVision {
-            if #available(macOS 14.0, *) {
-                if inpaintIntent == .changeScene {
-                    visionMask = try Flux2SubjectMask.makeChangeSceneMask(from: image, edgeSoftnessPixels: 0)
-                } else {
-                    visionMask = try Flux2SubjectMask.makeSubjectInpaintMask(from: image, edgeSoftnessPixels: 0)
-                }
-            } else {
-                throw Flux2Error.invalidConfiguration("Apple Vision subject masks require macOS 14 or later.")
+        var visionMasks = visionSubjectMasks
+        for layer in inpaintMaskLayers {
+            guard case .visionSubject(let selection) = layer.primitive else { continue }
+            if let cached = visionMasks[layer.id],
+               cached.width == image.width,
+               cached.height == image.height {
+                continue
             }
+            visionMasks[layer.id] = try Self.resolveVisionSubjectMask(
+                selection: selection,
+                image: image,
+                inpaintIntent: inpaintIntent
+            )
         }
 
         return try ImageMaskBuilder.buildInpaintMask(
             definition: InpaintMaskDefinition(layers: inpaintMaskLayers),
             image: image,
             legacyRectangle: processArea,
-            visionMask: visionMask
+            visionMasks: visionMasks
         )
     }
 
@@ -952,17 +1241,31 @@ class ImageGenerationViewModel: ObservableObject {
         clearPromptAfterGeneration = project.clearPromptAfterGeneration ?? false
         processArea = project.processArea?.cgRect
         contextArea = Self.clampUnitRect(project.contextArea.cgRect)
-        editMode = ImageEditMode.fromProjectValue(project.editMode)
+        let legacyRoute = I2IGenerateRoute.fromLegacyProjectValue(project.editMode)
         inpaintIntent = project.inpaintIntent.flatMap(Flux2InpaintIntent.init(rawValue:)) ?? .modify
-        enrichInpaintPromptWithVLM = project.enrichInpaintPromptWithVLM ?? (editMode == .generativeFill)
+        if let toolRaw = project.inpaintMaskTool,
+           let tool = InpaintMaskTool(rawValue: toolRaw) {
+            inpaintMaskTool = tool
+        } else if legacyRoute == .outpaint {
+            inpaintMaskTool = .cropCanvas
+        } else {
+            inpaintMaskTool = .pointer
+        }
+        enrichInpaintPromptWithVLM = project.enrichInpaintPromptWithVLM
+            ?? (!(project.inpaintMaskLayers ?? []).isEmpty || legacyRoute == .localFill)
         vlmContextManual = project.vlmContextManual ?? false
         inpaintMaskLayers = project.inpaintMaskLayers ?? []
+        outpaintPadding = project.outpaintPadding ?? .zero
+        outpaintCanvasIsDefined = outpaintPadding.hasExpansion
         draftPolygonPoints.removeAll()
-        if editMode == .generativeFill, enrichInpaintPromptWithVLM, !vlmContextManual {
+        visionSubjectMasks.removeAll()
+        visionSubjectStatusMessage = nil
+        if hasLocalFillSelection, enrichInpaintPromptWithVLM, !vlmContextManual {
             syncAutoVLMContextArea()
         }
         interpretImageURLs = project.interpretImagePaths.map { URL(fileURLWithPath: $0) }
         referenceImages = restoredReferences
+        Task { await refreshVisionSubjectMaskCache() }
         generatedImage = nil
         formattedComparisonImage = nil
         upsampledPrompt = nil
@@ -993,7 +1296,9 @@ class ImageGenerationViewModel: ObservableObject {
             selectedFamily: selectedFamily?.rawValue,
             processArea: processArea.map(FluxGenerationProject.NormalizedRect.init),
             contextArea: FluxGenerationProject.NormalizedRect(contextArea),
-            editMode: editMode.rawValue,
+            editMode: nil,
+            inpaintMaskTool: inpaintMaskTool.rawValue,
+            outpaintPadding: outpaintPadding.hasExpansion ? outpaintPadding : nil,
             inpaintIntent: inpaintIntent.rawValue,
             enrichInpaintPromptWithVLM: enrichInpaintPromptWithVLM,
             vlmContextManual: vlmContextManual,
@@ -1137,7 +1442,7 @@ class ImageGenerationViewModel: ObservableObject {
                 )
                 image = result.image
                 if result.wasUpsampled { upsampledPrompt = result.usedPrompt }
-            } else if editMode == .generativeFill {
+            } else if generateRoute == .localFill {
                 guard hasFillMask else {
                     throw Flux2Error.invalidConfiguration("Draw a fill region on the reference image before generating.")
                 }
@@ -1189,12 +1494,52 @@ class ImageGenerationViewModel: ObservableObject {
                 if let notice = result.notice {
                     statusMessage = "Generation complete — \(notice)"
                 }
+            } else if generateRoute == .outpaint {
+                guard outpaintCanvasIsDefined else {
+                    throw Flux2Error.invalidConfiguration("Expand the canvas on the preview before generating.")
+                }
+
+                let sourceImage = referenceImages[0].image
+                statusMessage = "Running outpaint..."
+                let maxPixels = Int(megapixelBudget * 1_000_000)
+                let chain = Flux2OutpaintingChain(
+                    pipeline: pipeline!,
+                    image: sourceImage,
+                    top: outpaintPadding.top,
+                    bottom: outpaintPadding.bottom,
+                    left: outpaintPadding.left,
+                    right: outpaintPadding.right,
+                    prompt: prompt,
+                    steps: steps,
+                    guidance: guidance,
+                    seed: seedValue,
+                    upsamplePrompt: upsamplePrompt,
+                    maxPixels: maxPixels,
+                    onProgress: { current, total in
+                        Task { @MainActor in
+                            guard self.isGenerating else { return }
+                            self.currentStep = current
+                            self.totalSteps = total
+                            self.statusMessage = "Step \(current)/\(total)"
+                        }
+                    }
+                )
+                let result = try await chain.run()
+                image = result.image
+                if result.wasUpsampled { upsampledPrompt = result.usedPrompt }
+                if let notice = result.notice {
+                    statusMessage = "Generation complete — \(notice)"
+                }
             } else {
-                // Image-to-Image (prompt edit + Image Preparation)
+                // Image-to-Image (full-frame + Image Preparation)
                 statusMessage = "Preparing image-to-image input..."
                 let preparedInput = try prepareImageToImageInput()
 
-                statusMessage = "Generating with \(preparedInput.images.count) reference image(s)..."
+                if upsamplePrompt {
+                    statusMessage = "Upsampling prompt (Mistral VLM)..."
+                } else {
+                    statusMessage = "Generating with \(preparedInput.images.count) reference image(s)..."
+                }
                 let result = try await pipeline!.generateImageToImageWithResult(
                     prompt: prompt,
                     images: preparedInput.images,
@@ -1440,7 +1785,9 @@ class ImageGenerationViewModel: ObservableObject {
             processAreaWidth: processArea.map { Double($0.width) },
             processAreaHeight: processArea.map { Double($0.height) },
             hasProcessArea: processArea != nil,
-            editMode: editMode.rawValue,
+            editMode: nil,
+            inpaintMaskTool: inpaintMaskTool.rawValue,
+            outpaintPadding: outpaintPadding.hasExpansion ? outpaintPadding : nil,
             inpaintIntent: inpaintIntent.rawValue,
             enrichInpaintPromptWithVLM: enrichInpaintPromptWithVLM,
             vlmContextManual: vlmContextManual,
@@ -1493,11 +1840,22 @@ class ImageGenerationViewModel: ObservableObject {
                 } else {
                     processArea = nil
                 }
-                editMode = ImageEditMode.fromProjectValue(state.editMode)
+                let legacyRoute = I2IGenerateRoute.fromLegacyProjectValue(state.editMode)
+                if let toolRaw = state.inpaintMaskTool,
+                   let tool = InpaintMaskTool(rawValue: toolRaw) {
+                    inpaintMaskTool = tool
+                } else if legacyRoute == .outpaint {
+                    inpaintMaskTool = .cropCanvas
+                }
+                outpaintPadding = state.outpaintPadding ?? .zero
+                outpaintCanvasIsDefined = outpaintPadding.hasExpansion
+                if outpaintPadding.hasExpansion {
+                    updateOutpaintPadding(outpaintPadding)
+                }
                 inpaintIntent = state.inpaintIntent.flatMap(Flux2InpaintIntent.init(rawValue:)) ?? inpaintIntent
                 enrichInpaintPromptWithVLM = state.enrichInpaintPromptWithVLM ?? enrichInpaintPromptWithVLM
                 vlmContextManual = state.vlmContextManual
-                if editMode == .generativeFill, enrichInpaintPromptWithVLM, !vlmContextManual {
+                if hasLocalFillSelection, enrichInpaintPromptWithVLM, !vlmContextManual {
                     syncAutoVLMContextArea()
                 }
                 applySizingControls()

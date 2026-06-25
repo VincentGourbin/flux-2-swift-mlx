@@ -1039,6 +1039,7 @@ public class Flux2Pipeline: @unchecked Sendable {
                     let enhancedPrompt = try await textEncoder!.upsamplePromptWithImages(enrichedPrompt, images: images)
                     finalUsedPrompt = enhancedPrompt
                     wasPromptUpsampled = true
+                    onPromptUpsampled?(finalUsedPrompt)
                     textEmbeddings = try textEncoder!.encode(enhancedPrompt, upsample: false)
                 } else {
                     let (embeddings, usedPrompt) = try textEncoder!.encodeWithPrompt(enrichedPrompt, upsample: upsamplePrompt)
@@ -1068,6 +1069,7 @@ public class Flux2Pipeline: @unchecked Sendable {
                     let enhancedPrompt = try await tempMistralEncoder.upsamplePromptWithImages(enrichedPrompt, images: images)
                     finalUsedPrompt = enhancedPrompt
                     wasPromptUpsampled = true
+                    onPromptUpsampled?(finalUsedPrompt)
 
                     // Step 4: Unload Mistral to free memory
                     Flux2Debug.log("Unloading Mistral VLM...")

@@ -112,6 +112,7 @@ struct ModelStatusBar: View {
     @EnvironmentObject var modelManager: ModelManager
     @AppStorage("detailedProfiling") private var detailedProfiling = false
     @FocusedValue(\.generationUnloadModels) private var unloadModels
+    @FocusedValue(\.generationModelConfiguration) private var generationViewModel
     let selectedTab: Int
 
     /// Is this a Qwen3-focused tab?
@@ -403,71 +404,17 @@ struct ModelStatusBar: View {
 
     @ViewBuilder
     private var imageGenerationStatusBar: some View {
-        // Diffusion models status
-        HStack(spacing: 4) {
-            Image(systemName: "photo.stack.fill")
-                .foregroundStyle(.purple)
-            Text("Image Generation")
-                .font(.caption.bold())
-                .foregroundStyle(.purple)
+        ImageGenerationHeaderLeftStatus()
+
+        Spacer(minLength: 12)
+
+        if let generationViewModel {
+            ImageGenerationModelHeaderControls(
+                viewModel: generationViewModel,
+                onUnload: { unloadModels?() },
+                unloadEnabled: unloadModels != nil
+            )
         }
-
-        Divider()
-            .frame(height: 16)
-            .padding(.horizontal, 8)
-
-        // Transformer status summary
-        let downloadedCount = modelManager.downloadedTransformers.count
-        let totalCount = ModelRegistry.TransformerVariant.allCases.count
-        HStack(spacing: 4) {
-            Circle()
-                .fill(downloadedCount > 0 ? Color.green : Color.gray)
-                .frame(width: 6, height: 6)
-            Text("Transformers: \(downloadedCount)/\(totalCount)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-
-        // VAE status
-        HStack(spacing: 4) {
-            Circle()
-                .fill(modelManager.isVAEDownloaded ? Color.green : Color.gray)
-                .frame(width: 6, height: 6)
-            Text("VAE")
-                .font(.caption)
-                .foregroundStyle(modelManager.isVAEDownloaded ? .primary : .secondary)
-        }
-
-        Spacer()
-
-        // Memory info
-        HStack(spacing: 8) {
-            Text("MLX: \(ModelManager.formatBytes(modelManager.memoryStats.active))")
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-
-            if modelManager.memoryStats.cache > 0 {
-                Button(action: { modelManager.clearCache() }) {
-                    Label("Clear \(ModelManager.formatBytes(modelManager.memoryStats.cache))", systemImage: "trash")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.mini)
-            }
-        }
-
-        Button(action: { /* Navigate to models tab - handled by parent */ }) {
-            Text("Manage Models")
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-
-        Button("Unload Models") {
-            unloadModels?()
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .disabled(unloadModels == nil)
-        .help("Unload diffusion models from memory. The next Generate reloads them.")
     }
 
     // MARK: - Helpers

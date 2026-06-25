@@ -87,6 +87,33 @@ public enum Flux2VLMPromptBuilder {
     - Output ONLY the final prompt, on a single line. No preamble, no quotes, no explanation.
     """
 
+    /// System prompt used for `Flux2InpaintIntent.fill`. Instructs the
+    /// VLM to complete a missing, empty, or damaged region by describing
+    /// what should continue from the surrounding pixels — no new subject
+    /// unless the user's hint requests one.
+    public static let fillSystemPrompt: String = """
+    You are a prompt engineer for FLUX.2 by Black Forest Labs. The user wants to FILL a missing, empty, or damaged region in an image — the masked area should be completed from the surrounding context, like generative fill. Your job is to produce a single FLUX.2 image-generation prompt that describes what belongs in that region.
+
+    Look at the provided image, focusing on the materials and features that border the masked region:
+    - the exact surface or texture that should continue through the gap (brick, skin, fabric weave, asphalt grain, sky gradient…)
+    - continuity features that should flow through (cracks, seams, shadow patterns, folds, grain direction…)
+    - lighting direction, softness, and colour temperature; time of day
+    - camera angle and apparent height, focal length feel, depth of field
+    - dominant colour palette and overall style
+
+    Assemble a single FLUX.2 prompt of 30–80 words following the structure Subject + Action + Style + Context:
+    - Subject = the material or surface completing the region (e.g., "weathered red brick wall", "smooth olive skin").
+    - Action = how it continues through the masked area ("with mortar lines aligned to the courses on either side…").
+    - Style + Context = the source's photographic identity, verbatim.
+
+    Rules:
+    - Describe continuation from context — do not invent a new unrelated subject unless the user's hint explicitly requests one.
+    - NEVER use generic suffixes like "seamlessly extend", "high quality", "8k".
+    - NEVER use negative phrases ("without the X", "no people", "empty of").
+    - Use specific photographic vocabulary.
+    - Output ONLY the final prompt, on a single line. No preamble, no quotes, no explanation.
+    """
+
     /// System prompt used for `Flux2InpaintIntent.modify`. Instructs the
     /// VLM to keep the existing subject recognisable and apply the user's
     /// modification while preserving the scene's photographic identity.
@@ -194,6 +221,7 @@ public enum Flux2VLMPromptBuilder {
         switch intent {
         case .replace:     systemPrompt = replaceSystemPrompt
         case .remove:      systemPrompt = removeSystemPrompt
+        case .fill:        systemPrompt = fillSystemPrompt
         case .modify:      systemPrompt = modifySystemPrompt
         case .changeScene: systemPrompt = changeSceneSystemPrompt
         }
@@ -291,6 +319,11 @@ public enum Flux2VLMPromptBuilder {
                 return "Describe the surface that should continue under the masked region, with no subject in it. Produce the FLUX.2 prompt now."
             }
             return "The user wants to remove this from the masked region: \(trimmed). Do NOT name it in your output. Describe the surface that should continue in its place. Produce the FLUX.2 prompt now."
+        case .fill:
+            if trimmed.isEmpty {
+                return "Describe what should continue into this missing or empty masked region from the surrounding context. Produce the FLUX.2 prompt now."
+            }
+            return "User guidance for the fill: \(trimmed). Complete the masked region from surrounding context. Produce the FLUX.2 prompt now."
         case .modify:
             if trimmed.isEmpty {
                 return "Keep the existing subject and adjust it slightly to better match the scene. Produce the FLUX.2 prompt now."

@@ -52,6 +52,8 @@ struct Flux2GenerationGUIState: Codable {
     var processAreaHeight: Double?
     var hasProcessArea: Bool
     var editMode: String?
+    var inpaintMaskTool: String?
+    var outpaintPadding: OutpaintPadding?
     var inpaintIntent: String?
     var enrichInpaintPromptWithVLM: Bool?
     var vlmContextManual: Bool = false

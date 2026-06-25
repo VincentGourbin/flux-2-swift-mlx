@@ -21,11 +21,6 @@ struct TextToImageView: View {
             // Left panel: Controls
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    // Model Selection Section
-                    modelSelectionSection
-
-                    Divider()
-
                     // Prompt Section
                     promptSection
 
@@ -84,6 +79,7 @@ struct TextToImageView: View {
             saveProjectAs: { viewModel.saveProjectAs() }
         ))
         .focusedSceneValue(\.generationProjectName, viewModel.projectDisplayName)
+        .focusedSceneValue(\.generationModelConfiguration, viewModel)
         .focusedSceneValue(\.generationUnloadModels) {
             Task { await viewModel.clearPipeline() }
         }
@@ -92,156 +88,6 @@ struct TextToImageView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .flux2PersistSession)) { _ in
             viewModel.persistSessionState()
-        }
-    }
-
-    // MARK: - Model Selection Section
-
-    @ViewBuilder
-    private var modelSelectionSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Model Configuration", systemImage: "cpu")
-                .font(.headline)
-
-            // Family — chosen first; drives the pixel factor and which models are
-            // available. Pre-selected today, so the gating below stays dormant.
-            HStack {
-                Text("Family:")
-                    .frame(width: 100, alignment: .leading)
-                Picker("", selection: $viewModel.selectedFamily) {
-                    ForEach(ModelFamily.allCases) { family in
-                        Text(family.displayName).tag(family as ModelFamily?)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: .infinity)
-            }
-
-            // Pixel-alignment factor — a read-only property of the family.
-            if let family = viewModel.selectedFamily {
-                HStack {
-                    Text("Pixel factor:")
-                        .frame(width: 100, alignment: .leading)
-                    Text("\(family.pixelAlignment) px")
-                        .font(.callout.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .help("Output dimensions are floored to this multiple. Determined by the model family; not adjustable.")
-                    Spacer()
-                }
-            }
-
-            // Model type picker
-            HStack {
-                Text("Model:")
-                    .frame(width: 100, alignment: .leading)
-                Picker("", selection: $viewModel.selectedModel) {
-                    ForEach(viewModel.selectableModels, id: \.self) { model in
-                        Text(modelSelectionTitle(for: model)).tag(model)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: .infinity)
-            }
-            .disabled(!viewModel.isFamilySelected)
-
-            // Text encoder quantization (only for Dev model)
-            if viewModel.selectedModel == .dev {
-                HStack {
-                    Text("Text Encoder:")
-                        .frame(width: 100, alignment: .leading)
-                    Picker("", selection: $viewModel.textQuantization) {
-                        ForEach(viewModel.downloadedTextQuantizations(in: modelManager.downloadedModels), id: \.self) { quant in
-                            Text(quant.displayName).tag(quant)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .frame(maxWidth: .infinity)
-                }
-                .disabled(!viewModel.isFamilySelected)
-            }
-
-            // Transformer quantization
-            HStack {
-                Text("Transformer:")
-                    .frame(width: 100, alignment: .leading)
-                Picker("", selection: $viewModel.transformerQuantization) {
-                    ForEach(viewModel.compatibleTransformerQuantizations, id: \.self) { quant in
-                        Text(transformerSelectionTitle(for: quant)).tag(quant)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: .infinity)
-            }
-            .disabled(!viewModel.isFamilySelected)
-
-            // Memory estimate
-            HStack {
-                Image(systemName: "memorychip")
-                    .foregroundStyle(.secondary)
-                Text("Estimated peak: ~\(viewModel.estimatedPeakMemoryGB)GB")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Spacer()
-
-                // Model download status
-                let variant = viewModel.selectedTransformerVariant
-                if modelManager.isTransformerDownloaded(variant) {
-                    Label("Ready", systemImage: "checkmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                } else {
-                    Button(action: {
-                        Task { await modelManager.downloadTransformer(variant) }
-                    }) {
-                        Label("Download", systemImage: "arrow.down.circle")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(modelManager.isDownloading)
-                }
-            }
-
-            // VAE status
-            HStack {
-                Text("VAE:")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if modelManager.isVAEDownloaded {
-                    Label("Ready", systemImage: "checkmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                } else {
-                    Button(action: {
-                        Task { await modelManager.downloadVAE() }
-                    }) {
-                        Label("Download VAE", systemImage: "arrow.down.circle")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(modelManager.isDownloading)
-                }
-                Spacer()
-            }
-
-            // Download progress
-            if modelManager.isDownloading {
-                VStack(spacing: 4) {
-                    ProgressView(value: modelManager.downloadProgress)
-                    Text(modelManager.downloadMessage)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            if let error = modelManager.errorMessage {
-                Text(error)
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
         }
     }
 
@@ -615,20 +461,6 @@ struct TextToImageView: View {
             .frame(height: 110)
         }
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
-    }
-
-    private func modelSelectionTitle(for model: Flux2Model) -> String {
-        let hasDownloadedTransformer = ImageGenerationViewModel.compatibleTransformerQuantizations(for: model).contains { quantization in
-            let variant = ModelRegistry.TransformerVariant.variant(for: model, quantization: quantization)
-            return modelManager.isTransformerDownloaded(variant)
-        }
-        return hasDownloadedTransformer ? model.displayName : "\(model.displayName) (not downloaded)"
-    }
-
-    private func transformerSelectionTitle(for quantization: TransformerQuantization) -> String {
-        let variant = ModelRegistry.TransformerVariant.variant(for: viewModel.selectedModel, quantization: quantization)
-        let suffix = modelManager.isTransformerDownloaded(variant) ? "" : " (not downloaded)"
-        return "\(quantization.displayName)\(suffix)"
     }
 }
 

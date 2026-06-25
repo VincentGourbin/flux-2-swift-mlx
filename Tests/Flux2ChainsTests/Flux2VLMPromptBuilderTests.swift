@@ -63,6 +63,7 @@ final class Flux2VLMPromptBuilderTests: XCTestCase {
         let prompts: [(String, String)] = [
             ("replace",     Flux2VLMPromptBuilder.replaceSystemPrompt),
             ("remove",      Flux2VLMPromptBuilder.removeSystemPrompt),
+            ("fill",        Flux2VLMPromptBuilder.fillSystemPrompt),
             ("modify",      Flux2VLMPromptBuilder.modifySystemPrompt),
             ("changeScene", Flux2VLMPromptBuilder.changeSceneSystemPrompt),
             ("outpaint",    Flux2VLMPromptBuilder.outpaintSystemPrompt),
@@ -102,6 +103,15 @@ final class Flux2VLMPromptBuilderTests: XCTestCase {
         let msg = Flux2VLMPromptBuilder.userMessage(forInpaint: .remove, instruction: "the tabby cat")
         XCTAssertTrue(msg.contains("the tabby cat"), "Must pass the user's text as context so the VLM knows WHAT to ignore")
         XCTAssertTrue(msg.contains("Do NOT name it"), "Must instruct the VLM not to mention the removed subject in its output")
+    }
+
+    func testFillUserMessageSteersContinuation() {
+        let empty = Flux2VLMPromptBuilder.userMessage(forInpaint: .fill, instruction: "")
+        XCTAssertTrue(empty.lowercased().contains("missing or empty"))
+
+        let guided = Flux2VLMPromptBuilder.userMessage(forInpaint: .fill, instruction: "match the brick wall")
+        XCTAssertTrue(guided.contains("match the brick wall"))
+        XCTAssertTrue(guided.lowercased().contains("surrounding context"))
     }
 
     func testChangeSceneSystemPromptForbidsInventingAccessories() {

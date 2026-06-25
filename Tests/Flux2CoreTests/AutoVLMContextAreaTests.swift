@@ -22,17 +22,20 @@ final class AutoVLMContextAreaTests: XCTestCase {
         XCTAssertLessThanOrEqual(rect.maxY, 1)
     }
 
-    func testVisionSubjectUsesFullFrame() {
+    func testVisionSubjectUsesSelectionBounds() {
         let rect = ImagePreparation.autoVLMContextArea(
             maskLayers: [
                 InpaintMaskLayer(
                     combineMode: .add,
-                    primitive: .visionSubject
+                    primitive: .visionSubject(.rectangle(.init(CGRect(x: 0.4, y: 0.4, width: 0.2, height: 0.2))))
                 )
             ],
             processArea: nil
         )
 
-        XCTAssertEqual(rect, CGRect(x: 0, y: 0, width: 1, height: 1))
+        XCTAssertLessThan(rect.minX, 0.4)
+        XCTAssertLessThan(rect.minY, 0.4)
+        XCTAssertGreaterThan(rect.maxX, 0.6)
+        XCTAssertGreaterThan(rect.maxY, 0.6)
     }
 }

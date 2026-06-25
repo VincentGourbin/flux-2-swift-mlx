@@ -19,6 +19,7 @@ import Foundation
 import Accelerate
 import CoreGraphics
 import CoreImage
+import Flux2Core
 import Vision
 
 /// Build inpainting masks from auto-segmented subjects.
@@ -182,6 +183,47 @@ public enum Flux2SubjectMask {
             targetWidth: workingImage.width,
             targetHeight: workingImage.height,
             edgeSoftnessPixels: edgeSoftnessPixels
+        )
+    }
+
+    /// Run Vision once on the full image, then pick the foreground instance
+    /// whose mask best overlaps the user-drawn region. The region expands
+    /// outward in 5% steps until a match is found or the search is exhausted.
+    @available(macOS 14.0, *)
+    public static func pickSubjectInpaintMask(
+        from image: CGImage,
+        region: VisionSubjectRegion,
+        options: VisionSubjectPickOptions = .default,
+        edgeSoftnessPixels: Int = 0,
+        targetMaxPixels: Int? = nil
+    ) throws -> CGImage {
+        try pickMask(
+            from: image,
+            region: region,
+            options: options,
+            edgeSoftnessPixels: edgeSoftnessPixels,
+            targetMaxPixels: targetMaxPixels,
+            invertForChangeScene: false
+        )
+    }
+
+    /// Same disambiguation as ``pickSubjectInpaintMask(from:region:options:edgeSoftnessPixels:targetMaxPixels:)``,
+    /// but returns the `.changeScene` convention (black subject, white background).
+    @available(macOS 14.0, *)
+    public static func pickChangeSceneMask(
+        from image: CGImage,
+        region: VisionSubjectRegion,
+        options: VisionSubjectPickOptions = .default,
+        edgeSoftnessPixels: Int = 0,
+        targetMaxPixels: Int? = nil
+    ) throws -> CGImage {
+        try pickMask(
+            from: image,
+            region: region,
+            options: options,
+            edgeSoftnessPixels: edgeSoftnessPixels,
+            targetMaxPixels: targetMaxPixels,
+            invertForChangeScene: true
         )
     }
 
@@ -464,6 +506,179 @@ public enum Flux2SubjectMask {
         // side; clamp back to the original extent so the mask keeps the
         // input's dimensions.
         return sharedCIContext.createCGImage(output, from: ci.extent)
+    }
+
+    @available(macOS 14.0, *)
+    private static func pickMask(
+        from image: CGImage,
+        region: VisionSubjectRegion,
+        options: VisionSubjectPickOptions,
+        edgeSoftnessPixels: Int,
+        targetMaxPixels: Int?,
+        invertForChangeScene: Bool
+    ) throws -> CGImage {
+        let workingImage = downscaledIfNeeded(image, targetMaxPixels: targetMaxPixels) ?? image
+        let width = workingImage.width
+        let height = workingImage.height
+
+        let request = VNGenerateForegroundInstanceMaskRequest()
+        let handler = VNImageRequestHandler(cgImage: workingImage, options: [:])
+        do {
+            try handler.perform([request])
+        } catch {
+            throw Error.visionFailure(String(describing: error))
+        }
+
+        guard let observation = request.results?.first, !observation.allInstances.isEmpty else {
+            throw Error.noSubjectDetected
+        }
+
+        var instanceMasks: [Int: [UInt8]] = [:]
+        for instance in observation.allInstances {
+            let pixelBuffer: CVPixelBuffer
+            do {
+                pixelBuffer = try observation.generateScaledMaskForImage(
+                    forInstances: IndexSet(integer: instance),
+                    from: handler
+                )
+            } catch {
+                throw Error.visionFailure("Failed to scale subject mask: \(error)")
+            }
+            instanceMasks[instance] = try subjectBytes(from: pixelBuffer)
+        }
+
+        let pickedInstance = try pickInstance(
+            instanceMasks: instanceMasks,
+            region: region,
+            width: width,
+            height: height,
+            options: options
+        )
+
+        let pixelBuffer = try observation.generateScaledMaskForImage(
+            forInstances: IndexSet(integer: pickedInstance),
+            from: handler
+        )
+
+        if invertForChangeScene {
+            return try renderInvertedMask(
+                from: pixelBuffer,
+                targetWidth: width,
+                targetHeight: height,
+                edgeSoftnessPixels: edgeSoftnessPixels
+            )
+        }
+        return try renderSubjectMask(
+            from: pixelBuffer,
+            targetWidth: width,
+            targetHeight: height,
+            edgeSoftnessPixels: edgeSoftnessPixels
+        )
+    }
+
+    @available(macOS 14.0, *)
+    private static func pickInstance(
+        instanceMasks: [Int: [UInt8]],
+        region: VisionSubjectRegion,
+        width: Int,
+        height: Int,
+        options: VisionSubjectPickOptions
+    ) throws -> Int {
+        for step in 0...options.maxExpansionSteps {
+            let expanded = VisionSubjectRegionMath.expandedRegion(
+                region,
+                step: step,
+                stepFraction: options.expansionStepFraction
+            )
+            let selectionMask = VisionSubjectRegionMath.rasterizedSelectionMask(
+                region: expanded,
+                width: width,
+                height: height
+            )
+
+            var bestInstance: Int?
+            var bestOverlap = options.minimumOverlapFraction
+            for (instance, subjectMask) in instanceMasks {
+                let overlap = VisionSubjectRegionMath.overlapFraction(
+                    subjectMask: subjectMask,
+                    selectionMask: selectionMask
+                )
+                if overlap > bestOverlap {
+                    bestOverlap = overlap
+                    bestInstance = instance
+                }
+            }
+
+            if let bestInstance {
+                return bestInstance
+            }
+        }
+        throw Error.noSubjectDetected
+    }
+
+    @available(macOS 14.0, *)
+    private static func subjectBytes(from pixelBuffer: CVPixelBuffer) throws -> [UInt8] {
+        let pbW = CVPixelBufferGetWidth(pixelBuffer)
+        let pbH = CVPixelBufferGetHeight(pixelBuffer)
+        let pbFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        guard let srcBase = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+            throw Error.maskRenderFailed
+        }
+        let srcRowBytes = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        let count = pbW * pbH
+        var subject = [UInt8](repeating: 0, count: count)
+
+        switch pbFormat {
+        case kCVPixelFormatType_OneComponent32Float:
+            var floats = [Float](repeating: 0, count: count)
+            if srcRowBytes == pbW * MemoryLayout<Float>.size {
+                floats.withUnsafeMutableBufferPointer { dst in
+                    memcpy(dst.baseAddress!, srcBase, count * MemoryLayout<Float>.size)
+                }
+            } else {
+                floats.withUnsafeMutableBufferPointer { dst in
+                    for y in 0..<pbH {
+                        let row = srcBase.advanced(by: y * srcRowBytes)
+                        memcpy(
+                            dst.baseAddress!.advanced(by: y * pbW),
+                            row,
+                            pbW * MemoryLayout<Float>.size
+                        )
+                    }
+                }
+            }
+            var lo: Float = 0
+            var hi: Float = 1
+            floats.withUnsafeMutableBufferPointer { fb in
+                vDSP_vclip(fb.baseAddress!, 1, &lo, &hi, fb.baseAddress!, 1, vDSP_Length(count))
+            }
+            var scale: Float = 255
+            var bias: Float = 0
+            floats.withUnsafeMutableBufferPointer { fb in
+                vDSP_vsmsa(fb.baseAddress!, 1, &scale, &bias, fb.baseAddress!, 1, vDSP_Length(count))
+            }
+            subject.withUnsafeMutableBufferPointer { dst in
+                floats.withUnsafeBufferPointer { src in
+                    vDSP_vfixu8(src.baseAddress!, 1, dst.baseAddress!, 1, vDSP_Length(count))
+                }
+            }
+
+        case kCVPixelFormatType_OneComponent8:
+            for y in 0..<pbH {
+                let row = srcBase.advanced(by: y * srcRowBytes)
+                    .assumingMemoryBound(to: UInt8.self)
+                for x in 0..<pbW {
+                    subject[y * pbW + x] = row[x]
+                }
+            }
+
+        default:
+            throw Error.unsupportedPixelFormat(pbFormat)
+        }
+
+        return subject
     }
 
     /// Downscale `image` so its total pixel count is ≤ `targetMaxPixels`,

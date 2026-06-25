@@ -39,6 +39,7 @@ enum MaskConventionArg: String, ExpressibleByArgument, CaseIterable {
 enum InpaintIntentArg: String, ExpressibleByArgument, CaseIterable {
     case replace
     case remove
+    case fill
     case modify
     case changeScene = "change-scene"
 
@@ -46,6 +47,7 @@ enum InpaintIntentArg: String, ExpressibleByArgument, CaseIterable {
         switch self {
         case .replace:     return .replace
         case .remove:      return .remove
+        case .fill:        return .fill
         case .modify:      return .modify
         case .changeScene: return .changeScene
         }

@@ -60,7 +60,7 @@ public enum ImageMaskBuilder {
         definition: InpaintMaskDefinition,
         image: CGImage,
         legacyRectangle: CGRect? = nil,
-        visionMask: CGImage? = nil
+        visionMasks: [UUID: CGImage] = [:]
     ) throws -> CGImage {
         var layers = definition.layers
         if layers.isEmpty, let legacyRectangle {
@@ -83,10 +83,11 @@ public enum ImageMaskBuilder {
         for (index, layer) in layers.enumerated() {
             let raster = try rasterLayer(
                 layer.primitive,
+                layerID: layer.id,
                 width: width,
                 height: height,
                 sourceImage: image,
-                visionMask: visionMask
+                visionMasks: visionMasks
             )
 
             if index == 0 {
@@ -121,10 +122,11 @@ public enum ImageMaskBuilder {
 
     private static func rasterLayer(
         _ primitive: InpaintMaskPrimitive,
+        layerID: UUID,
         width: Int,
         height: Int,
         sourceImage: CGImage,
-        visionMask: CGImage?
+        visionMasks: [UUID: CGImage]
     ) throws -> [UInt8] {
         let maskImage: CGImage
         switch primitive {
@@ -141,7 +143,7 @@ public enum ImageMaskBuilder {
                 normalizedPoints: points.map(\.cgPoint)
             )
         case .visionSubject:
-            guard let visionMask else {
+            guard let visionMask = visionMasks[layerID] else {
                 throw Flux2Error.invalidConfiguration("Vision subject mask is not available.")
             }
             guard visionMask.width == width, visionMask.height == height else {

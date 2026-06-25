@@ -29,11 +29,6 @@ struct ImageToImageView: View {
             // Left panel: Controls
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    // Model Configuration — family + model choices drive everything below
-                    modelSelectionSection
-
-                    Divider()
-
                     // Reference Images
                     referenceImagesSection
 
@@ -44,8 +39,13 @@ struct ImageToImageView: View {
 
                     Divider()
 
-                    // Edit workflow — prompt I2I vs masked inpaint
-                    editModeSection
+                    // Selection / crop tools (always visible)
+                    selectionToolsSection
+
+                    Divider()
+
+                    // Contextual controls for inferred workflow
+                    workflowContextSection
 
                     Divider()
 
@@ -60,10 +60,8 @@ struct ImageToImageView: View {
 
                     Divider()
 
-                    // AI Prompt (Interpret Images nested directly beneath)
+                    // AI Prompt
                     promptSection
-
-                    interpretImagesSection
 
                     Divider()
 
@@ -115,16 +113,22 @@ struct ImageToImageView: View {
             saveProjectAs: { viewModel.saveProjectAs() }
         ))
         .focusedSceneValue(\.generationProjectName, viewModel.projectDisplayName)
-        .onChange(of: viewModel.editMode) { _, mode in
-            if mode == .generativeFill {
+        .focusedSceneValue(\.generationModelConfiguration, viewModel)
+        .onChange(of: viewModel.generateRoute) { _, route in
+            if route == .localFill {
+                viewModel.upsamplePrompt = false
+            }
+        }
+        .onChange(of: viewModel.hasActiveSelection) { _, active in
+            if active {
                 viewModel.enrichInpaintPromptWithVLM = true
-                viewModel.inpaintIntent = .modify
+                viewModel.inpaintIntent = .fill
                 viewModel.vlmContextManual = false
                 viewModel.syncAutoVLMContextArea()
             }
         }
         .onChange(of: viewModel.enrichInpaintPromptWithVLM) { _, enabled in
-            guard viewModel.editMode == .generativeFill else { return }
+            guard viewModel.hasLocalFillSelection else { return }
             if enabled {
                 if !viewModel.vlmContextManual {
                     viewModel.syncAutoVLMContextArea()
@@ -132,6 +136,7 @@ struct ImageToImageView: View {
             } else {
                 viewModel.vlmContextManual = false
             }
+            viewModel.clearActiveToolIfDisabled()
         }
         .focusedSceneValue(\.generationUnloadModels) {
             Task { await viewModel.clearPipeline() }
@@ -197,6 +202,10 @@ struct ImageToImageView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(height: 120)
+
+            Divider()
+
+            interpretImagesSection
         }
     }
 
@@ -262,6 +271,7 @@ struct ImageToImageView: View {
                                 value: Binding(
                                     get: { viewModel.preparationScale },
                                     set: {
+                                        viewModel.cancelBarnDoorsIfActive()
                                         viewModel.preparationScale = min(max($0, 0.1), 1.0)
                                         viewModel.applySizingControls()
                                     }
@@ -286,115 +296,138 @@ struct ImageToImageView: View {
         }
     }
 
-    // MARK: - Edit Mode Section
+    // MARK: - Selection Tools
 
     @ViewBuilder
-    private var editModeSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Edit workflow", systemImage: "square.dashed.inset.filled")
+    private var selectionToolsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Tools", systemImage: "cursorarrow")
                 .font(.headline)
 
+            SelectionToolBar(
+                selectedTool: $viewModel.inpaintMaskTool,
+                onSelect: { viewModel.selectMaskTool($0) },
+                isToolEnabled: { viewModel.isMaskToolEnabled($0) }
+            )
+
             if viewModel.referenceImages.isEmpty {
-                Text("Add a reference image to choose how edits are applied.")
+                Text("Add a reference image to enable the tools.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Picker("Mode", selection: $viewModel.editMode) {
-                    ForEach(ImageEditMode.allCases) { mode in
-                        Text(mode.displayName).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+                Text("Live Area sets barn doors. Rectangle and Polygon draw selections. Subject is a lasso. Crop expands the canvas for outpainting.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
 
-                switch viewModel.editMode {
-                case .promptEdit:
-                    Text("Barn doors define the live area sent to the model; the result can be composited back into the full image.")
+    // MARK: - Contextual controls (inferred from tool + selection)
+
+    @ViewBuilder
+    private var workflowContextSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if viewModel.referenceImages.isEmpty {
+                EmptyView()
+            } else {
+                switch viewModel.generateRoute {
+                case .fullImage:
+                    Text("Barn doors on the preview define the live area. Select the Live Area tool to adjust them.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                case .generativeFill:
-                    Text("Mask the region to regenerate. Rectangle and polygon define the area; Subject uses Apple Vision. Stack masks with Add or Clip.")
+                case .localFill:
+                    selectionControls
+                case .outpaint:
+                    Text(viewModel.outpaintCanvasDescription)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-
-                    Picker("Intent", selection: $viewModel.inpaintIntent) {
-                        ForEach(Flux2InpaintIntent.allCases, id: \.self) { intent in
-                            Text(intent.displayName).tag(intent)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-
-                    Text(viewModel.inpaintIntent.fillHelp)
-                        .font(.caption)
+                    Text("Drag the outer canvas edges on the preview. Padding snaps to 32 px and is capped by the megapixel budget.")
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
-
-                    Toggle("Enrich prompt with Qwen3.5 VLM", isOn: $viewModel.enrichInpaintPromptWithVLM)
-                        .font(.caption)
-
-                    if viewModel.enrichInpaintPromptWithVLM {
-                        Text("Barn doors frame what Qwen sees when writing the prompt. Generative fill still uses the full image.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Picker("Mask tool", selection: $viewModel.inpaintMaskTool) {
-                        ForEach(InpaintMaskTool.allCases) { tool in
-                            Text(tool.displayName).tag(tool)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-
-                    if !viewModel.inpaintMaskLayers.isEmpty {
-                        Picker("Next mask", selection: $viewModel.inpaintMaskCombineMode) {
-                            ForEach(InpaintMaskCombineMode.allCases) { mode in
-                                Text(mode.displayName).tag(mode)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .help("Add extends the fill region; Clip narrows it.")
-                    }
-
-                    HStack(spacing: 8) {
-                        if viewModel.inpaintMaskTool == .visionSubject {
-                            Button("Add subject mask") {
-                                viewModel.addVisionSubjectMaskLayer()
-                            }
-                            .controlSize(.small)
-                            .help("Uses Apple Vision to detect the main subject.")
-                        }
-
-                        if viewModel.inpaintMaskTool == .polygon {
-                            if viewModel.draftPolygonPoints.count >= 3 {
-                                Button("Close polygon") {
-                                    viewModel.closeDraftPolygon()
-                                }
-                                .controlSize(.small)
-                            }
-                            Text(polygonDraftHelp)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    if !viewModel.hasFillMask {
-                        Text("Draw or add a fill mask on the preview before generating.")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    } else {
-                        Text(viewModel.processAreaDescription)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
                 }
             }
         }
     }
+
+    @ViewBuilder
+    private var selectionControls: some View {
+        Text("Hold ⇧ to add to the selection and ⌥ to subtract. Click the canvas without drawing to clear.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+        Picker("Intent", selection: $viewModel.inpaintIntent) {
+            ForEach(Flux2InpaintIntent.allCases, id: \.self) { intent in
+                Text(intent.displayName).tag(intent)
+            }
+        }
+        .pickerStyle(.segmented)
+
+        Text(viewModel.inpaintIntent.fillHelp)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+        if viewModel.enrichInpaintPromptWithVLM {
+            Text("Use the Live Area tool to frame what Qwen sees for prompt writing.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
+        if viewModel.inpaintMaskTool == .polygon {
+            HStack(spacing: 8) {
+                if viewModel.draftPolygonPoints.count >= 3 {
+                    Button("Close polygon") {
+                        viewModel.closeDraftPolygon()
+                    }
+                    .controlSize(.small)
+                }
+                Text(polygonDraftHelp)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+
+        if viewModel.inpaintMaskTool == .visionSubject {
+            Text("Drag a lasso around the subject on the preview.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+
+        if let visionStatus = viewModel.visionSubjectStatusMessage {
+            Text(visionStatus)
+                .font(.caption)
+                .foregroundStyle(visionStatus.contains("No subject") ? .orange : .secondary)
+        }
+
+        if !viewModel.hasFillMask {
+            Text("Draw a selection on the preview before generating.")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        } else {
+            Text(viewModel.processAreaDescription)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Edit Mode Section (removed — kept for reference in git history)
 
     private var polygonDraftHelp: String {
         let count = viewModel.draftPolygonPoints.count
         if count == 0 { return "Click corners on the preview." }
         if count < 3 { return "\(count) point\(count == 1 ? "" : "s") — need at least 3." }
         return "\(count) points — Close polygon when ready."
+    }
+
+    private var visionSubjectDraftHelp: String {
+        switch viewModel.inpaintMaskTool {
+        case .visionSubject:
+            if viewModel.draftPolygonPoints.count >= 3 {
+                return "Close polygon to find the subject inside it."
+            }
+            return "Drag a box around the subject, or click polygon corners."
+        default:
+            return ""
+        }
     }
 
     // MARK: - Processing Area Section
@@ -406,24 +439,28 @@ struct ImageToImageView: View {
                 .font(.headline)
 
             if !viewModel.referenceImages.isEmpty {
-                switch viewModel.editMode {
-                case .promptEdit:
+                switch viewModel.generateRoute {
+                case .fullImage:
                     Text("Barn doors set the aspect ratio of the region sent to the model; the megapixel budget sets its resolution.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                case .generativeFill:
+                case .localFill:
                     if viewModel.enrichInpaintPromptWithVLM {
                         Text("Barn doors set what Qwen sees for prompt writing. The resolution cap limits the fill pass on the full image.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
-                        Text("The megapixel budget caps the working resolution for generative fill. Larger images are scaled down before denoising.")
+                        Text("The megapixel budget caps the working resolution for the selection fill. Larger images are scaled down before denoising.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                case .outpaint:
+                    Text("Megapixel budget caps the expanded canvas size for the outpaint pass.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
-                GroupBox(viewModel.editMode == .generativeFill ? "Resolution cap" : "Megapixel budget") {
+                GroupBox(viewModel.hasLocalFillSelection ? "Resolution cap" : "Megapixel budget") {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 10) {
                             Slider(
@@ -447,14 +484,14 @@ struct ImageToImageView: View {
                         }
 
                         Text(
-                            viewModel.editMode == .generativeFill
-                                ? "Maximum total pixels for the fill pass."
+                            viewModel.hasLocalFillSelection
+                                ? "Maximum total pixels for the selection fill pass."
                                 : "Maximum total pixels to generate. The barn-door aspect ratio fills this budget."
                         )
                             .font(.caption2)
                             .foregroundStyle(.secondary)
 
-                        if viewModel.editMode == .generativeFill,
+                        if viewModel.hasLocalFillSelection,
                            let firstRef = viewModel.referenceImages.first {
                             FillResolutionInfoRow(
                                 image: firstRef.image,
@@ -466,24 +503,25 @@ struct ImageToImageView: View {
                 }
 
                 HStack {
-                    if viewModel.editMode == .promptEdit {
-                        Button("Reset Context") {
-                            viewModel.resetContextArea()
+                    if viewModel.generateRoute == .outpaint {
+                        Button("Reset Canvas") {
+                            viewModel.resetOutpaintCanvas()
                         }
                         .controlSize(.small)
-                    } else {
-                        Button("Clear Fill Region") {
+                        .disabled(!viewModel.outpaintCanvasIsDefined)
+
+                        Spacer()
+
+                        Text(viewModel.outpaintCanvasDescription)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    } else if viewModel.hasLocalFillSelection {
+                        Button("Clear Selection") {
                             viewModel.clearProcessSelection()
                         }
                         .controlSize(.small)
                         .disabled(!viewModel.hasFillMask)
-
-                        if viewModel.enrichInpaintPromptWithVLM {
-                            Button("Reset Context") {
-                                viewModel.resetVLMContextArea()
-                            }
-                            .controlSize(.small)
-                        }
                     }
 
                     Spacer()
@@ -496,149 +534,30 @@ struct ImageToImageView: View {
         }
     }
 
-    // MARK: - Model Selection Section
-
-    @ViewBuilder
-    private var modelSelectionSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Model Configuration", systemImage: "cpu")
-                .font(.headline)
-
-            // Family — chosen first; drives the pixel factor and which models are
-            // available. Pre-selected today, so the gating below stays dormant.
-            HStack {
-                Text("Family:")
-                    .frame(width: 100, alignment: .leading)
-                Picker("", selection: $viewModel.selectedFamily) {
-                    ForEach(ModelFamily.allCases) { family in
-                        Text(family.displayName).tag(family as ModelFamily?)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: .infinity)
-            }
-
-            // Pixel-alignment factor — a read-only property of the family.
-            if let family = viewModel.selectedFamily {
-                HStack {
-                    Text("Pixel factor:")
-                        .frame(width: 100, alignment: .leading)
-                    Text("\(family.pixelAlignment) px")
-                        .font(.callout.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .help("Output and conditioning dimensions are floored to this multiple. Determined by the model family; not adjustable.")
-                    Spacer()
-                }
-            }
-
-            // Model type picker
-            HStack {
-                Text("Model:")
-                    .frame(width: 100, alignment: .leading)
-                Picker("", selection: $viewModel.selectedModel) {
-                    ForEach(viewModel.selectableModels, id: \.self) { model in
-                        Text(modelSelectionTitle(for: model)).tag(model)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: .infinity)
-            }
-            .disabled(!viewModel.isFamilySelected)
-
-            // Text encoder quantization (only for Dev)
-            if viewModel.selectedModel == .dev {
-                HStack {
-                    Text("Text Encoder:")
-                        .frame(width: 100, alignment: .leading)
-                    Picker("", selection: $viewModel.textQuantization) {
-                        ForEach(viewModel.downloadedTextQuantizations(in: modelManager.downloadedModels), id: \.self) { quant in
-                            Text(quant.displayName).tag(quant)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .frame(maxWidth: .infinity)
-                }
-                .disabled(!viewModel.isFamilySelected)
-            }
-
-            // Transformer quantization
-            HStack {
-                Text("Transformer:")
-                    .frame(width: 100, alignment: .leading)
-                Picker("", selection: $viewModel.transformerQuantization) {
-                    ForEach(viewModel.compatibleTransformerQuantizations, id: \.self) { quant in
-                        Text(transformerSelectionTitle(for: quant)).tag(quant)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: .infinity)
-            }
-            .disabled(!viewModel.isFamilySelected)
-
-            // Memory and download status
-            HStack {
-                Image(systemName: "memorychip")
-                    .foregroundStyle(.secondary)
-                Text("~\(viewModel.estimatedPeakMemoryGB)GB")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Spacer()
-
-                let variant = viewModel.selectedTransformerVariant
-                if modelManager.isTransformerDownloaded(variant) && modelManager.isVAEDownloaded {
-                    Label("Ready", systemImage: "checkmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                } else {
-                    VStack(alignment: .trailing, spacing: 4) {
-                        if !modelManager.isTransformerDownloaded(variant) {
-                            Button("Download Transformer") {
-                                Task { await modelManager.downloadTransformer(variant) }
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.mini)
-                        }
-                        if !modelManager.isVAEDownloaded {
-                            Button("Download VAE") {
-                                Task { await modelManager.downloadVAE() }
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.mini)
-                        }
-                    }
-                    .disabled(modelManager.isDownloading)
-                }
-            }
-
-            if modelManager.isDownloading {
-                ProgressView(value: modelManager.downloadProgress)
-                Text(modelManager.downloadMessage)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            if let error = modelManager.errorMessage {
-                Text(error)
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
     // MARK: - Prompt Section
 
     @ViewBuilder
     private var promptSection: some View {
+        promptSectionBody
+    }
+
+    @ViewBuilder
+    private var promptSectionBody: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if viewModel.editMode == .generativeFill {
-                Label("Optional hint", systemImage: "text.cursor")
-                    .font(.headline)
-                Text("With Qwen3.5 VLM on, leave this empty — the VLM writes the Flux prompt from the image. Add a short hint only if you want to steer the fill.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            if viewModel.hasLocalFillSelection {
+                if viewModel.enrichInpaintPromptWithVLM {
+                    Label("Optional hint", systemImage: "text.cursor")
+                        .font(.headline)
+                    Text("Leave empty for Qwen to write the Flux prompt from the image, or add a short hint to steer the fill.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Label("Fill prompt", systemImage: "text.cursor")
+                        .font(.headline)
+                    Text("Describe what should appear inside the selection.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             } else {
                 Label("AI Prompt", systemImage: "text.cursor")
                     .font(.headline)
@@ -658,10 +577,15 @@ struct ImageToImageView: View {
                 .frame(minHeight: 96, maxHeight: 160)
 
             HStack(spacing: 16) {
-                if viewModel.editMode != .generativeFill {
-                    Toggle("Upsample prompt", isOn: $viewModel.upsamplePrompt)
-                        .help("Enhance prompt using VLM to analyze reference images")
-                }
+                Toggle("Upsample prompt", isOn: $viewModel.upsamplePrompt)
+                    .disabled(!viewModel.isUpsamplePromptApplicable)
+                    .opacity(viewModel.isUpsamplePromptApplicable ? 1 : 0.45)
+                    .help("Enhance prompt using Mistral VLM to analyze reference images")
+
+                Toggle("Enrich prompt with Qwen3.5 VLM", isOn: $viewModel.enrichInpaintPromptWithVLM)
+                    .disabled(!viewModel.isEnrichInpaintPromptApplicable)
+                    .opacity(viewModel.isEnrichInpaintPromptApplicable ? 1 : 0.45)
+                    .help("Write the inpaint prompt from the image and selection using Qwen3.5 VLM")
 
                 Toggle("Clear prompt after generation", isOn: $viewModel.clearPromptAfterGeneration)
                     .help("Empty the prompt automatically once a run finishes successfully")
@@ -670,7 +594,7 @@ struct ImageToImageView: View {
             .toggleStyle(.checkbox)
 
             if let upsampled = viewModel.upsampledPrompt {
-                upsampledPromptView(upsampled, title: viewModel.editMode == .generativeFill ? "VLM prompt" : "Upsampled prompt")
+                upsampledPromptView(upsampled, title: viewModel.hasLocalFillSelection ? "VLM prompt" : "Upsampled prompt")
             }
         }
     }
@@ -959,12 +883,10 @@ struct ImageToImageView: View {
                     .controlSize(.small)
                     .help("Save the selected input variant (raw, formatted, or prepared)")
 
-                    Picker(selection: $viewModel.inputSaveSource) {
+                    Picker("Stage", selection: $viewModel.inputSaveSource) {
                         ForEach(ImageInputSaveSource.allCases) { source in
                             Text(source.menuLabel).tag(source)
                         }
-                    } label: {
-                        Text(viewModel.inputSaveSource.menuLabel)
                     }
                     .pickerStyle(.menu)
                     .controlSize(.small)
@@ -1001,11 +923,22 @@ struct ImageToImageView: View {
                             adjustedSize: viewModel.adjustedGenerationSize,
                             sizingMethod: viewModel.sizingMethod,
                             overlayOpacity: viewModel.preparationOverlayOpacity,
-                            editMode: viewModel.editMode,
+                            generateRoute: viewModel.generateRoute,
                             maskTool: viewModel.inpaintMaskTool,
+                            outpaintPadding: Binding(
+                                get: { viewModel.outpaintPadding },
+                                set: { viewModel.updateOutpaintPadding($0) }
+                            ),
+                            megapixelBudget: viewModel.megapixelBudget,
                             maskLayers: viewModel.inpaintMaskLayers,
+                            visionSubjectMasks: viewModel.visionSubjectMasks,
                             draftPolygonPoints: viewModel.draftPolygonPoints,
+                            draftLassoPoints: viewModel.draftLassoPoints,
                             enrichInpaintPromptWithVLM: viewModel.enrichInpaintPromptWithVLM,
+                            isDrawingSelection: Binding(
+                                get: { viewModel.isDrawingSelection },
+                                set: { viewModel.isDrawingSelection = $0 }
+                            ),
                             contextArea: Binding(
                                 get: { viewModel.contextArea },
                                 set: { viewModel.setContextArea($0) }
@@ -1014,12 +947,20 @@ struct ImageToImageView: View {
                                 get: { viewModel.processArea },
                                 set: { viewModel.setProcessArea($0) }
                             ),
-                            onCommitFillRectangle: { viewModel.commitFillRectangle($0) },
-                            onPolygonPoint: { viewModel.addDraftPolygonPoint($0) }
+                            onCommitFillRectangle: { rect in
+                                viewModel.commitFillRectangle(rect)
+                            },
+                            onPolygonPoint: { viewModel.addDraftPolygonPoint($0) },
+                            onLassoPoint: { viewModel.appendLassoPoint($0) },
+                            onCommitLasso: {
+                                viewModel.commitLassoSelection()
+                            },
+                            onDeselect: { viewModel.deselectSelections() },
+                            onResetBarnDoors: { viewModel.resetBarnDoors() }
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                        if viewModel.editMode == .generativeFill {
+                        if viewModel.hasLocalFillSelection {
                             FillResolutionInfoRow(
                                 image: firstRef.image,
                                 megapixelBudget: viewModel.megapixelBudget
@@ -1145,20 +1086,6 @@ struct ImageToImageView: View {
         !viewModel.referenceImages.isEmpty &&
         modelManager.isTransformerDownloaded(viewModel.selectedTransformerVariant) &&
         modelManager.isVAEDownloaded
-    }
-
-    private func modelSelectionTitle(for model: Flux2Model) -> String {
-        let hasDownloadedTransformer = ImageGenerationViewModel.compatibleTransformerQuantizations(for: model).contains { quantization in
-            let variant = ModelRegistry.TransformerVariant.variant(for: model, quantization: quantization)
-            return modelManager.isTransformerDownloaded(variant)
-        }
-        return hasDownloadedTransformer ? model.displayName : "\(model.displayName) (not downloaded)"
-    }
-
-    private func transformerSelectionTitle(for quantization: TransformerQuantization) -> String {
-        let variant = ModelRegistry.TransformerVariant.variant(for: viewModel.selectedModel, quantization: quantization)
-        let suffix = modelManager.isTransformerDownloaded(variant) ? "" : " (not downloaded)"
-        return "\(quantization.displayName)\(suffix)"
     }
 
     private func selectImage() {
@@ -1324,22 +1251,32 @@ struct ImagePreparationPreview: View {
     let adjustedSize: (width: Int, height: Int)
     let sizingMethod: ImageSizingMethod
     let overlayOpacity: Double
-    let editMode: ImageEditMode
+    let generateRoute: I2IGenerateRoute
     var maskTool: InpaintMaskTool = .rectangle
+    @Binding var outpaintPadding: OutpaintPadding
+    var megapixelBudget: Double = 1.0
     var maskLayers: [InpaintMaskLayer] = []
+    var visionSubjectMasks: [UUID: CGImage] = [:]
     var draftPolygonPoints: [CGPoint] = []
+    var draftLassoPoints: [CGPoint] = []
     var enrichInpaintPromptWithVLM: Bool = false
+    @Binding var isDrawingSelection: Bool
     @Binding var contextArea: CGRect
     @Binding var processArea: CGRect?
     var onCommitFillRectangle: ((CGRect) -> Void)?
     var onPolygonPoint: ((CGPoint) -> Void)?
+    var onLassoPoint: ((CGPoint) -> Void)?
+    var onCommitLasso: (() -> Void)?
+    var onDeselect: (() -> Void)?
+    var onResetBarnDoors: (() -> Void)?
 
     @State private var activeDrag: DragMode?
     @State private var selectionStart: CGPoint?
-    /// Context rect captured at drag start, restored if the drag is too small
-    /// to be an intentional new region (so a stray click doesn't collapse it).
     @State private var contextBeforeDrag: CGRect?
     @State private var processBeforeDrag: CGRect?
+    @State private var outpaintPaddingBeforeDrag: OutpaintPadding?
+    @State private var lassoSampleDistance: CGFloat = 0.004
+    @State private var heldSelectionModifier: SelectionModifierHint?
 
     private enum DragMode {
         case contextLeft
@@ -1348,21 +1285,54 @@ struct ImagePreparationPreview: View {
         case contextBottom
         case contextSelection
         case processSelection
+        case lassoSelection
+        case outpaintLeft
+        case outpaintRight
+        case outpaintTop
+        case outpaintBottom
     }
 
-    private var usesBarnDoors: Bool {
-        editMode == .promptEdit || (editMode == .generativeFill && enrichInpaintPromptWithVLM)
+    private var isSelectionTool: Bool {
+        maskTool.isSelectionTool
     }
-    private var usesFillMask: Bool { editMode == .generativeFill }
+
+    private var showsBarnDoorChrome: Bool {
+        if generateRoute == .outpaint { return false }
+        if generateRoute == .localFill && enrichInpaintPromptWithVLM { return true }
+        if generateRoute == .fullImage { return true }
+        return false
+    }
+
+    private var allowsBarnDoorEditing: Bool {
+        showsBarnDoorChrome && maskTool.isBarnDoorTool
+    }
+
+    private var showsSelectionOverlays: Bool {
+        !maskLayers.isEmpty
+            || processArea != nil
+            || !draftPolygonPoints.isEmpty
+            || !draftLassoPoints.isEmpty
+    }
 
     var body: some View {
         GeometryReader { geometry in
-            let imageRect = fittedImageRect(in: geometry.size)
-            let showsFormattingOverlay = usesBarnDoors && activeDrag == nil && !formattingExcludedRects().isEmpty
-            let showsBarnDoorOverlay = usesBarnDoors && !isContextFullyOpen
+            let isOutpaint = generateRoute == .outpaint
+            let canvasRect = isOutpaint
+                ? fittedCanvasRect(in: geometry.size, padding: outpaintPadding)
+                : fittedImageRect(in: geometry.size)
+            let imageRect = isOutpaint
+                ? imageRectInsideCanvas(canvasRect: canvasRect, padding: outpaintPadding)
+                : canvasRect
+            let showsFormattingOverlay = showsBarnDoorChrome && activeDrag == nil && !formattingExcludedRects().isEmpty
+            let showsBarnDoorOverlay = showsBarnDoorChrome && !isContextFullyOpen
 
             ZStack {
                 Color(nsColor: .textBackgroundColor)
+
+                if isOutpaint {
+                    outpaintExpansionOverlay(canvasRect: canvasRect, imageRect: imageRect)
+                        .allowsHitTesting(false)
+                }
 
                 Image(decorative: image, scale: 1)
                     .resizable()
@@ -1392,12 +1362,12 @@ struct ImagePreparationPreview: View {
                         .allowsHitTesting(false)
                 }
 
-                if usesFillMask {
+                if showsSelectionOverlays {
                     committedMaskOverlays(in: imageRect)
                         .allowsHitTesting(false)
 
                     if maskTool == .rectangle, let processArea {
-                        inpaintMaskOverlay(for: processArea, in: imageRect, isDraft: true)
+                        selectionRectOverlay(for: processArea, in: imageRect, isDraft: true)
                             .allowsHitTesting(false)
                     }
 
@@ -1405,7 +1375,35 @@ struct ImagePreparationPreview: View {
                         draftPolygonOverlay(in: imageRect)
                             .allowsHitTesting(false)
                     }
+
+                    if maskTool == .visionSubject, !draftLassoPoints.isEmpty {
+                        draftLassoOverlay(in: imageRect)
+                            .allowsHitTesting(false)
+                    }
                 }
+
+                if isOutpaint, outpaintPadding.hasExpansion {
+                    Text(outpaintCanvasLabel)
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(.ultraThinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .position(x: canvasRect.midX, y: canvasRect.minY + 20)
+                        .allowsHitTesting(false)
+                } else if isOutpaint {
+                    Text("Drag a canvas edge to expand")
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(.ultraThinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .position(x: canvasRect.midX, y: canvasRect.minY + 20)
+                        .allowsHitTesting(false)
+                }
+
+                selectionModifierBadge(in: imageRect)
+
             }
             .compositingGroup()
             .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -1414,18 +1412,166 @@ struct ImagePreparationPreview: View {
                     .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
             )
             .contentShape(Rectangle())
-            .gesture(dragGesture(in: imageRect))
+            .gesture(dragGesture(canvasRect: canvasRect, imageRect: imageRect))
             .onContinuousHover { phase in
                 #if canImport(AppKit)
                 switch phase {
                 case .active(let location):
-                    cursor(for: location, in: imageRect).set()
+                    refreshHeldSelectionModifier()
+                    cursor(for: location, in: imageRect, canvasRect: canvasRect).set()
                 case .ended:
+                    heldSelectionModifier = nil
                     NSCursor.arrow.set()
                 }
                 #endif
             }
+            #if canImport(AppKit)
+            .background {
+                ModifierFlagsChangeMonitor {
+                    refreshHeldSelectionModifier()
+                }
+            }
+            #endif
         }
+    }
+
+    #if canImport(AppKit)
+    @ViewBuilder
+    private func selectionModifierBadge(in imageRect: CGRect) -> some View {
+        if let hint = heldSelectionModifier,
+           let bounds = selectionBadgeBounds(in: imageRect),
+           bounds.width > 4,
+           bounds.height > 4 {
+            SelectionModifierCornerBadge(hint: hint)
+                .position(x: bounds.maxX - 7, y: bounds.maxY - 7)
+        }
+    }
+
+    private func refreshHeldSelectionModifier() {
+        guard selectionModifierBadgeContextActive else {
+            heldSelectionModifier = nil
+            return
+        }
+        heldSelectionModifier = SelectionModifierHint.from(flags: NSEvent.modifierFlags)
+    }
+
+    private var selectionModifierBadgeContextActive: Bool {
+        isDrawingSelection
+            || activeDrag == .processSelection
+            || activeDrag == .lassoSelection
+            || processArea != nil
+            || !draftPolygonPoints.isEmpty
+            || !draftLassoPoints.isEmpty
+            || !maskLayers.isEmpty
+    }
+
+    private func selectionBadgeBounds(in imageRect: CGRect) -> CGRect? {
+        if let processArea {
+            return pixelAligned(displayRect(for: processArea, in: imageRect))
+        }
+        if !draftLassoPoints.isEmpty {
+            return pixelAligned(boundingDisplayRect(points: draftLassoPoints, in: imageRect))
+        }
+        if !draftPolygonPoints.isEmpty {
+            return pixelAligned(boundingDisplayRect(points: draftPolygonPoints, in: imageRect))
+        }
+        return committedSelectionBounds(in: imageRect)
+    }
+
+    private func committedSelectionBounds(in imageRect: CGRect) -> CGRect? {
+        var union: CGRect?
+        for layer in maskLayers {
+            let layerRect: CGRect?
+            switch layer.primitive {
+            case .rectangle(let rect):
+                layerRect = displayRect(for: rect.cgRect, in: imageRect)
+            case .polygon(let points):
+                layerRect = boundingDisplayRect(points: points.map(\.cgPoint), in: imageRect)
+            case .visionSubject:
+                layerRect = nil
+            }
+            if let layerRect {
+                union = union.map { $0.union(layerRect) } ?? layerRect
+            }
+        }
+        return union
+    }
+
+    private func boundingDisplayRect(points: [CGPoint], in imageRect: CGRect) -> CGRect {
+        guard let first = points.first else { return .zero }
+        var bounds = CGRect(origin: displayPoint(first, in: imageRect), size: .zero)
+        for point in points.dropFirst() {
+            let display = displayPoint(point, in: imageRect)
+            bounds = bounds.union(CGRect(origin: display, size: .zero))
+        }
+        return bounds
+    }
+    #endif
+
+    private var outpaintCanvasLabel: String {
+        let size = outpaintPadding.canvasSize(sourceWidth: image.width, sourceHeight: image.height)
+        return "Canvas \(size.width)×\(size.height)"
+    }
+
+    @ViewBuilder
+    private func outpaintExpansionOverlay(canvasRect: CGRect, imageRect: CGRect) -> some View {
+        ZStack {
+            Path { path in
+                path.addRect(canvasRect)
+                path.addRect(imageRect)
+            }
+            .fill(Color.gray.opacity(0.4), style: FillStyle(eoFill: true, antialiased: false))
+
+            Path { path in
+                path.addRect(canvasRect)
+            }
+            .stroke(
+                Color.accentColor,
+                style: StrokeStyle(lineWidth: 2, dash: [8, 6])
+            )
+        }
+    }
+
+    private func fittedCanvasRect(in size: CGSize, padding: OutpaintPadding) -> CGRect {
+        let canvasWidth = CGFloat(image.width + padding.left + padding.right)
+        let canvasHeight = CGFloat(image.height + padding.top + padding.bottom)
+        guard canvasWidth > 0, canvasHeight > 0, size.width > 0, size.height > 0 else {
+            return .zero
+        }
+
+        let canvasAspect = canvasWidth / canvasHeight
+        let viewAspect = size.width / size.height
+        let width: CGFloat
+        let height: CGFloat
+
+        if canvasAspect > viewAspect {
+            width = size.width
+            height = width / canvasAspect
+        } else {
+            height = size.height
+            width = height * canvasAspect
+        }
+
+        return CGRect(
+            x: (size.width - width) / 2,
+            y: (size.height - height) / 2,
+            width: width,
+            height: height
+        )
+    }
+
+    private func imageRectInsideCanvas(canvasRect: CGRect, padding: OutpaintPadding) -> CGRect {
+        let canvasWidth = CGFloat(image.width + padding.left + padding.right)
+        let canvasHeight = CGFloat(image.height + padding.top + padding.bottom)
+        guard canvasWidth > 0, canvasHeight > 0 else { return canvasRect }
+
+        let scale = canvasRect.width / canvasWidth
+        return CGRect(
+            x: canvasRect.minX + CGFloat(padding.left) * scale,
+            y: canvasRect.minY + CGFloat(padding.top) * scale,
+            width: CGFloat(image.width) * scale,
+            height: CGFloat(image.height) * scale
+        )
     }
 
     private var isContextFullyOpen: Bool {
@@ -1620,15 +1766,15 @@ struct ImagePreparationPreview: View {
         return rect
     }
 
-    private func dragGesture(in imageRect: CGRect) -> some Gesture {
+    private func dragGesture(canvasRect: CGRect, imageRect: CGRect) -> some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .local)
             .onChanged { value in
                 if activeDrag == nil {
-                    // Decide the drag mode from the press location. Barn-door
-                    // edges win within their 20px zone; anywhere else inside the
-                    // context area starts a selection.
-                    activeDrag = dragMode(for: value.startLocation, in: imageRect)
+                    activeDrag = dragMode(for: value.startLocation, canvasRect: canvasRect, imageRect: imageRect)
                     selectionStart = normalizedPoint(for: value.startLocation, in: imageRect)
+                    if generateRoute == .outpaint {
+                        outpaintPaddingBeforeDrag = outpaintPadding
+                    }
                 }
 
                 let point = normalizedPoint(for: value.location, in: imageRect)
@@ -1645,81 +1791,201 @@ struct ImagePreparationPreview: View {
                 case .contextSelection:
                     updateContextSelection(to: point, in: imageRect)
                 case .processSelection:
+                    isDrawingSelection = true
                     updateProcessSelection(to: point, in: imageRect)
+                    #if canImport(AppKit)
+                    refreshHeldSelectionModifier()
+                    #endif
+                case .lassoSelection:
+                    isDrawingSelection = true
+                    appendLassoPointIfNeeded(point)
+                    #if canImport(AppKit)
+                    refreshHeldSelectionModifier()
+                    #endif
+                case .outpaintLeft:
+                    updateOutpaintLeft(to: value.location.x, canvasRect: canvasRect, imageRect: imageRect)
+                case .outpaintRight:
+                    updateOutpaintRight(to: value.location.x, canvasRect: canvasRect, imageRect: imageRect)
+                case .outpaintTop:
+                    updateOutpaintTop(to: value.location.y, canvasRect: canvasRect, imageRect: imageRect)
+                case .outpaintBottom:
+                    updateOutpaintBottom(to: value.location.y, canvasRect: canvasRect, imageRect: imageRect)
                 case nil:
                     break
                 }
             }
             .onEnded { value in
-                if usesFillMask && maskTool == .polygon {
-                    let point = normalizedPoint(for: value.location, in: imageRect)
-                    onPolygonPoint?(point)
-                } else if activeDrag == .processSelection, let rect = processArea {
+                defer {
+                    isDrawingSelection = false
+                    activeDrag = nil
+                    selectionStart = nil
+                    contextBeforeDrag = nil
+                    processBeforeDrag = nil
+                    outpaintPaddingBeforeDrag = nil
+                    heldSelectionModifier = nil
+                    #if canImport(AppKit)
+                    NSCursor.arrow.set()
+                    #endif
+                }
+
+                let endPoint = normalizedPoint(for: value.location, in: imageRect)
+                let dragDistance = hypot(value.translation.width, value.translation.height)
+
+                if generateRoute == .outpaint {
+                    if dragDistance < 4, !canvasRect.contains(value.location) {
+                        onDeselect?()
+                    }
+                    return
+                }
+
+                if maskTool == .polygon, isSelectionTool, generateRoute != .outpaint {
+                    if dragDistance < 4, draftPolygonPoints.isEmpty, !maskLayers.isEmpty {
+                        onDeselect?()
+                        return
+                    }
+                    onPolygonPoint?(endPoint)
+                    return
+                }
+
+                if maskTool == .visionSubject, activeDrag == .lassoSelection {
+                    if draftLassoPoints.count >= 3 {
+                        onCommitLasso?()
+                    } else {
+                        onDeselect?()
+                    }
+                    return
+                }
+
+                if maskTool == .rectangle, activeDrag == .processSelection, let rect = processArea {
                     let minWidthNorm = 12 / max(imageRect.width, 1)
                     let minHeightNorm = 12 / max(imageRect.height, 1)
                     if rect.width >= minWidthNorm, rect.height >= minHeightNorm {
                         onCommitFillRectangle?(rect)
+                    } else {
+                        onDeselect?()
                     }
+                    return
                 }
 
-                activeDrag = nil
-                selectionStart = nil
-                contextBeforeDrag = nil
-                processBeforeDrag = nil
-                #if canImport(AppKit)
-                NSCursor.arrow.set()
-                #endif
+                if dragDistance < 4, imageRect.contains(value.location) {
+                    if maskTool.isBarnDoorTool {
+                        onResetBarnDoors?()
+                    } else if maskTool == .pointer
+                        || (maskTool.isSelectionTool && !maskLayers.isEmpty && draftPolygonPoints.isEmpty) {
+                        onDeselect?()
+                    }
+                }
             }
     }
 
-    private func dragMode(for location: CGPoint, in imageRect: CGRect) -> DragMode? {
-        guard imageRect.contains(location) else { return nil }
-
-        if usesFillMask && enrichInpaintPromptWithVLM {
-            if let edge = contextEdge(at: location, in: imageRect) {
-                return edge
-            }
-            if maskTool == .rectangle {
-                return .processSelection
-            }
-            return .contextSelection
+    private func appendLassoPointIfNeeded(_ point: CGPoint) {
+        guard let last = draftLassoPoints.last else {
+            onLassoPoint?(point)
+            return
         }
+        let dx = point.x - last.x
+        let dy = point.y - last.y
+        if hypot(dx, dy) >= lassoSampleDistance {
+            onLassoPoint?(point)
+        }
+    }
 
-        if usesFillMask {
-            if maskTool == .rectangle {
-                return .processSelection
+    private func dragMode(for location: CGPoint, canvasRect: CGRect, imageRect: CGRect) -> DragMode? {
+        if generateRoute == .outpaint {
+            if let edge = outpaintCanvasEdge(at: location, in: canvasRect) {
+                return edge
             }
             return nil
         }
 
-        // Barn-door edges take priority within their 20px grab zone, so an edge
-        // adjustment never starts a new region by accident.
-        if let edge = contextEdge(at: location, in: imageRect) {
-            return edge
+        guard imageRect.contains(location) else { return nil }
+
+        if isSelectionTool {
+            switch maskTool {
+            case .rectangle:
+                return .processSelection
+            case .polygon:
+                return nil
+            case .visionSubject:
+                return .lassoSelection
+            case .pointer, .liveArea, .cropCanvas:
+                return nil
+            }
         }
 
-        return .contextSelection
+        if allowsBarnDoorEditing {
+            if let edge = contextEdge(at: location, in: imageRect) {
+                return edge
+            }
+            return .contextSelection
+        }
+
+        return nil
     }
 
-    private func inpaintMaskOverlay(for normalizedRect: CGRect, in imageRect: CGRect, isDraft: Bool = false) -> some View {
+    private func outpaintCanvasEdge(at location: CGPoint, in canvasRect: CGRect) -> DragMode? {
+        let threshold: CGFloat = 20
+        let distances: [(DragMode, CGFloat)] = [
+            (.outpaintLeft, abs(location.x - canvasRect.minX)),
+            (.outpaintRight, abs(location.x - canvasRect.maxX)),
+            (.outpaintTop, abs(location.y - canvasRect.minY)),
+            (.outpaintBottom, abs(location.y - canvasRect.maxY)),
+        ]
+
+        return distances
+            .filter { $0.1 <= threshold }
+            .min { $0.1 < $1.1 }?
+            .0
+    }
+
+    private func updateOutpaintLeft(to x: CGFloat, canvasRect: CGRect, imageRect: CGRect) {
+        var padding = outpaintPaddingBeforeDrag ?? outpaintPadding
+        let scale = imagePixelScale(imageRect: imageRect)
+        let leftDisplay = max(0, imageRect.minX - x)
+        padding.left = Int((leftDisplay / scale).rounded())
+        outpaintPadding = padding
+    }
+
+    private func updateOutpaintRight(to x: CGFloat, canvasRect: CGRect, imageRect: CGRect) {
+        var padding = outpaintPaddingBeforeDrag ?? outpaintPadding
+        let scale = imagePixelScale(imageRect: imageRect)
+        let rightDisplay = max(0, x - imageRect.maxX)
+        padding.right = Int((rightDisplay / scale).rounded())
+        outpaintPadding = padding
+    }
+
+    private func updateOutpaintTop(to y: CGFloat, canvasRect: CGRect, imageRect: CGRect) {
+        var padding = outpaintPaddingBeforeDrag ?? outpaintPadding
+        let scale = imagePixelScale(imageRect: imageRect)
+        let topDisplay = max(0, imageRect.minY - y)
+        padding.top = Int((topDisplay / scale).rounded())
+        outpaintPadding = padding
+    }
+
+    private func updateOutpaintBottom(to y: CGFloat, canvasRect: CGRect, imageRect: CGRect) {
+        var padding = outpaintPaddingBeforeDrag ?? outpaintPadding
+        let scale = imagePixelScale(imageRect: imageRect)
+        let bottomDisplay = max(0, y - imageRect.maxY)
+        padding.bottom = Int((bottomDisplay / scale).rounded())
+        outpaintPadding = padding
+    }
+
+    private func imagePixelScale(imageRect: CGRect) -> CGFloat {
+        guard image.width > 0 else { return 1 }
+        return imageRect.width / CGFloat(image.width)
+    }
+
+    private func selectionRectOverlay(for normalizedRect: CGRect, in imageRect: CGRect, isDraft: Bool) -> some View {
         let rect = pixelAligned(displayRect(for: normalizedRect, in: imageRect))
-        let strokeColor = isDraft ? Color.accentColor : Color.orange
         return ZStack {
             if isDraft {
                 Path { path in
                     path.addRect(imageRect)
                     path.addRect(rect)
                 }
-                .fill(Color.black.opacity(0.45), style: FillStyle(eoFill: true, antialiased: false))
+                .fill(Color.black.opacity(0.4), style: FillStyle(eoFill: true, antialiased: false))
             }
-
-            Path { path in
-                path.addRect(rect)
-            }
-            .stroke(
-                strokeColor,
-                style: StrokeStyle(lineWidth: 2, dash: [8, 6])
-            )
+            MarchingAntsRect(rect: rect)
         }
     }
 
@@ -1728,79 +1994,74 @@ struct ImagePreparationPreview: View {
         ForEach(maskLayers) { layer in
             switch layer.primitive {
             case .rectangle(let rect):
-                inpaintMaskOverlay(for: rect.cgRect, in: imageRect, isDraft: false)
+                selectionRectOverlay(for: rect.cgRect, in: imageRect, isDraft: false)
             case .polygon(let points):
-                polygonOverlay(points: points.map(\.cgPoint), in: imageRect, combineMode: layer.combineMode)
+                selectionPolygonOverlay(points: points.map(\.cgPoint), in: imageRect)
             case .visionSubject:
-                visionSubjectOverlay(in: imageRect, combineMode: layer.combineMode)
+                if let mask = visionSubjectMasks[layer.id] {
+                    visionSubjectSelectionOverlay(mask: mask, in: imageRect)
+                } else {
+                    visionSubjectPendingOverlay(in: imageRect)
+                }
             }
         }
     }
 
-    private func polygonOverlay(
-        points: [CGPoint],
-        in imageRect: CGRect,
-        combineMode: InpaintMaskCombineMode
-    ) -> some View {
-        let color = combineMode == .clip ? Color.purple : Color.orange
-        return ZStack {
-            Path { path in
-                guard let first = points.first else { return }
-                path.move(to: displayPoint(first, in: imageRect))
-                for point in points.dropFirst() {
-                    path.addLine(to: displayPoint(point, in: imageRect))
-                }
-                path.closeSubpath()
-            }
-            .stroke(color, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+    private func visionSubjectSelectionOverlay(mask: CGImage, in imageRect: CGRect) -> some View {
+        Image(decorative: mask, scale: 1)
+            .resizable()
+            .interpolation(.none)
+            .frame(width: imageRect.width, height: imageRect.height)
+            .position(x: imageRect.midX, y: imageRect.midY)
+            .colorMultiply(.white)
+            .opacity(0.28)
+            .allowsHitTesting(false)
+    }
 
-            ForEach(Array(points.enumerated()), id: \.offset) { _, point in
-                Circle()
-                    .fill(color)
-                    .frame(width: 6, height: 6)
-                    .position(displayPoint(point, in: imageRect))
-            }
-        }
+    private func visionSubjectPendingOverlay(in imageRect: CGRect) -> some View {
+        ProgressView()
+            .controlSize(.small)
+            .position(x: imageRect.midX, y: imageRect.midY)
+            .help("Resolving subject mask")
+            .accessibilityLabel("Resolving subject mask")
+    }
+
+    private func selectionPolygonOverlay(points: [CGPoint], in imageRect: CGRect) -> some View {
+        let path = polygonPath(points: points, in: imageRect, closed: true)
+        return MarchingAntsPath(path: path)
+    }
+
+    private func draftLassoOverlay(in imageRect: CGRect) -> some View {
+        MarchingAntsPath(
+            path: polygonPath(points: draftLassoPoints, in: imageRect, closed: draftLassoPoints.count >= 3)
+        )
     }
 
     private func draftPolygonOverlay(in imageRect: CGRect) -> some View {
         ZStack {
-            Path { path in
-                guard let first = draftPolygonPoints.first else { return }
-                path.move(to: displayPoint(first, in: imageRect))
-                for point in draftPolygonPoints.dropFirst() {
-                    path.addLine(to: displayPoint(point, in: imageRect))
-                }
-                if draftPolygonPoints.count >= 3 {
-                    path.closeSubpath()
-                }
-            }
-            .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [4, 4]))
-
+            MarchingAntsPath(
+                path: polygonPath(points: draftPolygonPoints, in: imageRect, closed: draftPolygonPoints.count >= 3)
+            )
             ForEach(Array(draftPolygonPoints.enumerated()), id: \.offset) { _, point in
                 Circle()
-                    .fill(Color.accentColor)
+                    .fill(Color.white)
+                    .overlay(Circle().stroke(Color.black, lineWidth: 1))
                     .frame(width: 7, height: 7)
                     .position(displayPoint(point, in: imageRect))
             }
         }
     }
 
-    private func visionSubjectOverlay(in imageRect: CGRect, combineMode: InpaintMaskCombineMode) -> some View {
-        let color = combineMode == .clip ? Color.purple : Color.teal
-        return ZStack {
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(color, style: StrokeStyle(lineWidth: 2, dash: [10, 6]))
-                .frame(width: imageRect.width - 8, height: imageRect.height - 8)
-                .position(x: imageRect.midX, y: imageRect.midY)
-
-            Text("Vision subject")
-                .font(.caption2.weight(.semibold))
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(color.opacity(0.2))
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-                .position(x: imageRect.midX, y: imageRect.minY + 14)
+    private func polygonPath(points: [CGPoint], in imageRect: CGRect, closed: Bool) -> Path {
+        Path { path in
+            guard let first = points.first else { return }
+            path.move(to: displayPoint(first, in: imageRect))
+            for point in points.dropFirst() {
+                path.addLine(to: displayPoint(point, in: imageRect))
+            }
+            if closed, points.count >= 3 {
+                path.closeSubpath()
+            }
         }
     }
 
@@ -1833,34 +2094,38 @@ struct ImagePreparationPreview: View {
     }
 
     #if canImport(AppKit)
-    private func cursor(for location: CGPoint, in imageRect: CGRect) -> NSCursor {
-        if usesFillMask {
-            if enrichInpaintPromptWithVLM, let edge = contextEdge(at: location, in: imageRect) {
-                switch edge {
-                case .contextLeft, .contextRight:
-                    return .resizeLeftRight
-                case .contextTop, .contextBottom:
-                    return .resizeUpDown
-                default:
-                    break
-                }
+    private func cursor(for location: CGPoint, in imageRect: CGRect, canvasRect: CGRect) -> NSCursor {
+        if generateRoute == .outpaint {
+            switch outpaintCanvasEdge(at: location, in: canvasRect) {
+            case .outpaintLeft, .outpaintRight:
+                return .resizeLeftRight
+            case .outpaintTop, .outpaintBottom:
+                return .resizeUpDown
+            default:
+                return canvasRect.contains(location) ? .crosshair : .arrow
             }
-            if maskTool == .visionSubject {
-                return enrichInpaintPromptWithVLM && contextEdge(at: location, in: imageRect) != nil ? .resizeLeftRight : .arrow
-            }
+        }
+
+        if isSelectionTool {
             return imageRect.contains(location) ? .crosshair : .arrow
         }
 
-        // Within 20px of a barn-door edge -> resize. Anywhere else on the image
-        // -> crosshair (draw a new region). Outside image -> arrow.
-        switch contextEdge(at: location, in: imageRect) {
-        case .contextLeft, .contextRight:
-            return .resizeLeftRight
-        case .contextTop, .contextBottom:
-            return .resizeUpDown
-        default:
+        if allowsBarnDoorEditing, let edge = contextEdge(at: location, in: imageRect) {
+            switch edge {
+            case .contextLeft, .contextRight:
+                return .resizeLeftRight
+            case .contextTop, .contextBottom:
+                return .resizeUpDown
+            default:
+                break
+            }
+        }
+
+        if maskTool.isBarnDoorTool {
             return imageRect.contains(location) ? .crosshair : .arrow
         }
+
+        return .arrow
     }
     #endif
 
@@ -2233,6 +2498,52 @@ struct FillResolutionInfoRow: View {
     }
 }
 
+
+#if canImport(AppKit)
+/// Fires when ⇧ / ⌥ / other modifier keys change so the preview badge can update mid-drag.
+private struct ModifierFlagsChangeMonitor: NSViewRepresentable {
+    let onFlagsChange: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.install(onFlagsChange: onFlagsChange)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onFlagsChange = onFlagsChange
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.remove()
+    }
+
+    final class Coordinator {
+        var monitor: Any?
+        var onFlagsChange: (() -> Void)?
+
+        func install(onFlagsChange: @escaping () -> Void) {
+            self.onFlagsChange = onFlagsChange
+            remove()
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+                self?.onFlagsChange?()
+                return event
+            }
+        }
+
+        func remove() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+    }
+}
+#endif
 
 #Preview {
     ImageToImageView()

@@ -25,6 +25,8 @@ public struct FluxGenerationProject: Codable, Sendable {
     public var processArea: NormalizedRect?
     public var contextArea: NormalizedRect
     public var editMode: String?
+    public var inpaintMaskTool: String?
+    public var outpaintPadding: OutpaintPadding?
     public var inpaintIntent: String?
     public var enrichInpaintPromptWithVLM: Bool?
     public var vlmContextManual: Bool?
@@ -82,6 +84,8 @@ public struct FluxGenerationProject: Codable, Sendable {
         processArea: NormalizedRect? = nil,
         contextArea: NormalizedRect,
         editMode: String? = nil,
+        inpaintMaskTool: String? = nil,
+        outpaintPadding: OutpaintPadding? = nil,
         inpaintIntent: String? = nil,
         enrichInpaintPromptWithVLM: Bool? = nil,
         vlmContextManual: Bool? = nil,
@@ -110,6 +114,8 @@ public struct FluxGenerationProject: Codable, Sendable {
         self.processArea = processArea
         self.contextArea = contextArea
         self.editMode = editMode
+        self.inpaintMaskTool = inpaintMaskTool
+        self.outpaintPadding = outpaintPadding
         self.inpaintIntent = inpaintIntent
         self.enrichInpaintPromptWithVLM = enrichInpaintPromptWithVLM
         self.vlmContextManual = vlmContextManual
