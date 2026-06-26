@@ -113,6 +113,7 @@ class ImageGenerationViewModel: ObservableObject {
     @Published var visionSubjectMasks: [UUID: CGImage] = [:]
     @Published var visionSubjectStatusMessage: String?
     private let selectionUndoStore = SelectionUndoStore()
+    let editHistoryStore = EditHistoryStore()
     private var isApplyingSelectionUndo = false
     /// Target generation budget in megapixels (the *maximum* total pixels). The
     /// barn doors set the aspect ratio; the generation fills this budget at that
@@ -464,7 +465,7 @@ class ImageGenerationViewModel: ObservableObject {
         )
     }
 
-    private func recordSelectionUndoPoint() {
+    func recordSelectionUndoPoint() {
         guard workflow == .imageToImage, !isApplyingSelectionUndo else { return }
         selectionUndoStore.pushUndoPoint(captureSelectionSnapshot())
         objectWillChange.send()
@@ -1096,6 +1097,7 @@ class ImageGenerationViewModel: ObservableObject {
         errorMessage = nil
         currentProjectURL = nil
         lastSavedImageURL = nil
+        clearEditHistory()
         UserDefaults.standard.removeObject(forKey: Self.lastProjectURLKey)
         applyRecommendedDefaults(for: selectedModel)
         ImageSavePreferenceKeys.applyStoredDefaultsToWorking()
@@ -1252,6 +1254,7 @@ class ImageGenerationViewModel: ObservableObject {
             project: project,
             slotImages: slotImages,
             previewImage: previewDisplayImage,
+            historyAssets: historyAssetsForSave(),
             to: bundleURL
         )
     }
@@ -1283,6 +1286,7 @@ class ImageGenerationViewModel: ObservableObject {
                 errorMessage = nil
                 statusMessage = "This project used the old image format (v1). Images were cleared — add them again in the Images palette."
                 clearSelectionUndoHistory()
+                clearEditHistory()
                 applySizingControls()
                 return
             }
@@ -1291,6 +1295,7 @@ class ImageGenerationViewModel: ObservableObject {
         let loaded = try FluxGenerationProject.load(at: url)
         applyProjectShell(from: loaded.project)
         try restoreImageSlots(from: loaded.project, bundleRoot: loaded.bundleRoot)
+        loadEditHistory(from: loaded.project, bundleRoot: loaded.bundleRoot)
         Task { await refreshVisionSubjectMaskCache() }
         generatedImage = loaded.previewImage
         formattedComparisonImage = nil
@@ -1351,7 +1356,9 @@ class ImageGenerationViewModel: ObservableObject {
             fillContextMaskScale: hasLocalFillSelection ? fillContextMaskScale : nil,
             inpaintMaskLayers: inpaintMaskLayers.isEmpty ? nil : inpaintMaskLayers,
             images: records,
-            selectedImageSlotID: selectedImageSlotID
+            selectedImageSlotID: selectedImageSlotID,
+            currentHistoryIndex: editHistoryManifestFields().currentIndex,
+            history: editHistoryManifestFields().entries
         )
     }
 
@@ -1617,6 +1624,7 @@ class ImageGenerationViewModel: ObservableObject {
                 if clearPromptAfterGeneration {
                     prompt = ""
                 }
+                appendEditHistoryAfterGenerate(image: image)
             }
 
         } catch is CancellationError {
@@ -1746,7 +1754,7 @@ class ImageGenerationViewModel: ObservableObject {
         return try prepareImageToImageInput().images[0]
     }
 
-    private func cacheFormattedComparisonImage(for output: CGImage) {
+    func cacheFormattedComparisonImage(for output: CGImage) {
         guard let original = primaryReferenceImage else {
             formattedComparisonImage = nil
             return

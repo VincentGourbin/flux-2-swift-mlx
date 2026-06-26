@@ -40,6 +40,8 @@ public struct FluxGenerationProject: Codable, Sendable {
     public var inpaintMaskLayers: [InpaintMaskLayer]?
     public var images: [GenerationImageRecord]
     public var selectedImageSlotID: UUID?
+    public var currentHistoryIndex: Int?
+    public var history: [EditHistoryEntry]?
 
     public struct NormalizedRect: Codable, Sendable, Equatable {
         public var x: Double
@@ -86,7 +88,9 @@ public struct FluxGenerationProject: Codable, Sendable {
         fillContextMaskScale: Double? = nil,
         inpaintMaskLayers: [InpaintMaskLayer]? = nil,
         images: [GenerationImageRecord],
-        selectedImageSlotID: UUID? = nil
+        selectedImageSlotID: UUID? = nil,
+        currentHistoryIndex: Int? = nil,
+        history: [EditHistoryEntry]? = nil
     ) {
         self.version = version
         self.selectedModel = selectedModel
@@ -115,6 +119,8 @@ public struct FluxGenerationProject: Codable, Sendable {
         self.inpaintMaskLayers = inpaintMaskLayers
         self.images = images
         self.selectedImageSlotID = selectedImageSlotID
+        self.currentHistoryIndex = currentHistoryIndex
+        self.history = history
     }
 
     public static func load(from path: String) throws -> FluxGenerationProject {

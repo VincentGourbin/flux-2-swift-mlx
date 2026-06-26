@@ -35,6 +35,15 @@ struct ImageToImageView: View {
 
                     Divider()
 
+                    EditHistoryPanel(
+                        viewModel: viewModel,
+                        historyStore: viewModel.editHistoryStore
+                    )
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+
+                    Divider()
+
                     ScrollView {
                         VStack(alignment: .leading, spacing: 10) {
                             PalettePanel(
@@ -124,6 +133,12 @@ struct ImageToImageView: View {
             redo: { viewModel.redoSelection() },
             canUndo: { viewModel.canUndoSelection },
             canRedo: { viewModel.canRedoSelection }
+        ))
+        .focusedSceneValue(\.generationDocumentHistory, GenerationDocumentHistoryCommands(
+            stepBack: { viewModel.stepHistoryBack() },
+            stepForward: { viewModel.stepHistoryForward() },
+            canStepBack: { viewModel.canStepHistoryBack },
+            canStepForward: { viewModel.canStepHistoryForward }
         ))
         .onChange(of: viewModel.generateRoute) { _, route in
             if route == .localFill {
@@ -298,7 +313,12 @@ struct ImageToImageView: View {
                 }
                 Slider(
                     value: $viewModel.fillContextMaskScale,
-                    in: -1...1
+                    in: -1...1,
+                    onEditingChanged: { editing in
+                        if editing {
+                            viewModel.beginFillContextMaskScaleEdit()
+                        }
+                    }
                 )
                 HStack {
                     Text("Tight")
@@ -827,6 +847,7 @@ struct ImageToImageView: View {
     private func useAsReference() {
         guard let cgImage = viewModel.generatedImage else { return }
         viewModel.addReferenceImage(cgImage: cgImage)
+        viewModel.appendEditHistoryAfterAdopt(image: cgImage)
     }
 }
 

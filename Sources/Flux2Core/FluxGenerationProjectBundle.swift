@@ -30,6 +30,18 @@ public enum FluxGenerationProjectBundle {
         }
     }
 
+    public struct HistoryAsset: Sendable {
+        public var entry: EditHistoryEntry
+        public var master: CGImage
+        public var thumb: CGImage
+
+        public init(entry: EditHistoryEntry, master: CGImage, thumb: CGImage) {
+            self.entry = entry
+            self.master = master
+            self.thumb = thumb
+        }
+    }
+
     public static func isBundleURL(_ url: URL) -> Bool {
         if url.pathExtension == packageExtension {
             return true
@@ -52,6 +64,7 @@ public enum FluxGenerationProjectBundle {
         project: FluxGenerationProject,
         slotImages: [SlotImage],
         previewImage: CGImage?,
+        historyAssets: [HistoryAsset] = [],
         to bundleRoot: URL
     ) throws {
         guard ProjectBundleImageWriter.isSupported() else {
@@ -70,9 +83,33 @@ public enum FluxGenerationProjectBundle {
             let slotsRoot = tempRoot.appendingPathComponent(slotsDirectoryName, isDirectory: true)
             try fileManager.createDirectory(at: slotsRoot, withIntermediateDirectories: true)
 
+            if !historyAssets.isEmpty {
+                try fileManager.createDirectory(
+                    at: tempRoot.appendingPathComponent(EditHistoryPaths.historyDirectory, isDirectory: true),
+                    withIntermediateDirectories: true
+                )
+                try fileManager.createDirectory(
+                    at: tempRoot.appendingPathComponent(EditHistoryPaths.thumbsDirectory, isDirectory: true),
+                    withIntermediateDirectories: true
+                )
+            }
+
             for slot in slotImages {
                 let url = tempRoot.appendingPathComponent(Self.slotRelativePath(for: slot.id), isDirectory: false)
                 try ProjectBundleImageWriter.write(slot.image, to: url, mode: .lossless)
+            }
+
+            for asset in historyAssets {
+                try ProjectBundleImageWriter.write(
+                    asset.master,
+                    to: tempRoot.appendingPathComponent(asset.entry.master, isDirectory: false),
+                    mode: .lossless
+                )
+                try ProjectBundleImageWriter.write(
+                    asset.thumb,
+                    to: tempRoot.appendingPathComponent(asset.entry.thumb, isDirectory: false),
+                    mode: .lossyHighQuality
+                )
             }
 
             if let previewImage {

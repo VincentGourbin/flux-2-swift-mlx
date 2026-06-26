@@ -49,6 +49,33 @@ public enum ProjectBundleImageWriter {
         return image
     }
 
+    public static func makeThumbnail(from image: CGImage, maxDimension: Int = 128) throws -> CGImage {
+        let longer = max(image.width, image.height)
+        guard longer > maxDimension else { return image }
+        let scale = CGFloat(maxDimension) / CGFloat(longer)
+        let width = max(1, Int((CGFloat(image.width) * scale).rounded()))
+        let height = max(1, Int((CGFloat(image.height) * scale).rounded()))
+
+        let colorSpace = image.colorSpace ?? CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            throw Flux2Error.imageProcessingFailed("Could not allocate thumbnail context.")
+        }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let thumbnail = context.makeImage() else {
+            throw Flux2Error.imageProcessingFailed("Could not create thumbnail image.")
+        }
+        return thumbnail
+    }
+
     private static func destinationProperties(mode: EncodeMode) -> CFDictionary {
         switch mode {
         case .lossless:

@@ -1,6 +1,6 @@
 # Edit history and project bundle — deferred plan
 
-**Status:** phase 1 implemented (v3 bundle save/load); history UI still deferred.
+**Status:** phase 1–2 implemented (v3 bundle save/load, linear history UI + shortcuts). Phase 3+ still deferred.
 
 **Baseline:** macOS **Tahoe only**, single machine. No legacy-OS format fallbacks, no Quick Look requirements, no cross-platform export concerns.
 
@@ -214,8 +214,8 @@ History belongs in the **I2I palette column** (`ImageToImageView`), not the app 
 
 0. **Selection undo/redo** — snapshot stack + Cmd+Z; no bundle work required; ships value early. **(implemented)**
 1. **Bundle + JXL slots/preview** — prove save/load without history UI. **(implemented)**
-2. **Linear history** — append on generate; left-column list; click to restore.
-3. **Document history shortcuts** (optional) — if keyboard milestone stepping is wanted.
+2. **Linear history** — append on generate/adopt; left-column list; click to restore. **(implemented)**
+3. **Document history shortcuts** — History menu, ⌃⌘Z / ⌃⌘⇧Z step back/forward. **(implemented)**
 4. **Optional** — import as first entry; prune UI.
 
 ---

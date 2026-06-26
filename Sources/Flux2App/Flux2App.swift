@@ -29,6 +29,7 @@ struct Flux2App: App {
         .commands {
             ProjectFileCommands()
             SelectionUndoCommands()
+            DocumentHistoryCommands()
             DefaultsCommands()
             CommandGroup(replacing: .appInfo) {
                 Button("About FLUX.2") {
