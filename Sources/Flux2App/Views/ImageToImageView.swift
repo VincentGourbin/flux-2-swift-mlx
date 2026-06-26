@@ -1280,46 +1280,22 @@ struct ImagePreparationPreview: View {
         }
     }
 
-    private func fittedCanvasRect(in size: CGSize, padding: OutpaintPadding) -> CGRect {
-        let canvasWidth = CGFloat(image.width + padding.left + padding.right)
-        let canvasHeight = CGFloat(image.height + padding.top + padding.bottom)
-        guard canvasWidth > 0, canvasHeight > 0, size.width > 0, size.height > 0 else {
-            return .zero
-        }
-
-        let canvasAspect = canvasWidth / canvasHeight
-        let viewAspect = size.width / size.height
-        let width: CGFloat
-        let height: CGFloat
-
-        if canvasAspect > viewAspect {
-            width = size.width
-            height = width / canvasAspect
-        } else {
-            height = size.height
-            width = height * canvasAspect
-        }
-
-        return CGRect(
-            x: (size.width - width) / 2,
-            y: (size.height - height) / 2,
-            width: width,
-            height: height
+    /// Pure coordinate math for this preview (normalized <-> view, aspect-fit,
+    /// pixel snapping). The helpers below delegate here; see PreparationGeometry.
+    private var geo: PreparationGeometry {
+        PreparationGeometry(
+            imageWidth: image.width,
+            imageHeight: image.height,
+            backingScale: NSScreen.main?.backingScaleFactor ?? 2
         )
     }
 
-    private func imageRectInsideCanvas(canvasRect: CGRect, padding: OutpaintPadding) -> CGRect {
-        let canvasWidth = CGFloat(image.width + padding.left + padding.right)
-        let canvasHeight = CGFloat(image.height + padding.top + padding.bottom)
-        guard canvasWidth > 0, canvasHeight > 0 else { return canvasRect }
+    private func fittedCanvasRect(in size: CGSize, padding: OutpaintPadding) -> CGRect {
+        geo.fittedCanvasRect(in: size, padding: padding)
+    }
 
-        let scale = canvasRect.width / canvasWidth
-        return CGRect(
-            x: canvasRect.minX + CGFloat(padding.left) * scale,
-            y: canvasRect.minY + CGFloat(padding.top) * scale,
-            width: CGFloat(image.width) * scale,
-            height: CGFloat(image.height) * scale
-        )
+    private func imageRectInsideCanvas(canvasRect: CGRect, padding: OutpaintPadding) -> CGRect {
+        geo.imageRectInsideCanvas(canvasRect: canvasRect, padding: padding)
     }
 
     private var isContextFullyOpen: Bool {
@@ -1331,29 +1307,7 @@ struct ImagePreparationPreview: View {
     }
 
     private func fittedImageRect(in size: CGSize) -> CGRect {
-        guard image.width > 0, image.height > 0, size.width > 0, size.height > 0 else {
-            return .zero
-        }
-
-        let imageAspect = CGFloat(image.width) / CGFloat(image.height)
-        let viewAspect = size.width / size.height
-        let width: CGFloat
-        let height: CGFloat
-
-        if imageAspect > viewAspect {
-            width = size.width
-            height = width / imageAspect
-        } else {
-            height = size.height
-            width = height * imageAspect
-        }
-
-        return CGRect(
-            x: (size.width - width) / 2,
-            y: (size.height - height) / 2,
-            width: width,
-            height: height
-        )
+        geo.fittedImageRect(in: size)
     }
 
     /// Regions dimmed to preview Image Formatting (crop discard or pad bands).
@@ -1728,8 +1682,7 @@ struct ImagePreparationPreview: View {
     }
 
     private func imagePixelScale(imageRect: CGRect) -> CGFloat {
-        guard image.width > 0 else { return 1 }
-        return imageRect.width / CGFloat(image.width)
+        geo.imagePixelScale(imageRect: imageRect)
     }
 
     private func selectionRectOverlay(for normalizedRect: CGRect, in imageRect: CGRect, isDraft: Bool) -> some View {
@@ -1844,10 +1797,7 @@ struct ImagePreparationPreview: View {
     }
 
     private func displayPoint(_ normalized: CGPoint, in imageRect: CGRect) -> CGPoint {
-        CGPoint(
-            x: imageRect.minX + normalized.x * imageRect.width,
-            y: imageRect.minY + normalized.y * imageRect.height
-        )
+        geo.displayPoint(normalized, in: imageRect)
     }
 
     private func contextEdge(at location: CGPoint, in imageRect: CGRect) -> DragMode? {
@@ -2014,53 +1964,28 @@ struct ImagePreparationPreview: View {
         contextArea.minY + minimumContextHeight
     }
 
-    private var minimumContextWidth: CGFloat {
-        CGFloat(16) / CGFloat(max(image.width, 16))
-    }
+    private var minimumContextWidth: CGFloat { geo.minimumContextWidth }
 
-    private var minimumContextHeight: CGFloat {
-        CGFloat(16) / CGFloat(max(image.height, 16))
-    }
+    private var minimumContextHeight: CGFloat { geo.minimumContextHeight }
 
     private func displayRect(for normalized: CGRect, in imageRect: CGRect) -> CGRect {
-        pixelAligned(
-            CGRect(
-                x: imageRect.minX + normalized.minX * imageRect.width,
-                y: imageRect.minY + normalized.minY * imageRect.height,
-                width: normalized.width * imageRect.width,
-                height: normalized.height * imageRect.height
-            )
-        )
+        geo.displayRect(for: normalized, in: imageRect)
     }
 
-    /// Floor/ceil to whole pixels so stacked overlays don't leave 1px gaps.
     private func pixelAligned(_ rect: CGRect) -> CGRect {
-        let scale = NSScreen.main?.backingScaleFactor ?? 2
-        let minX = (rect.minX * scale).rounded(.down) / scale
-        let minY = (rect.minY * scale).rounded(.down) / scale
-        let maxX = (rect.maxX * scale).rounded(.up) / scale
-        let maxY = (rect.maxY * scale).rounded(.up) / scale
-        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+        geo.pixelAligned(rect)
     }
 
     private func normalizedPoint(for location: CGPoint, in imageRect: CGRect) -> CGPoint {
-        CGPoint(
-            x: min(max((location.x - imageRect.minX) / imageRect.width, 0), 1),
-            y: min(max((location.y - imageRect.minY) / imageRect.height, 0), 1)
-        )
+        geo.normalizedPoint(for: location, in: imageRect)
     }
 
-    private func snapX(_ x: CGFloat) -> CGFloat {
-        snap(x, pixels: image.width)
-    }
+    private func snapX(_ x: CGFloat) -> CGFloat { geo.snapX(x) }
 
-    private func snapY(_ y: CGFloat) -> CGFloat {
-        snap(y, pixels: image.height)
-    }
+    private func snapY(_ y: CGFloat) -> CGFloat { geo.snapY(y) }
 
     private func snap(_ value: CGFloat, pixels: Int) -> CGFloat {
-        let step = CGFloat(16) / CGFloat(max(pixels, 16))
-        return min(max((value / step).rounded() * step, 0), 1)
+        geo.snap(value, pixels: pixels)
     }
 }
 
