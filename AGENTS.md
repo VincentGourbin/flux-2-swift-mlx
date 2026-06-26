@@ -115,6 +115,15 @@ bin/vm-smoke.sh
 
 Fixture: `Tests/Fixtures/VMSmoke/project.json` (self-contained I2I project with embedded reference PNG).
 
+**Full Circus battery** (models + UI + history bundle + CLI I2I + generative fill):
+
+```bash
+bin/vm-smoke-full.sh
+# → /tmp/flux2-smoke.png, flux2-smoke-history.png, flux2-smoke-i2i.png, flux2-smoke-fill.png
+# History fixture: Tests/Fixtures/VMSmokeHistory/VMSmokeHistory.flux2project (v3 + Import step).
+# Regenerate fixture when needed: Flux2SmokeFixture export-history-bundle … (requires brew install jpeg-xl).
+```
+
 **Launch hooks** (agent / smoke):
 
 | Env var | Purpose |

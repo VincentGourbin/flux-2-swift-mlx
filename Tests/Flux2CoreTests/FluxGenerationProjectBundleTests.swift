@@ -35,7 +35,7 @@ final class FluxGenerationProjectBundleTests: XCTestCase {
         )
 
         let tempRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("flux2-bundle-test-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("flux2-bundle-test-\(UUID().uuidString).\(FluxGenerationProjectBundle.packageExtension)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: tempRoot) }
 
         try FluxGenerationProjectBundle.save(

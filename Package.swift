@@ -14,6 +14,7 @@ let package = Package(
         .executable(name: "Flux2CLI", targets: ["Flux2CLI"]),
         // Main Application
         .executable(name: "Flux2App", targets: ["Flux2App"]),
+        .executable(name: "Flux2SmokeFixture", targets: ["Flux2SmokeFixture"]),
     ],
     dependencies: [
         // Pinned exactly: mlx-swift introduces breaking API changes even in patch
@@ -80,6 +81,10 @@ let package = Package(
         .executableTarget(
             name: "Flux2App",
             dependencies: ["FluxTextEncoders", "Flux2Core", "Flux2Chains"]
+        ),
+        .executableTarget(
+            name: "Flux2SmokeFixture",
+            dependencies: ["Flux2Core"]
         ),
         // MARK: - Tests
         .testTarget(

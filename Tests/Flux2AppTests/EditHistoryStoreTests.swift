@@ -52,7 +52,7 @@ final class EditHistoryStoreTests: XCTestCase {
         )
 
         let bundleRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("flux2-history-test-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("flux2-history-test-\(UUID().uuidString).\(FluxGenerationProjectBundle.packageExtension)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: bundleRoot) }
 
         let assets = try store.historyAssets(bundleRoot: nil)

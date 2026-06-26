@@ -3,6 +3,9 @@ import Foundation
 import ImageIO
 
 /// JPEG XL encoder for `.flux2project` bundle assets (separate from export preferences).
+///
+/// Decode uses ImageIO. Encode prefers ImageIO when available; otherwise falls back to
+/// Homebrew `cjxl` (`brew install jpeg-xl`).
 public enum ProjectBundleImageWriter {
     public static let typeIdentifier = "public.jpeg-xl"
     public static let fileExtension = "jxl"
@@ -13,30 +16,30 @@ public enum ProjectBundleImageWriter {
     }
 
     public static func isSupported() -> Bool {
-        let identifiers = CGImageDestinationCopyTypeIdentifiers() as? [String] ?? []
-        return identifiers.contains(typeIdentifier)
+        imageIODestinationSupportsJXL || CJXLImageEncoder.isAvailable()
     }
 
     public static func encode(_ image: CGImage, mode: EncodeMode = .lossless) throws -> Data {
-        guard isSupported() else {
-            throw Flux2Error.imageProcessingFailed("JPEG XL encoding is not available on this Mac.")
+        if imageIODestinationSupportsJXL {
+            return try encodeWithImageIO(image, mode: mode)
         }
-
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(data, typeIdentifier as CFString, 1, nil) else {
-            throw Flux2Error.imageProcessingFailed("Could not create JPEG XL destination.")
+        if CJXLImageEncoder.isAvailable() {
+            return try CJXLImageEncoder.encode(image, mode: mode)
         }
-
-        CGImageDestinationAddImage(destination, image, destinationProperties(mode: mode))
-        guard CGImageDestinationFinalize(destination) else {
-            throw Flux2Error.imageProcessingFailed("Could not finalize JPEG XL image.")
-        }
-        return data as Data
+        throw unavailableError()
     }
 
     public static func write(_ image: CGImage, to url: URL, mode: EncodeMode = .lossless) throws {
-        let data = try encode(image, mode: mode)
-        try data.write(to: url, options: .atomic)
+        if imageIODestinationSupportsJXL {
+            let data = try encodeWithImageIO(image, mode: mode)
+            try data.write(to: url, options: .atomic)
+            return
+        }
+        if CJXLImageEncoder.isAvailable() {
+            try CJXLImageEncoder.write(image, to: url, mode: mode)
+            return
+        }
+        throw unavailableError()
     }
 
     public static func loadCGImage(from url: URL) throws -> CGImage {
@@ -74,6 +77,30 @@ public enum ProjectBundleImageWriter {
             throw Flux2Error.imageProcessingFailed("Could not create thumbnail image.")
         }
         return thumbnail
+    }
+
+    private static var imageIODestinationSupportsJXL: Bool {
+        let identifiers = CGImageDestinationCopyTypeIdentifiers() as? [String] ?? []
+        return identifiers.contains(typeIdentifier)
+    }
+
+    private static func encodeWithImageIO(_ image: CGImage, mode: EncodeMode) throws -> Data {
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, typeIdentifier as CFString, 1, nil) else {
+            throw Flux2Error.imageProcessingFailed("Could not create JPEG XL destination.")
+        }
+
+        CGImageDestinationAddImage(destination, image, destinationProperties(mode: mode))
+        guard CGImageDestinationFinalize(destination) else {
+            throw Flux2Error.imageProcessingFailed("Could not finalize JPEG XL image.")
+        }
+        return data as Data
+    }
+
+    private static func unavailableError() -> Flux2Error {
+        .imageProcessingFailed(
+            "JPEG XL encoding is not available. Install with: brew install jpeg-xl"
+        )
     }
 
     private static func destinationProperties(mode: EncodeMode) -> CFDictionary {

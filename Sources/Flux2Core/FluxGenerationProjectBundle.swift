@@ -68,7 +68,9 @@ public enum FluxGenerationProjectBundle {
         to bundleRoot: URL
     ) throws {
         guard ProjectBundleImageWriter.isSupported() else {
-            throw Flux2Error.imageProcessingFailed("JPEG XL encoding is not available on this Mac.")
+            throw Flux2Error.imageProcessingFailed(
+                "JPEG XL encoding is not available. Install with: brew install jpeg-xl"
+            )
         }
         guard project.version >= FluxGenerationProject.bundleVersion else {
             throw Flux2Error.invalidConfiguration("Project manifest must be version \(FluxGenerationProject.bundleVersion) for bundle save.")

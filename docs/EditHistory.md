@@ -127,7 +127,7 @@ MyEdit.flux2project/
 
 ## JPEG XL encoding policy
 
-All in-bundle writes use **Image I/O** (`CGImageDestination`) with `public.jpeg-xl`.
+All in-bundle writes go through `ProjectBundleImageWriter` (lossless vs lossy thumb modes). macOS exposes JXL **decode** via ImageIO; **encode** uses ImageIO when available, otherwise Homebrew `cjxl` (`brew install jpeg-xl`).
 
 | Asset | JXL mode |
 | --- | --- |

@@ -1,0 +1,60 @@
+{
+  "contextArea" : {
+    "height" : 0.8,
+    "width" : 0.8,
+    "x" : 0.1,
+    "y" : 0.1
+  },
+  "currentHistoryIndex" : 0,
+  "guidance" : 4,
+  "height" : 384,
+  "history" : [
+    {
+      "id" : "A1111111-1111-4111-8111-111111111102",
+      "kind" : "import",
+      "label" : "Import",
+      "master" : "history\/0001.jxl",
+      "prompt" : "VM smoke history — import milestone",
+      "settings" : {
+        "generateRoute" : "fullImage",
+        "guidance" : 4,
+        "megapixelBudget" : 1,
+        "selectedModel" : "klein-4b",
+        "steps" : 4,
+        "upsamplePrompt" : false
+      },
+      "spatial" : {
+        "contextArea" : {
+          "height" : 0.8,
+          "width" : 0.8,
+          "x" : 0.1,
+          "y" : 0.1
+        }
+      },
+      "thumb" : "thumbs\/0001.jxl"
+    }
+  ],
+  "images" : [
+    {
+      "bundlePath" : "slots\/A1111111-1111-4111-8111-111111111101.jxl",
+      "formatting" : {
+        "preparationScale" : 1,
+        "sizingFavor" : "Original",
+        "sizingMethod" : "Crop"
+      },
+      "id" : "A1111111-1111-4111-8111-111111111101",
+      "isPrimary" : true,
+      "role" : "reference"
+    }
+  ],
+  "prompt" : "VM smoke history — import milestone",
+  "seed" : "",
+  "selectedImageSlotID" : "A1111111-1111-4111-8111-111111111101",
+  "selectedModel" : "klein-4b",
+  "steps" : 4,
+  "textQuantization" : "8bit",
+  "transformerQuantization" : "8bit",
+  "upsamplePrompt" : false,
+  "version" : 3,
+  "width" : 512
+}

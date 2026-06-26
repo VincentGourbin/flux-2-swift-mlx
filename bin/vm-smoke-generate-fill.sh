@@ -92,7 +92,8 @@ echo "Running Klein 4B generative fill in VM (VLM 4-bit, modify intent, 4 steps;
 
 remote_cmd="cd $(printf '%q' "$REMOTE_DIR") && \
   export F2SM_MODELS_DIR=$(printf '%q' "$VM_MODELS_DIR") && \
-  ./Flux2CLI inpaint 'fill it in' \
+  ./Flux2CLI inpaint \
+  --prompt 'fill it in' \
   -i reference.png \
   -m fill-mask.png \
   -o output.png \
