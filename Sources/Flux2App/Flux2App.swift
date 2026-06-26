@@ -16,6 +16,7 @@ struct Flux2App: App {
     init() {
         ModelsDirectoryBootstrap.apply()
         ImageSavePreferenceKeys.bootstrapStoredDefaultsIfNeeded()
+        ImageSaveOutputRootPresetStore.bootstrapIfNeeded()
     }
 
     var body: some Scene {
@@ -49,7 +50,7 @@ struct Flux2App: App {
         Window("Defaults", id: "image-save-defaults") {
             ImageSaveDefaultsView()
         }
-        .defaultSize(width: 520, height: 320)
+        .defaultSize(width: 520, height: 260)
     }
 }
 

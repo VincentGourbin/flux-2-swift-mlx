@@ -18,7 +18,13 @@ struct ImageSaveNamingPreferencesView: View {
     @Binding var autoIncrementStart: Int
     @Binding var autoIncrementStep: Int
 
+    @AppStorage(ImageSavePreferenceKeys.outputRootPresetsJSON) private var outputRootPresetsJSON = ""
+
     var previewPrompt: String = "sample prompt"
+
+    private var outputRootPresets: [ImageSaveOutputRootPreset] {
+        ImageSaveOutputRootPresetStore.decode(outputRootPresetsJSON)
+    }
 
     private var namingValues: ImageSaveNamingValues {
         ImageSaveNamingValues(
@@ -49,14 +55,17 @@ struct ImageSaveNamingPreferencesView: View {
                 .frame(width: Layout.segmentedWidth, alignment: .leading)
 
                 Picker("Preset", selection: $preset) {
-                    ForEach(ImageSavePreset.allCases) { preset in
-                        Text(preset.rawValue).tag(preset.rawValue)
+                    ForEach(outputRootPresets) { preset in
+                        Text(preset.name).tag(preset.name)
                     }
                 }
                 .labelsHidden()
                 .pickerStyle(.menu)
                 .fixedSize()
-                .disabled(outputMode != ImageSaveOutputMode.preset.rawValue)
+                .disabled(
+                    outputMode != ImageSaveOutputMode.preset.rawValue
+                        || outputRootPresets.isEmpty
+                )
 
                 Spacer(minLength: 0)
             }
@@ -205,30 +214,25 @@ struct ImageSaveDefaultsViewContent: View {
     @Binding var autoIncrementStep: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Default path and filename settings for new generation projects.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            ImageSaveNamingPreferencesView(
-                outputMode: $outputMode,
-                preset: $preset,
-                inputBase: $inputBase,
-                filenamePrefix: $filenamePrefix,
-                freeText: $freeText,
-                useTimestamp: $useTimestamp,
-                timestampFormat: $timestampFormat,
-                useAutoIncrement: $useAutoIncrement,
-                autoIncrementDigits: $autoIncrementDigits,
-                autoIncrementStart: $autoIncrementStart,
-                autoIncrementStep: $autoIncrementStep
-            )
-        }
-        .padding(20)
-        .frame(minWidth: 480)
+        ImageSaveNamingPreferencesView(
+            outputMode: $outputMode,
+            preset: $preset,
+            inputBase: $inputBase,
+            filenamePrefix: $filenamePrefix,
+            freeText: $freeText,
+            useTimestamp: $useTimestamp,
+            timestampFormat: $timestampFormat,
+            useAutoIncrement: $useAutoIncrement,
+            autoIncrementDigits: $autoIncrementDigits,
+            autoIncrementStart: $autoIncrementStart,
+            autoIncrementStep: $autoIncrementStep
+        )
+        .padding(12)
+        .frame(width: 480)
+        .fixedSize(horizontal: false, vertical: true)
         .onAppear {
             ImageSavePreferenceKeys.bootstrapStoredDefaultsIfNeeded()
+            ImageSaveOutputRootPresetStore.bootstrapIfNeeded()
         }
     }
 }

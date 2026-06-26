@@ -23,6 +23,7 @@ enum ImageSavePreset: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// Legacy relative subpaths — used only when migrating stored preset names.
     var relativeDirectory: String {
         switch self {
         case .peeps: "images/peeps"
@@ -126,12 +127,13 @@ enum ImageSaveService {
     @MainActor
     static func outputDirectory() throws -> URL {
         let defaults = UserDefaults.standard
-        let rootPath = nonEmpty(defaults.string(forKey: "imageSaveOutputRoot"), fallback: defaultOutputRoot)
-        let outputMode = ImageSaveOutputMode(rawValue: nonEmpty(defaults.string(forKey: "imageSaveOutputMode"), fallback: ImageSaveOutputMode.default.rawValue)) ?? .default
-        let preset = ImageSavePreset(rawValue: nonEmpty(defaults.string(forKey: "imageSavePreset"), fallback: ImageSavePreset.peeps.rawValue)) ?? .peeps
+        let outputMode = ImageSaveOutputMode(
+            rawValue: nonEmpty(defaults.string(forKey: "imageSaveOutputMode"), fallback: ImageSaveOutputMode.default.rawValue)
+        ) ?? .default
+        let rootPath = resolveRootPath(defaults: defaults, outputMode: outputMode)
 
         let directory = URL(fileURLWithPath: rootPath, isDirectory: true)
-            .appendingPathComponent(relativeDirectory(outputMode: outputMode, preset: preset), isDirectory: true)
+            .appendingPathComponent(generalOutputDirectory, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }
@@ -216,10 +218,17 @@ enum ImageSaveService {
         return format.isSupported ? format : .png24
     }
 
-    private static func relativeDirectory(outputMode: ImageSaveOutputMode, preset: ImageSavePreset) -> String {
+    private static func resolveRootPath(defaults: UserDefaults, outputMode: ImageSaveOutputMode) -> String {
+        let manualRoot = nonEmpty(defaults.string(forKey: "imageSaveOutputRoot"), fallback: defaultOutputRoot)
         switch outputMode {
-        case .default: generalOutputDirectory
-        case .preset: preset.relativeDirectory
+        case .default:
+            return manualRoot
+        case .preset:
+            let selectedName = defaults.string(forKey: "imageSavePreset") ?? ""
+            if let path = ImageSaveOutputRootPresetStore.path(forPresetName: selectedName, from: defaults) {
+                return path
+            }
+            return manualRoot
         }
     }
 
