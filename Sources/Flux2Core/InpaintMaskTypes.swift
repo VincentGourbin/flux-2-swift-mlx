@@ -39,7 +39,7 @@ public enum InpaintMaskTool: String, CaseIterable, Codable, Sendable, Identifiab
         case .polygon:
             "Polygon — draw a selection for generative fill"
         case .visionSubject:
-            "Subject — lasso a hint; Apple Vision refines the selection"
+            "Subject — lasso a hint; Vision refines it into a selection (same as rectangle/polygon)"
         case .cropCanvas:
             "Crop — expand the canvas for outpaint"
         }

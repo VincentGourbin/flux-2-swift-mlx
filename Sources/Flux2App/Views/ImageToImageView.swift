@@ -328,7 +328,7 @@ struct ImageToImageView: View {
         }
 
         if viewModel.inpaintMaskTool == .visionSubject {
-            Text("Drag a lasso around the subject on the preview.")
+            Text("Drag a lasso around the subject. Vision turns the hint into a marching-ants selection you can add to, subtract from, or undo.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -1701,9 +1701,9 @@ struct ImagePreparationPreview: View {
                 selectionRectOverlay(for: rect.cgRect, in: imageRect, isDraft: false)
             case .polygon(let points):
                 selectionPolygonOverlay(points: points.map(\.cgPoint), in: imageRect)
-            case .visionSubject:
+            case .visionSubject(let selection):
                 if let mask = visionSubjectMasks[layer.id] {
-                    visionSubjectSelectionOverlay(mask: mask, in: imageRect)
+                    visionSubjectSelectionOverlay(mask: mask, selection: selection, in: imageRect)
                 } else {
                     visionSubjectPendingOverlay(in: imageRect)
                 }
@@ -1711,15 +1711,23 @@ struct ImagePreparationPreview: View {
         }
     }
 
-    private func visionSubjectSelectionOverlay(mask: CGImage, in imageRect: CGRect) -> some View {
-        Image(decorative: mask, scale: 1)
-            .resizable()
-            .interpolation(.none)
-            .frame(width: imageRect.width, height: imageRect.height)
-            .position(x: imageRect.midX, y: imageRect.midY)
-            .colorMultiply(.white)
-            .opacity(0.28)
-            .allowsHitTesting(false)
+    @ViewBuilder
+    private func visionSubjectSelectionOverlay(
+        mask: CGImage,
+        selection: VisionSubjectSelection,
+        in imageRect: CGRect
+    ) -> some View {
+        let points = InpaintMaskOutline.normalizedBoundaryPoints(from: mask)
+        if points.count >= 3 {
+            MarchingAntsPath(path: polygonPath(points: points, in: imageRect, closed: true))
+        } else {
+            switch selection {
+            case .rectangle(let rect):
+                selectionRectOverlay(for: rect.cgRect, in: imageRect, isDraft: false)
+            case .polygon(let points):
+                selectionPolygonOverlay(points: points.map(\.cgPoint), in: imageRect)
+            }
+        }
     }
 
     private func visionSubjectPendingOverlay(in imageRect: CGRect) -> some View {
