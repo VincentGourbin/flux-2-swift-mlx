@@ -20,6 +20,10 @@ struct ContentView: View {
         return Flux2AppSessionStore.loadShell()?.selectedTab ?? 0
     }
     @State private var selectedTab = Self.initialSelectedTab
+    @StateObject private var imageToImageViewModel = ImageGenerationViewModel(
+        loadsEnvironmentProject: true,
+        workflow: .imageToImage
+    )
     // Set by the focused image view; falls back to the app name on other tabs.
     @FocusedValue(\.generationProjectName) private var projectName
 
@@ -51,9 +55,15 @@ struct ContentView: View {
                         .tag(7)
                 }
 
+                if selectedTab == 5 {
+                    EditHistorySidebarSection(
+                        viewModel: imageToImageViewModel,
+                        historyStore: imageToImageViewModel.editHistoryStore
+                    )
+                }
             }
             .listStyle(.sidebar)
-            .frame(minWidth: 200)
+            .frame(minWidth: 220, idealWidth: 240)
 
         } detail: {
             // Main content
@@ -78,7 +88,7 @@ struct ContentView: View {
                     case 4:
                         TextToImageView()
                     case 5:
-                        ImageToImageView()
+                        ImageToImageView(viewModel: imageToImageViewModel)
                     case 6:
                         FluxToolsView()
                     case 7:

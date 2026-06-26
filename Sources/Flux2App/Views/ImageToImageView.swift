@@ -15,7 +15,7 @@ import AppKit
 
 struct ImageToImageView: View {
     @EnvironmentObject var modelManager: ModelManager
-    @StateObject private var viewModel = ImageGenerationViewModel(loadsEnvironmentProject: true, workflow: .imageToImage)
+    @ObservedObject var viewModel: ImageGenerationViewModel
     @StateObject private var paletteCoordinator = PaletteDetachCoordinator()
     @AppStorage("imageSaveUpscaleBy") private var imageSaveUpscaleBy = 1.0
 
@@ -32,15 +32,6 @@ struct ImageToImageView: View {
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
                         .background(Color(nsColor: .windowBackgroundColor).opacity(0.92))
-
-                    Divider()
-
-                    EditHistoryPanel(
-                        viewModel: viewModel,
-                        historyStore: viewModel.editHistoryStore
-                    )
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
 
                     Divider()
 
@@ -2344,7 +2335,7 @@ private struct ModifierFlagsChangeMonitor: NSViewRepresentable {
 #endif
 
 #Preview {
-    ImageToImageView()
+    ImageToImageView(viewModel: ImageGenerationViewModel(workflow: .imageToImage))
         .environmentObject(ModelManager())
         .frame(width: 1200, height: 900)
 }

@@ -170,24 +170,26 @@ Prune policy (optional later): cap depth (e.g. 30) or **Prune History…** comma
 
 ---
 
-## UI — I2I left column
+## UI — app shell sidebar
 
-History belongs in the **I2I palette column** (`ImageToImageView`), not the app shell Mode sidebar.
+History belongs in the **far-left app sidebar** (`ContentView` `NavigationSplitView`), directly under the **Mode** section — not in the I2I palette column.
 
 ```text
 ┌─────────────────────────┐
-│ Canvas tools (fixed)    │
+│ Mode                    │
+│  Chat                   │
+│  …                      │
+│  Image to Image  ●      │
 ├─────────────────────────┤
-│ Workflow route (compact)│  optional: Prompt edit | Fill | Outpaint
-├─────────────────────────┤
-│ History                 │  LazyVStack, grows to fill column downward
+│ History                 │  grows to fill sidebar downward (I2I only)
 │  ● step 3  [thumb]      │
 │  ○ step 2               │
 │  ○ step 1               │
-├─────────────────────────┤
-│ Images / Workflow / …   │  scroll below (or collapse when History expanded)
 └─────────────────────────┘
+        │ detail → I2I palettes + canvas
 ```
+
+The I2I palette column keeps canvas tools and Images / Workflow / Parameters only.
 
 - Click row → restore that index (moves pointer).
 - Current step highlighted; keyboard shortcuts wired to same store.
@@ -202,7 +204,8 @@ History belongs in the **I2I palette column** (`ImageToImageView`), not the app 
 | `FluxGenerationProject` | v3 manifest; `history[]`; slot `relativePath` replaces `pngBase64` |
 | `ImageGenerationViewModel` | `EditHistoryStore` (document) + `SelectionUndoStore` (session) |
 | Save / load | `FileWrapper` / `.flux2project` UTType; path-relative asset resolution |
-| `ImageToImageView` | History panel layout; restructure left column flex |
+| `ImageToImageView` | I2I palettes + canvas (history is **not** here) |
+| `ContentView` | Mode sidebar `List` + `EditHistorySidebarSection` under Mode when I2I is active |
 | Encode | `ProjectBundleImageWriter` — JXL lossless + thumb helper |
 | Checkpoints | unchanged — ephemeral, not history |
 

@@ -5,17 +5,50 @@ import SwiftUI
 import AppKit
 #endif
 
-struct EditHistoryPanel: View {
+/// History block for the app-shell sidebar `List`, directly under the Mode section.
+struct EditHistorySidebarSection: View {
     @ObservedObject var viewModel: ImageGenerationViewModel
     @ObservedObject var historyStore: EditHistoryStore
     @State private var showClearConfirmation = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label("History", systemImage: "clock.arrow.circlepath")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
+        Section {
+            if historyStore.entries.isEmpty {
+                Text("Import or generate to build history. Click a step to restore preview and primary reference.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .listRowSeparator(.hidden)
+            } else {
+                ForEach(Array(historyStore.entries.enumerated()), id: \.element.id) { index, entry in
+                    EditHistoryRow(
+                        index: index,
+                        entry: entry,
+                        isCurrent: historyStore.currentIndex == index,
+                        thumbnail: historyStore.thumbNSImage(for: entry)
+                    ) {
+                        viewModel.jumpToHistory(at: index)
+                    }
+                    .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(
+                        historyStore.currentIndex == index
+                            ? Color.accentColor.opacity(0.12)
+                            : Color.clear
+                    )
+                }
+
+                if historyStore.entries.count >= EditHistoryStore.maxEntryCount {
+                    Text("Oldest steps drop off at \(EditHistoryStore.maxEntryCount) entries.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .listRowSeparator(.hidden)
+                }
+            }
+        } header: {
+            HStack(spacing: 6) {
+                Text("History")
+                Spacer(minLength: 0)
                 if !historyStore.entries.isEmpty {
                     Text("\(historyStore.entries.count)")
                         .font(.caption2)
@@ -28,39 +61,7 @@ struct EditHistoryPanel: View {
                     .font(.caption)
                 }
             }
-
-            if historyStore.entries.isEmpty {
-                Text("Import or generate to build history. Click a step to restore preview and primary reference.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 6) {
-                        ForEach(Array(historyStore.entries.enumerated()), id: \.element.id) { index, entry in
-                            EditHistoryRow(
-                                index: index,
-                                entry: entry,
-                                isCurrent: historyStore.currentIndex == index,
-                                thumbnail: historyStore.thumbNSImage(for: entry)
-                            ) {
-                                viewModel.jumpToHistory(at: index)
-                            }
-                        }
-                    }
-                }
-                .frame(maxHeight: 220)
-
-                if historyStore.entries.count >= EditHistoryStore.maxEntryCount {
-                    Text("Oldest steps drop off at \(EditHistoryStore.maxEntryCount) entries.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
         }
-        .padding(10)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.35))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
         .confirmationDialog(
             "Clear all history steps?",
             isPresented: $showClearConfirmation,
@@ -121,10 +122,21 @@ private struct EditHistoryRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(6)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(isCurrent ? Color.accentColor.opacity(0.12) : Color.clear)
-        )
     }
 }
+
+#if DEBUG
+#Preview {
+    List {
+        Section("Mode") {
+            Label("Image to Image", systemImage: "photo.on.rectangle.angled")
+        }
+        EditHistorySidebarSection(
+            viewModel: ImageGenerationViewModel(workflow: .imageToImage),
+            historyStore: EditHistoryStore()
+        )
+    }
+    .listStyle(.sidebar)
+    .frame(width: 240, height: 360)
+}
+#endif
