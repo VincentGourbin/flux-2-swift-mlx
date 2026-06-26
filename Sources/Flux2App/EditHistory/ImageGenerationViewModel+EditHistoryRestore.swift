@@ -6,13 +6,6 @@ import Foundation
 extension ImageGenerationViewModel {
     func restoreFromHistoryEntry(_ entry: EditHistoryEntry, master: CGImage) throws {
         clearSelectionUndoHistory()
-        beginEditHistoryRestore()
-        defer {
-            Task { @MainActor in
-                self.endEditHistoryRestore()
-            }
-        }
-
         applyHistorySettings(entry.settings)
         applySpatialFromHistory(entry.spatial)
         applyGenerateRouteFromHistory(settings: entry.settings, spatial: entry.spatial)

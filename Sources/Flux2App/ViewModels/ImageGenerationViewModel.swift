@@ -115,16 +115,8 @@ class ImageGenerationViewModel: ObservableObject {
     private let selectionUndoStore = SelectionUndoStore()
     let editHistoryStore = EditHistoryStore()
     private var isApplyingSelectionUndo = false
-    private(set) var isRestoringEditHistory = false
     var fillContextMaskScaleUndoBaseline: Double?
 
-    func beginEditHistoryRestore() {
-        isRestoringEditHistory = true
-    }
-
-    func endEditHistoryRestore() {
-        isRestoringEditHistory = false
-    }
     /// Target generation budget in megapixels (the *maximum* total pixels). The
     /// barn doors set the aspect ratio; the generation fills this budget at that
     /// aspect, so a small barn-door region no longer shrinks the output — it just
@@ -471,7 +463,8 @@ class ImageGenerationViewModel: ObservableObject {
             draftPolygonPoints: draftPolygonPoints,
             draftLassoPoints: draftLassoPoints,
             fillContextMaskScale: fillContextMaskScale,
-            inpaintIntent: inpaintIntent
+            inpaintIntent: inpaintIntent,
+            enrichInpaintPromptWithVLM: enrichInpaintPromptWithVLM
         )
     }
 
@@ -491,6 +484,7 @@ class ImageGenerationViewModel: ObservableObject {
         draftLassoPoints = snapshot.draftLassoPoints
         fillContextMaskScale = snapshot.fillContextMaskScale
         inpaintIntent = snapshot.inpaintIntent
+        enrichInpaintPromptWithVLM = snapshot.enrichInpaintPromptWithVLM
         visionSubjectMasks.removeAll()
         visionSubjectStatusMessage = nil
         isDrawingSelection = false
@@ -775,6 +769,7 @@ class ImageGenerationViewModel: ObservableObject {
     }
 
     private func appendCommittedLayer(_ primitive: InpaintMaskPrimitive, mode: SelectionMode) {
+        let hadCommittedSelection = !inpaintMaskLayers.isEmpty
         recordSelectionUndoPoint()
         prepareSelectionCommit(mode: mode)
         inpaintMaskLayers.append(
@@ -784,7 +779,9 @@ class ImageGenerationViewModel: ObservableObject {
             )
         )
         processArea = nil
-        applyGenerativeFillDefaultsIfNeeded()
+        if !hadCommittedSelection {
+            applyGenerativeFillDefaultsIfNeeded()
+        }
     }
 
     func commitFillRectangle(_ rect: CGRect, mode: SelectionMode? = nil) {
@@ -864,6 +861,7 @@ class ImageGenerationViewModel: ObservableObject {
                     inpaintIntent: inpaintIntent
                 )
             }.value
+            let hadCommittedSelection = !inpaintMaskLayers.isEmpty
             recordSelectionUndoPoint()
             if selectionMode == .replace {
                 inpaintMaskLayers.removeAll()
@@ -881,7 +879,9 @@ class ImageGenerationViewModel: ObservableObject {
             processArea = nil
             draftPolygonPoints.removeAll()
             visionSubjectStatusMessage = nil
-            applyGenerativeFillDefaultsIfNeeded()
+            if !hadCommittedSelection {
+                applyGenerativeFillDefaultsIfNeeded()
+            }
         } catch {
             processArea = nil
             draftPolygonPoints.removeAll()

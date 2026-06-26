@@ -136,14 +136,6 @@ struct ImageToImageView: View {
                 viewModel.upsamplePrompt = false
             }
         }
-        .onChange(of: viewModel.hasActiveSelection) { _, active in
-            guard !viewModel.isRestoringEditHistory else { return }
-            if active {
-                viewModel.enrichInpaintPromptWithVLM = true
-                viewModel.inpaintIntent = .fill
-                viewModel.fillContextMaskScale = 0
-            }
-        }
         .onChange(of: viewModel.enrichInpaintPromptWithVLM) { _, _ in
             viewModel.clearActiveToolIfDisabled()
         }

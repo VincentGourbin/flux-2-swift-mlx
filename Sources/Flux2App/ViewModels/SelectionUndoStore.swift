@@ -11,6 +11,7 @@ struct SelectionUndoSnapshot: Equatable {
     var draftLassoPoints: [CGPoint]
     var fillContextMaskScale: Double
     var inpaintIntent: Flux2InpaintIntent
+    var enrichInpaintPromptWithVLM: Bool
 }
 
 /// Lightweight undo/redo stacks for generative-fill selections.
