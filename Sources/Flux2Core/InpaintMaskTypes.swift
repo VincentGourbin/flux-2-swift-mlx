@@ -33,7 +33,7 @@ public enum InpaintMaskTool: String, CaseIterable, Codable, Sendable, Identifiab
         case .pointer:
             "Pointer — pan and click without drawing"
         case .liveArea:
-            "Live Area — set the context mask (barn doors) for generation and Qwen prompt framing"
+            "Live Area — barn doors for prompt-edit generation (context and paste-back)"
         case .rectangle:
             "Rectangle — draw a selection for generative fill"
         case .polygon:

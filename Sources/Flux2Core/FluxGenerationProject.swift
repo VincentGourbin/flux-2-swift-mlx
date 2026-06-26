@@ -30,6 +30,8 @@ public struct FluxGenerationProject: Codable, Sendable {
     public var inpaintIntent: String?
     public var enrichInpaintPromptWithVLM: Bool?
     public var vlmContextManual: Bool?
+    /// Generative-fill Qwen context slider: -1 = minimum, 0 = auto, 1 = full image.
+    public var fillContextMaskScale: Double?
     public var inpaintMaskLayers: [InpaintMaskLayer]?
     public var images: [GenerationImageRecord]
     public var selectedImageSlotID: UUID?
@@ -76,6 +78,7 @@ public struct FluxGenerationProject: Codable, Sendable {
         inpaintIntent: String? = nil,
         enrichInpaintPromptWithVLM: Bool? = nil,
         vlmContextManual: Bool? = nil,
+        fillContextMaskScale: Double? = nil,
         inpaintMaskLayers: [InpaintMaskLayer]? = nil,
         images: [GenerationImageRecord],
         selectedImageSlotID: UUID? = nil
@@ -103,6 +106,7 @@ public struct FluxGenerationProject: Codable, Sendable {
         self.inpaintIntent = inpaintIntent
         self.enrichInpaintPromptWithVLM = enrichInpaintPromptWithVLM
         self.vlmContextManual = vlmContextManual
+        self.fillContextMaskScale = fillContextMaskScale
         self.inpaintMaskLayers = inpaintMaskLayers
         self.images = images
         self.selectedImageSlotID = selectedImageSlotID

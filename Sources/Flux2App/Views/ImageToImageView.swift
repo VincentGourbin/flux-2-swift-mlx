@@ -128,19 +128,10 @@ struct ImageToImageView: View {
             if active {
                 viewModel.enrichInpaintPromptWithVLM = true
                 viewModel.inpaintIntent = .fill
-                viewModel.vlmContextManual = false
-                viewModel.syncAutoVLMContextArea()
+                viewModel.fillContextMaskScale = 0
             }
         }
-        .onChange(of: viewModel.enrichInpaintPromptWithVLM) { _, enabled in
-            guard viewModel.hasLocalFillSelection else { return }
-            if enabled {
-                if !viewModel.vlmContextManual {
-                    viewModel.syncAutoVLMContextArea()
-                }
-            } else {
-                viewModel.vlmContextManual = false
-            }
+        .onChange(of: viewModel.enrichInpaintPromptWithVLM) { _, _ in
             viewModel.clearActiveToolIfDisabled()
         }
         .focusedSceneValue(\.generationUnloadModels) {
@@ -263,7 +254,7 @@ struct ImageToImageView: View {
     @ViewBuilder
     private var selectionControls: some View {
         if viewModel.enrichInpaintPromptWithVLM {
-            Text("Selection = where to edit. Live Area = context mask for Qwen.")
+            Text("Selection = where to edit. Context mask = what Qwen sees when writing the prompt.")
                 .font(.caption.bold())
                 .foregroundStyle(.secondary)
         }
@@ -283,8 +274,41 @@ struct ImageToImageView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
 
-        if viewModel.enrichInpaintPromptWithVLM {
-            Text("Use Live Area to set the context mask — the frame Qwen sees when writing the prompt.")
+        if viewModel.enrichInpaintPromptWithVLM, viewModel.hasFillMask {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Context Mask Size")
+                        .font(.caption)
+                    Spacer()
+                    if viewModel.showsFillContextMaskOverlay {
+                        Text("Custom")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Auto")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Slider(
+                    value: $viewModel.fillContextMaskScale,
+                    in: -1...1
+                )
+                HStack {
+                    Text("Tight")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("Auto")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("Full image")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Text("Live Area barn doors are hidden while a selection is active. Move the slider to preview the Qwen context frame (white overlay).")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -635,6 +659,8 @@ struct ImageToImageView: View {
                             draftPolygonPoints: viewModel.draftPolygonPoints,
                             draftLassoPoints: viewModel.draftLassoPoints,
                             enrichInpaintPromptWithVLM: viewModel.enrichInpaintPromptWithVLM,
+                            fillVLMContextArea: viewModel.fillVLMContextArea,
+                            showsFillContextMaskOverlay: viewModel.showsFillContextMaskOverlay,
                             isDrawingSelection: Binding(
                                 get: { viewModel.isDrawingSelection },
                                 set: { viewModel.isDrawingSelection = $0 }
@@ -929,6 +955,8 @@ struct ImagePreparationPreview: View {
     var draftPolygonPoints: [CGPoint] = []
     var draftLassoPoints: [CGPoint] = []
     var enrichInpaintPromptWithVLM: Bool = false
+    var fillVLMContextArea: CGRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+    var showsFillContextMaskOverlay: Bool = false
     @Binding var isDrawingSelection: Bool
     @Binding var contextArea: CGRect
     @Binding var processArea: CGRect?
@@ -966,10 +994,7 @@ struct ImagePreparationPreview: View {
     }
 
     private var showsBarnDoorChrome: Bool {
-        if generateRoute == .outpaint { return false }
-        if generateRoute == .localFill && enrichInpaintPromptWithVLM { return true }
-        if generateRoute == .fullImage { return true }
-        return false
+        generateRoute == .fullImage
     }
 
     private var allowsBarnDoorEditing: Bool {
@@ -1023,12 +1048,25 @@ struct ImagePreparationPreview: View {
                 // Barn doors: darken only when the context is narrower than
                 // the full image. Skip when fully open to avoid eoFill hairlines.
                 if showsBarnDoorOverlay {
-                    contextExclusionOverlay(in: imageRect)
+                    contextExclusionOverlay(outer: CGRect(x: 0, y: 0, width: 1, height: 1), inner: contextArea, in: imageRect)
                         .fill(
                             Color.black.opacity(0.72),
                             style: FillStyle(eoFill: false, antialiased: false)
                         )
                         .allowsHitTesting(false)
+                }
+
+                if showsFillContextMaskOverlay {
+                    contextExclusionOverlay(
+                        outer: CGRect(x: 0, y: 0, width: 1, height: 1),
+                        inner: fillVLMContextArea,
+                        in: imageRect
+                    )
+                    .fill(
+                        Color.white.opacity(0.32),
+                        style: FillStyle(eoFill: false, antialiased: false)
+                    )
+                    .allowsHitTesting(false)
                 }
 
                 if showsSelectionOverlays {
@@ -1397,12 +1435,9 @@ struct ImagePreparationPreview: View {
         return bands
     }
 
-    private func contextExclusionOverlay(in imageRect: CGRect) -> Path {
-        let bands = exclusionBands(
-            outer: CGRect(x: 0, y: 0, width: 1, height: 1),
-            inner: contextArea
-        )
-        let contextRect = pixelAligned(displayRect(for: contextArea, in: imageRect))
+    private func contextExclusionOverlay(outer: CGRect, inner: CGRect, in imageRect: CGRect) -> Path {
+        let bands = exclusionBands(outer: outer, inner: inner)
+        let contextRect = pixelAligned(displayRect(for: inner, in: imageRect))
         var path = Path()
         for band in bands {
             var rect = pixelAligned(displayRect(for: band, in: imageRect))

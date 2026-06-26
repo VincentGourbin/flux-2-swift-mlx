@@ -56,7 +56,7 @@ struct Flux2GenerationGUIState: Codable {
     var outpaintPadding: OutpaintPadding?
     var inpaintIntent: String?
     var enrichInpaintPromptWithVLM: Bool?
-    var vlmContextManual: Bool = false
+    var fillContextMaskScale: Double = 0
     var interpretImagePaths: [String]
     var showCheckpoints: Bool
     var checkpointInterval: Int

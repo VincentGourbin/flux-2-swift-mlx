@@ -418,7 +418,7 @@ struct FluxGenerationProjectV1Legacy: Decodable {
     var outpaintPadding: OutpaintPadding?
     var inpaintIntent: String?
     var enrichInpaintPromptWithVLM: Bool?
-    var vlmContextManual: Bool?
+    var fillContextMaskScale: Double?
     var inpaintMaskLayers: [InpaintMaskLayer]?
 }
 
@@ -453,16 +453,13 @@ extension ImageGenerationViewModel {
         }
         enrichInpaintPromptWithVLM = project.enrichInpaintPromptWithVLM
             ?? (!(project.inpaintMaskLayers ?? []).isEmpty || legacyRoute == .localFill)
-        vlmContextManual = project.vlmContextManual ?? false
+        fillContextMaskScale = project.fillContextMaskScale ?? 0
         inpaintMaskLayers = project.inpaintMaskLayers ?? []
         outpaintPadding = project.outpaintPadding ?? .zero
         outpaintCanvasIsDefined = outpaintPadding.hasExpansion
         draftPolygonPoints.removeAll()
         visionSubjectMasks.removeAll()
         visionSubjectStatusMessage = nil
-        if hasLocalFillSelection, enrichInpaintPromptWithVLM, !vlmContextManual {
-            syncAutoVLMContextArea()
-        }
     }
 
     func applyProjectV1Shell(_ legacy: FluxGenerationProjectV1Legacy) {
@@ -488,7 +485,7 @@ extension ImageGenerationViewModel {
             outpaintPadding: legacy.outpaintPadding,
             inpaintIntent: legacy.inpaintIntent,
             enrichInpaintPromptWithVLM: legacy.enrichInpaintPromptWithVLM,
-            vlmContextManual: legacy.vlmContextManual,
+            fillContextMaskScale: nil,
             inpaintMaskLayers: legacy.inpaintMaskLayers,
             images: [GenerationImageRecord()],
             selectedImageSlotID: nil

@@ -99,7 +99,8 @@ class ImageGenerationViewModel: ObservableObject {
     @Published var contextArea: CGRect = CGRect(x: 0, y: 0, width: 1, height: 1)
     @Published var inpaintIntent: Flux2InpaintIntent = .modify
     @Published var enrichInpaintPromptWithVLM: Bool = false
-    @Published var vlmContextManual: Bool = false
+    /// Generative-fill Qwen context slider: -1 = minimum, 0 = auto (default), 1 = full image.
+    @Published var fillContextMaskScale: Double = 0
     @Published var inpaintMaskLayers: [InpaintMaskLayer] = []
     @Published var inpaintMaskTool: InpaintMaskTool = .pointer
     @Published var draftPolygonPoints: [CGPoint] = []
@@ -270,13 +271,27 @@ class ImageGenerationViewModel: ObservableObject {
         primaryImageSlot?.preparationScale ?? 1.0
     }
 
-    /// Barn-door chrome applies on full-image runs and local fills with VLM framing.
+    /// Barn-door chrome applies on full-image prompt edit only — not during generative fill.
     var barnDoorToolsApply: Bool {
         guard isSpatialEditingActive, inpaintMaskTool != .cropCanvas else { return false }
-        if hasLocalFillSelection {
-            return enrichInpaintPromptWithVLM
-        }
-        return true
+        return !hasLocalFillSelection
+    }
+
+    /// Qwen framing rect for generative fill (independent of Live Area barn doors).
+    var fillVLMContextArea: CGRect {
+        ImagePreparation.fillVLMContextArea(
+            maskLayers: inpaintMaskLayers,
+            processArea: processArea,
+            draftPolygonPoints: draftPolygonPoints,
+            scale: CGFloat(fillContextMaskScale)
+        )
+    }
+
+    /// White context-mask preview — hidden at the auto default (slider centered).
+    var showsFillContextMaskOverlay: Bool {
+        hasLocalFillSelection
+            && enrichInpaintPromptWithVLM
+            && abs(fillContextMaskScale) > 0.0001
     }
 
     func isMaskToolEnabled(_ tool: InpaintMaskTool) -> Bool {
@@ -557,10 +572,10 @@ class ImageGenerationViewModel: ObservableObject {
         return true
     }
 
-    /// Restore barn doors to their default (full frame, or auto VLM framing when a selection exists).
+    /// Restore barn doors to full frame, or reset the fill context-mask slider.
     func resetBarnDoors() {
-        if hasLocalFillSelection, enrichInpaintPromptWithVLM {
-            resetVLMContextArea()
+        if hasLocalFillSelection {
+            resetFillContextMaskScale()
         } else {
             resetContextArea()
         }
@@ -578,7 +593,6 @@ class ImageGenerationViewModel: ObservableObject {
         let fullFrame = CGRect(x: 0, y: 0, width: 1, height: 1)
         guard contextArea != fullFrame else { return }
         contextArea = fullFrame
-        vlmContextManual = false
     }
 
     func updateOutpaintPadding(_ padding: OutpaintPadding) {
@@ -602,31 +616,15 @@ class ImageGenerationViewModel: ObservableObject {
         outpaintCanvasIsDefined = false
     }
 
-    /// Update the barn-door (context) region from a barn-door edge drag.
+    /// Update the barn-door (Live Area) region from a barn-door edge drag.
     func setContextArea(_ rect: CGRect) {
+        guard !hasLocalFillSelection else { return }
         contextArea = Self.clampUnitRect(rect)
-        if hasLocalFillSelection {
-            if enrichInpaintPromptWithVLM {
-                vlmContextManual = true
-            }
-            return
-        }
         applySizingControls()
     }
 
-    func resetVLMContextArea() {
-        guard hasLocalFillSelection else { return }
-        vlmContextManual = false
-        syncAutoVLMContextArea()
-    }
-
-    func syncAutoVLMContextArea() {
-        guard hasLocalFillSelection, enrichInpaintPromptWithVLM, !vlmContextManual else { return }
-        contextArea = ImagePreparation.autoVLMContextArea(
-            maskLayers: inpaintMaskLayers,
-            processArea: processArea,
-            draftPolygonPoints: draftPolygonPoints
-        )
+    func resetFillContextMaskScale() {
+        fillContextMaskScale = 0
     }
 
     /// Set or update the process selection (the dashed marquee).
@@ -664,16 +662,15 @@ class ImageGenerationViewModel: ObservableObject {
         visionSubjectStatusMessage = nil
         processArea = nil
         isDrawingSelection = false
+        fillContextMaskScale = 0
         inpaintMaskTool = .pointer
-        syncAutoVLMContextArea()
     }
 
     private func applyGenerativeFillDefaultsIfNeeded() {
         guard hasLocalFillSelection else { return }
         enrichInpaintPromptWithVLM = true
         inpaintIntent = .fill
-        vlmContextManual = false
-        syncAutoVLMContextArea()
+        fillContextMaskScale = 0
     }
 
     #if canImport(AppKit)
@@ -708,7 +705,6 @@ class ImageGenerationViewModel: ObservableObject {
         )
         processArea = nil
         applyGenerativeFillDefaultsIfNeeded()
-        syncAutoVLMContextArea()
     }
 
     func commitFillRectangle(_ rect: CGRect) {
@@ -791,7 +787,6 @@ class ImageGenerationViewModel: ObservableObject {
             draftPolygonPoints.removeAll()
             visionSubjectStatusMessage = nil
             applyGenerativeFillDefaultsIfNeeded()
-            syncAutoVLMContextArea()
         } catch {
             processArea = nil
             draftPolygonPoints.removeAll()
@@ -1230,7 +1225,7 @@ class ImageGenerationViewModel: ObservableObject {
             outpaintPadding: outpaintPadding.hasExpansion ? outpaintPadding : nil,
             inpaintIntent: inpaintIntent.rawValue,
             enrichInpaintPromptWithVLM: enrichInpaintPromptWithVLM,
-            vlmContextManual: vlmContextManual,
+            fillContextMaskScale: hasLocalFillSelection ? fillContextMaskScale : nil,
             inpaintMaskLayers: inpaintMaskLayers.isEmpty ? nil : inpaintMaskLayers,
             images: records,
             selectedImageSlotID: selectedImageSlotID
@@ -1379,7 +1374,7 @@ class ImageGenerationViewModel: ObservableObject {
                     upsamplePrompt: upsamplePrompt,
                     enrichPromptWithVLM: enrichInpaintPromptWithVLM,
                     intent: inpaintIntent,
-                    vlmContextArea: enrichInpaintPromptWithVLM ? contextArea : nil,
+                    vlmContextArea: enrichInpaintPromptWithVLM ? fillVLMContextArea : nil,
                     maxPixels: maxPixels,
                     checkpointInterval: showCheckpoints ? checkpointInterval : nil,
                     onProgress: { current, total in
@@ -1490,6 +1485,9 @@ class ImageGenerationViewModel: ObservableObject {
                 cacheFormattedComparisonImage(for: image)
                 generatedImage = image
                 previewComparisonSide = .processed
+                if generateRoute == .localFill {
+                    fillContextMaskScale = 0
+                }
                 if statusMessage.isEmpty || statusMessage.hasPrefix("Step ") {
                     statusMessage = "Generation complete!"
                 }
@@ -1701,7 +1699,7 @@ class ImageGenerationViewModel: ObservableObject {
             outpaintPadding: outpaintPadding.hasExpansion ? outpaintPadding : nil,
             inpaintIntent: inpaintIntent.rawValue,
             enrichInpaintPromptWithVLM: enrichInpaintPromptWithVLM,
-            vlmContextManual: vlmContextManual,
+            fillContextMaskScale: hasLocalFillSelection ? fillContextMaskScale : 0,
             interpretImagePaths: (try? interpretPathsForGeneration()) ?? [],
             showCheckpoints: showCheckpoints,
             checkpointInterval: checkpointInterval,
@@ -1773,10 +1771,7 @@ class ImageGenerationViewModel: ObservableObject {
                 }
                 inpaintIntent = state.inpaintIntent.flatMap(Flux2InpaintIntent.init(rawValue:)) ?? inpaintIntent
                 enrichInpaintPromptWithVLM = state.enrichInpaintPromptWithVLM ?? enrichInpaintPromptWithVLM
-                vlmContextManual = state.vlmContextManual
-                if hasLocalFillSelection, enrichInpaintPromptWithVLM, !vlmContextManual {
-                    syncAutoVLMContextArea()
-                }
+                fillContextMaskScale = state.fillContextMaskScale
                 applySizingControls()
             }
         } else if workflow == .imageToImage {

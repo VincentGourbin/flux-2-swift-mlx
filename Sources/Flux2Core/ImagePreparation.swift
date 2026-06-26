@@ -393,12 +393,71 @@ public enum ImagePreparation {
         return try cropImage(image, to: rect)
     }
 
-    /// Default barn-door region for Qwen prompt writing: mask bounds plus padding.
+    /// Default Qwen context frame for generative fill: selection bounds plus padding.
     public static func autoVLMContextArea(
         maskLayers: [InpaintMaskLayer],
         processArea: CGRect?,
         draftPolygonPoints: [CGPoint] = []
     ) -> CGRect {
+        paddedVLMContextArea(
+            from: selectionBounds(
+                maskLayers: maskLayers,
+                processArea: processArea,
+                draftPolygonPoints: draftPolygonPoints
+            ),
+            paddingFraction: 0.75
+        )
+    }
+
+    /// Tightest effective Qwen context frame: selection bounds with minimum size only.
+    public static func minimumVLMContextArea(
+        maskLayers: [InpaintMaskLayer],
+        processArea: CGRect?,
+        draftPolygonPoints: [CGPoint] = []
+    ) -> CGRect {
+        paddedVLMContextArea(
+            from: selectionBounds(
+                maskLayers: maskLayers,
+                processArea: processArea,
+                draftPolygonPoints: draftPolygonPoints
+            ),
+            paddingFraction: 0
+        )
+    }
+
+    /// Interpolate Qwen context between minimum, auto, and full-frame using a -1…1 slider (0 = auto).
+    public static func fillVLMContextArea(
+        maskLayers: [InpaintMaskLayer],
+        processArea: CGRect?,
+        draftPolygonPoints: [CGPoint] = [],
+        scale: CGFloat
+    ) -> CGRect {
+        let auto = autoVLMContextArea(
+            maskLayers: maskLayers,
+            processArea: processArea,
+            draftPolygonPoints: draftPolygonPoints
+        )
+        let clampedScale = min(max(scale, -1), 1)
+        if abs(clampedScale) < 0.0001 {
+            return auto
+        }
+        if clampedScale < 0 {
+            let minimum = minimumVLMContextArea(
+                maskLayers: maskLayers,
+                processArea: processArea,
+                draftPolygonPoints: draftPolygonPoints
+            )
+            return lerpUnitRect(from: auto, to: minimum, t: -clampedScale)
+        }
+        let fullFrame = CGRect(x: 0, y: 0, width: 1, height: 1)
+        return lerpUnitRect(from: auto, to: fullFrame, t: clampedScale)
+    }
+
+    private static func selectionBounds(
+        maskLayers: [InpaintMaskLayer],
+        processArea: CGRect?,
+        draftPolygonPoints: [CGPoint]
+    ) -> CGRect? {
         var bbox: CGRect?
         func union(_ rect: CGRect) {
             guard rect.width > 0, rect.height > 0 else { return }
@@ -439,13 +498,19 @@ public enum ImagePreparation {
             union(CGRect(x: point.x - 0.005, y: point.y - 0.005, width: 0.01, height: 0.01))
         }
 
+        return bbox
+    }
+
+    private static func paddedVLMContextArea(from bbox: CGRect?, paddingFraction: CGFloat) -> CGRect {
         guard var bounds = bbox else {
             return CGRect(x: 0, y: 0, width: 1, height: 1)
         }
 
-        let padX = bounds.width * 0.75
-        let padY = bounds.height * 0.75
-        bounds = bounds.insetBy(dx: -padX, dy: -padY)
+        if paddingFraction > 0 {
+            let padX = bounds.width * paddingFraction
+            let padY = bounds.height * paddingFraction
+            bounds = bounds.insetBy(dx: -padX, dy: -padY)
+        }
 
         let minSize: CGFloat = 0.15
         if bounds.width < minSize {
@@ -460,5 +525,15 @@ public enum ImagePreparation {
         }
 
         return clampUnitRect(bounds)
+    }
+
+    private static func lerpUnitRect(from start: CGRect, to end: CGRect, t: CGFloat) -> CGRect {
+        let clamped = min(max(t, 0), 1)
+        return clampUnitRect(CGRect(
+            x: start.minX + (end.minX - start.minX) * clamped,
+            y: start.minY + (end.minY - start.minY) * clamped,
+            width: start.width + (end.width - start.width) * clamped,
+            height: start.height + (end.height - start.height) * clamped
+        ))
     }
 }
