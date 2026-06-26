@@ -1019,6 +1019,7 @@ class ImageGenerationViewModel: ObservableObject {
         lastSavedImageURL = nil
         UserDefaults.standard.removeObject(forKey: Self.lastProjectURLKey)
         applyRecommendedDefaults(for: selectedModel)
+        ImageSavePreferenceKeys.applyStoredDefaultsToWorking()
         statusMessage = "New project"
     }
 

@@ -231,34 +231,20 @@ struct TextToImageView: View {
     @ViewBuilder
     private var outputOptionsPaletteContent: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                if viewModel.generatedImage != nil {
-                    Button(action: { viewModel.saveImage() }) {
-                        Label("Save", systemImage: "square.and.arrow.down")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-
-                Button(action: { viewModel.clearPreview() }) {
-                    Label("Clear Preview", systemImage: "xmark.circle")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(!viewModel.hasPreviewContent)
-                .help("Clear the generated image from the preview pane")
+            Button(action: { viewModel.saveImage() }) {
+                Label("Save", systemImage: "square.and.arrow.down")
             }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(viewModel.generatedImage == nil)
 
-            if viewModel.generatedImage != nil {
-                LanczosUpscaleField(factor: $imageSaveUpscaleBy)
+            LanczosUpscaleField(factor: $imageSaveUpscaleBy)
 
-                Button(action: { viewModel.openOutputFolder() }) {
-                    Label("Open Folder", systemImage: "folder")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("Open the image output folder in Finder")
-            }
+            Divider()
+
+            ImageSaveWorkingNamingPreferencesView(
+                previewPrompt: viewModel.prompt.isEmpty ? "sample prompt" : viewModel.prompt
+            )
         }
     }
 

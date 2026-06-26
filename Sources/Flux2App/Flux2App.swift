@@ -15,6 +15,7 @@ struct Flux2App: App {
 
     init() {
         ModelsDirectoryBootstrap.apply()
+        ImageSavePreferenceKeys.bootstrapStoredDefaultsIfNeeded()
     }
 
     var body: some Scene {
@@ -26,6 +27,7 @@ struct Flux2App: App {
         .defaultSize(width: 1200, height: 800)
         .commands {
             ProjectFileCommands()
+            DefaultsCommands()
             CommandGroup(replacing: .appInfo) {
                 Button("About FLUX.2") {
                     NSApplication.shared.orderFrontStandardAboutPanel(
@@ -43,6 +45,11 @@ struct Flux2App: App {
             SettingsView()
                 .environmentObject(modelManager)
         }
+
+        Window("Defaults", id: "image-save-defaults") {
+            ImageSaveDefaultsView()
+        }
+        .defaultSize(width: 520, height: 560)
     }
 }
 

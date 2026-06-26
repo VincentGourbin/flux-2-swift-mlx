@@ -581,6 +581,12 @@ struct ImageToImageView: View {
                 .disabled(!viewModel.hasPrimaryReference)
                 .help("Input variant for Save Input: raw reference, formatted (crop/pad), or prepared (model input)")
             }
+
+            Divider()
+
+            ImageSaveWorkingNamingPreferencesView(
+                previewPrompt: viewModel.prompt.isEmpty ? "sample prompt" : viewModel.prompt
+            )
         }
     }
 

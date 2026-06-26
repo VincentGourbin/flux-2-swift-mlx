@@ -201,10 +201,13 @@ enum ImageSaveService {
         }
     }
 
-    static func previewFilename(metadata: ImageSaveMetadata) -> String {
-        let defaults = UserDefaults.standard
-        let format = savedFormat(from: defaults)
-        let stem = composeStem(metadata: metadata, incrementIndex: 0)
+    static func previewFilename(
+        metadata: ImageSaveMetadata,
+        naming: ImageSaveNamingValues? = nil
+    ) -> String {
+        let values = naming ?? ImageSavePreferenceKeys.readWorking()
+        let format = savedFormat(from: UserDefaults.standard)
+        let stem = composeStem(metadata: metadata, incrementIndex: 0, naming: values)
         return "\(stem).\(format.fileExtension)"
     }
 
@@ -237,7 +240,7 @@ enum ImageSaveService {
         if usesIncrement {
             var index = 0
             while true {
-                let stem = composeStem(metadata: metadata, incrementIndex: index, stemSuffix: normalizedSuffix)
+                let stem = composeStem(metadata: metadata, incrementIndex: index, stemSuffix: normalizedSuffix, naming: nil)
                 let filename = "\(stem).\(fileExtension)"
                 if !FileManager.default.fileExists(atPath: directory.appendingPathComponent(filename).path) {
                     return filename
@@ -246,7 +249,7 @@ enum ImageSaveService {
             }
         }
 
-        let stem = composeStem(metadata: metadata, incrementIndex: 0, stemSuffix: normalizedSuffix)
+        let stem = composeStem(metadata: metadata, incrementIndex: 0, stemSuffix: normalizedSuffix, naming: nil)
         var filename = "\(stem).\(fileExtension)"
         var suffix = 2
         while FileManager.default.fileExists(atPath: directory.appendingPathComponent(filename).path) {
@@ -256,35 +259,40 @@ enum ImageSaveService {
         return filename
     }
 
-    private static func composeStem(metadata: ImageSaveMetadata, incrementIndex: Int, stemSuffix: String? = nil) -> String {
-        let defaults = UserDefaults.standard
-        let baseMode = ImageSaveInputBase(rawValue: nonEmpty(defaults.string(forKey: "imageSaveInputBase"), fallback: ImageSaveInputBase.staticPrefix.rawValue)) ?? .staticPrefix
+    private static func composeStem(
+        metadata: ImageSaveMetadata,
+        incrementIndex: Int,
+        stemSuffix: String? = nil,
+        naming: ImageSaveNamingValues? = nil
+    ) -> String {
+        let values = naming ?? ImageSavePreferenceKeys.readWorking()
+        let baseMode = ImageSaveInputBase(rawValue: values.inputBase) ?? .staticPrefix
         let baseValue: String
         switch baseMode {
         case .staticPrefix:
-            baseValue = nonEmpty(defaults.string(forKey: "imageSaveFilenamePrefix"), fallback: "image")
+            baseValue = nonEmpty(values.filenamePrefix, fallback: "image")
         case .prompt:
             baseValue = metadata.prompt
         }
 
         var segments = [sanitizeSegment(baseValue)]
 
-        let freeText = sanitizeSegment(defaults.string(forKey: "imageSaveFreeText") ?? "")
+        let freeText = sanitizeSegment(values.freeText)
         if !freeText.isEmpty {
             segments.append(freeText)
         }
 
-        if defaults.bool(forKey: "imageSaveUseTimestamp") {
-            let timestampFormat = ImageSaveTimestampFormat(rawValue: nonEmpty(defaults.string(forKey: "imageSaveTimestampFormat"), fallback: ImageSaveTimestampFormat.compactDate.rawValue)) ?? .compactDate
+        if values.useTimestamp {
+            let timestampFormat = ImageSaveTimestampFormat(rawValue: values.timestampFormat) ?? .compactDate
             let formatter = DateFormatter()
             formatter.dateFormat = timestampFormat.dateFormat
             segments.append(sanitizeSegment(formatter.string(from: Date())))
         }
 
-        if defaults.bool(forKey: "imageSaveUseAutoIncrement") {
-            let digits = max(1, defaults.integer(forKey: "imageSaveAutoIncrementDigits"))
-            let start = defaults.object(forKey: "imageSaveAutoIncrementStart") == nil ? 1 : defaults.integer(forKey: "imageSaveAutoIncrementStart")
-            let step = max(1, defaults.integer(forKey: "imageSaveAutoIncrementStep"))
+        if values.useAutoIncrement {
+            let digits = max(1, values.autoIncrementDigits)
+            let start = values.autoIncrementStart
+            let step = max(1, values.autoIncrementStep)
             let value = start + max(0, incrementIndex) * step
             segments.append(String(format: "%0\(digits)d", value))
         }
