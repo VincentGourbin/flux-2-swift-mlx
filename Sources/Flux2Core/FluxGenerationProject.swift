@@ -2,9 +2,12 @@ import CoreGraphics
 import Foundation
 import ImageIO
 
-/// Flux2App generation project JSON (version 1).
+/// Flux2App generation project JSON (version 2).
 public struct FluxGenerationProject: Codable, Sendable {
-    public var version: Int = 1
+    public static let currentVersion = 2
+    public static let maxImageSlots = 16
+
+    public var version: Int = currentVersion
     public var selectedModel: String
     public var textQuantization: String
     public var transformerQuantization: String
@@ -15,9 +18,6 @@ public struct FluxGenerationProject: Codable, Sendable {
     public var steps: Int
     public var guidance: Float
     public var seed: String
-    public var sizingFavor: String
-    public var sizingMethod: String
-    public var preparationScale: Double?
     public var preparationOverlayOpacity: Double?
     public var megapixelBudget: Double?
     public var clearPromptAfterGeneration: Bool?
@@ -31,8 +31,8 @@ public struct FluxGenerationProject: Codable, Sendable {
     public var enrichInpaintPromptWithVLM: Bool?
     public var vlmContextManual: Bool?
     public var inpaintMaskLayers: [InpaintMaskLayer]?
-    public var interpretImagePaths: [String]
-    public var referenceImages: [ReferenceImage]
+    public var images: [GenerationImageRecord]
+    public var selectedImageSlotID: UUID?
 
     public struct NormalizedRect: Codable, Sendable, Equatable {
         public var x: Double
@@ -52,18 +52,8 @@ public struct FluxGenerationProject: Codable, Sendable {
         }
     }
 
-    public struct ReferenceImage: Codable, Sendable {
-        public var sourcePath: String?
-        public var pngBase64: String
-
-        public init(sourcePath: String?, pngBase64: String) {
-            self.sourcePath = sourcePath
-            self.pngBase64 = pngBase64
-        }
-    }
-
     public init(
-        version: Int = 1,
+        version: Int = currentVersion,
         selectedModel: String,
         textQuantization: String,
         transformerQuantization: String,
@@ -74,9 +64,6 @@ public struct FluxGenerationProject: Codable, Sendable {
         steps: Int,
         guidance: Float,
         seed: String,
-        sizingFavor: String,
-        sizingMethod: String,
-        preparationScale: Double? = nil,
         preparationOverlayOpacity: Double? = nil,
         megapixelBudget: Double? = nil,
         clearPromptAfterGeneration: Bool? = nil,
@@ -90,8 +77,8 @@ public struct FluxGenerationProject: Codable, Sendable {
         enrichInpaintPromptWithVLM: Bool? = nil,
         vlmContextManual: Bool? = nil,
         inpaintMaskLayers: [InpaintMaskLayer]? = nil,
-        interpretImagePaths: [String],
-        referenceImages: [ReferenceImage]
+        images: [GenerationImageRecord],
+        selectedImageSlotID: UUID? = nil
     ) {
         self.version = version
         self.selectedModel = selectedModel
@@ -104,9 +91,6 @@ public struct FluxGenerationProject: Codable, Sendable {
         self.steps = steps
         self.guidance = guidance
         self.seed = seed
-        self.sizingFavor = sizingFavor
-        self.sizingMethod = sizingMethod
-        self.preparationScale = preparationScale
         self.preparationOverlayOpacity = preparationOverlayOpacity
         self.megapixelBudget = megapixelBudget
         self.clearPromptAfterGeneration = clearPromptAfterGeneration
@@ -120,42 +104,91 @@ public struct FluxGenerationProject: Codable, Sendable {
         self.enrichInpaintPromptWithVLM = enrichInpaintPromptWithVLM
         self.vlmContextManual = vlmContextManual
         self.inpaintMaskLayers = inpaintMaskLayers
-        self.interpretImagePaths = interpretImagePaths
-        self.referenceImages = referenceImages
+        self.images = images
+        self.selectedImageSlotID = selectedImageSlotID
     }
 
     public static func load(from path: String) throws -> FluxGenerationProject {
         let url = URL(fileURLWithPath: path)
         let data = try Data(contentsOf: url)
-        return try JSONDecoder().decode(FluxGenerationProject.self, from: data)
+        return try load(from: data)
     }
 
-    public func preparationSettings(compositeBack: Bool = true) -> ImagePreparationSettings {
-        var settings = ImagePreparationSettings()
-        settings.sizingFavor = ImageSizingFavor(rawValue: sizingFavor) ?? .original
-        settings.sizingMethod = ImageSizingMethod(rawValue: sizingMethod) ?? .crop
-        settings.preparationScale = max(0.1, min(1.0, preparationScale ?? 1.0))
-        settings.megapixelBudget = megapixelBudget ?? 1.0
+    public static func load(from data: Data) throws -> FluxGenerationProject {
+        if let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let version = object["version"] as? Int,
+           version < currentVersion {
+            throw FluxGenerationProjectError.unsupportedVersion(version)
+        }
+        let project = try JSONDecoder().decode(FluxGenerationProject.self, from: data)
+        guard project.version >= currentVersion else {
+            throw FluxGenerationProjectError.unsupportedVersion(project.version)
+        }
+        return project
+    }
+
+    /// Reference-role images for generation: primary first, then tab order.
+    public var referenceImageRecords: [GenerationImageRecord] {
+        let references = images.filter { $0.role == .reference && $0.hasStoredImage }
+        guard let primary = references.first(where: \.isPrimary) else {
+            return references
+        }
+        return [primary] + references.filter { $0.id != primary.id }
+    }
+
+    public var interpretImageRecords: [GenerationImageRecord] {
+        images.filter { $0.role == .interpretive && $0.hasStoredImage }
+    }
+
+    public func primaryReferenceRecord() -> GenerationImageRecord? {
+        referenceImageRecords.first
+    }
+
+    public func preparationSettings(
+        compositeBack: Bool = true,
+        pixelAlignment: Int = 32
+    ) -> ImagePreparationSettings {
+        let budget = megapixelBudget ?? 1.0
+        var settings = (primaryReferenceRecord()?.formatting ?? ImageSlotFormatting())
+            .preparationSettings(megapixelBudget: budget, pixelAlignment: pixelAlignment, compositeBack: compositeBack)
         settings.contextArea = ImagePreparation.clampUnitRect(contextArea.cgRect)
         settings.processArea = processArea?.cgRect
-        settings.compositeBack = compositeBack
         settings.clampValues()
         return settings
     }
 
     public func loadReferenceCGImages() throws -> [CGImage] {
-        try referenceImages.map { stored in
-            if let path = stored.sourcePath,
-               FileManager.default.fileExists(atPath: path),
-               let image = Self.loadCGImage(from: path) {
-                return image
+        try referenceImageRecords.map { try loadCGImage(from: $0) }
+    }
+
+    public func loadInterpretPaths() throws -> [String] {
+        try interpretImageRecords.compactMap { record in
+            if let path = record.sourcePath, FileManager.default.fileExists(atPath: path) {
+                return path
             }
-            guard let data = Data(base64Encoded: stored.pngBase64),
-                  let image = Self.cgImage(from: data) else {
-                throw Flux2Error.invalidConfiguration("Project contains an invalid reference image")
+            guard let pngBase64 = record.pngBase64,
+                  let data = Data(base64Encoded: pngBase64) else {
+                return nil
             }
+            let temp = FileManager.default.temporaryDirectory
+                .appendingPathComponent("flux2-interpret-\(record.id.uuidString).png")
+            try data.write(to: temp, options: .atomic)
+            return temp.path
+        }
+    }
+
+    private func loadCGImage(from record: GenerationImageRecord) throws -> CGImage {
+        if let path = record.sourcePath,
+           FileManager.default.fileExists(atPath: path),
+           let image = Self.loadCGImage(from: path) {
             return image
         }
+        guard let pngBase64 = record.pngBase64,
+              let data = Data(base64Encoded: pngBase64),
+              let image = Self.cgImage(from: data) else {
+            throw Flux2Error.invalidConfiguration("Project contains an invalid image record")
+        }
+        return image
     }
 
     private static func loadCGImage(from path: String) -> CGImage? {

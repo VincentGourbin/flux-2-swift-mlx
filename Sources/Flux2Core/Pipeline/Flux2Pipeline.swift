@@ -663,8 +663,8 @@ public class Flux2Pipeline: @unchecked Sendable {
         onProgress: Flux2ProgressCallback? = nil,
         onCheckpoint: Flux2CheckpointCallback? = nil
     ) async throws -> CGImage {
-        guard !images.isEmpty && images.count <= 3 else {
-            throw Flux2Error.invalidConfiguration("Provide 1-3 reference images")
+        guard !images.isEmpty && images.count <= 6 else {
+            throw Flux2Error.invalidConfiguration("Provide 1-6 reference images")
         }
 
         // Infer dimensions from first image if not provided
@@ -781,8 +781,8 @@ public class Flux2Pipeline: @unchecked Sendable {
         onStep: Flux2StepHook? = nil,
         onPromptUpsampled: Flux2PromptUpsampleCallback? = nil
     ) async throws -> Flux2GenerationResult {
-        guard !images.isEmpty && images.count <= 3 else {
-            throw Flux2Error.invalidConfiguration("Provide 1-3 reference images")
+        guard !images.isEmpty && images.count <= 6 else {
+            throw Flux2Error.invalidConfiguration("Provide 1-6 reference images")
         }
 
         // Infer dimensions from first image if not provided

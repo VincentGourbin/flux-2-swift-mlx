@@ -18,10 +18,15 @@ struct ImageToImageCanvasToolsSidebar: View {
                 layout: .vertical
             )
 
-            if viewModel.referenceImages.isEmpty {
-                Text("Add a reference image to enable the tools.")
+            if !viewModel.hasPrimaryReference {
+                Text("Add a primary reference image to enable the tools.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if !viewModel.isSpatialEditingActive {
+                Text("Select the Primary reference tab to use Live Area and selections.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("Live Area, selections, and crop.")

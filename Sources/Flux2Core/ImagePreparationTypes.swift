@@ -81,4 +81,11 @@ public struct PreparedImageToImageInput: Sendable {
     public let width: Int
     public let height: Int
     public let compositionPlan: ImageCompositionPlan?
+
+    public init(images: [CGImage], width: Int, height: Int, compositionPlan: ImageCompositionPlan?) {
+        self.images = images
+        self.width = width
+        self.height = height
+        self.compositionPlan = compositionPlan
+    }
 }

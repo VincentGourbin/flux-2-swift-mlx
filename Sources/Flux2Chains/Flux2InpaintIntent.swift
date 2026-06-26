@@ -89,7 +89,7 @@ extension Flux2InpaintIntent {
         case .remove: "Remove"
         case .fill: "Fill"
         case .modify: "Modify"
-        case .changeScene: "Change scene"
+        case .changeScene: "Replace background"
         }
     }
 
@@ -104,7 +104,7 @@ extension Flux2InpaintIntent {
         case .modify:
             "Repair or adjust what is inside the mask while keeping it recognisable."
         case .changeScene:
-            "Keep the detected subject and repaint the scene around it."
+            "Keep the detected subject and replace the background around it."
         }
     }
 }

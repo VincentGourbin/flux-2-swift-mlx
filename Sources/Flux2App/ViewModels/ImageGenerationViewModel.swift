@@ -92,11 +92,8 @@ class ImageGenerationViewModel: ObservableObject {
     @Published var seed: String = ""  // Empty = random
 
     // MARK: - I2I Parameters
-    @Published var referenceImages: [ReferenceImage] = []
-    @Published var interpretImageURLs: [URL] = []  // VLM interpretation images
-    @Published var sizingFavor: ImageSizingFavor = .original
-    @Published var sizingMethod: ImageSizingMethod = .crop
-    @Published var preparationScale: Double = 1.0
+    @Published var imageSlots: [GenerationImageSlot] = []
+    @Published var selectedImageSlotID: UUID?
     @Published var preparationOverlayOpacity: Double = 0.22
     @Published var processArea: CGRect?
     @Published var contextArea: CGRect = CGRect(x: 0, y: 0, width: 1, height: 1)
@@ -196,7 +193,7 @@ class ImageGenerationViewModel: ObservableObject {
     // MARK: - Pipeline
     private var pipeline: Flux2Pipeline?
     private var generationTask: Task<Void, Never>?
-    private var skipNextModelDefaultApplication = false
+    var skipNextModelDefaultApplication = false
 
     // MARK: - Init with defaults
     private let loadsEnvironmentProject: Bool
@@ -212,6 +209,7 @@ class ImageGenerationViewModel: ObservableObject {
             loadLastProjectIfAvailable()
         }
         restoreSessionStateIfNeeded()
+        bootstrapImageSlotsIfNeeded()
     }
 
     // MARK: - Computed Properties
@@ -227,7 +225,10 @@ class ImageGenerationViewModel: ObservableObject {
 
     var canGenerate: Bool {
         guard !isPipelineBusy, isFamilySelected else { return false }
-        if !referenceImages.isEmpty {
+        if workflow == .imageToImage, !hasPrimaryReference {
+            return false
+        }
+        if hasPrimaryReference {
             switch generateRoute {
             case .localFill:
                 guard hasFillMask else { return false }
@@ -254,12 +255,24 @@ class ImageGenerationViewModel: ObservableObject {
     }
 
     var canUseCanvasTools: Bool {
-        !referenceImages.isEmpty
+        isSpatialEditingActive
+    }
+
+    var sizingFavor: ImageSizingFavor {
+        primaryImageSlot?.sizingFavor ?? .original
+    }
+
+    var sizingMethod: ImageSizingMethod {
+        primaryImageSlot?.sizingMethod ?? .crop
+    }
+
+    var preparationScale: Double {
+        primaryImageSlot?.preparationScale ?? 1.0
     }
 
     /// Barn-door chrome applies on full-image runs and local fills with VLM framing.
     var barnDoorToolsApply: Bool {
-        guard canUseCanvasTools, inpaintMaskTool != .cropCanvas else { return false }
+        guard isSpatialEditingActive, inpaintMaskTool != .cropCanvas else { return false }
         if hasLocalFillSelection {
             return enrichInpaintPromptWithVLM
         }
@@ -370,7 +383,7 @@ class ImageGenerationViewModel: ObservableObject {
     }
 
     var processAreaDescription: String {
-        guard referenceImages.first?.image != nil else {
+        guard primaryReferenceImage != nil else {
             return "Selection: none"
         }
 
@@ -391,7 +404,7 @@ class ImageGenerationViewModel: ObservableObject {
 
     /// How much the resolution cap shrinks the working image before generative fill.
     var fillDownscaleFactor: Double {
-        guard let image = referenceImages.first?.image else { return 1 }
+        guard let image = primaryReferenceImage else { return 1 }
         let area = Double(image.width * image.height)
         let cap = megapixelBudget * 1_000_000
         guard area > cap, area > 0 else { return 1 }
@@ -399,7 +412,7 @@ class ImageGenerationViewModel: ObservableObject {
     }
 
     var contextAreaDescription: String {
-        guard referenceImages.first?.image != nil else {
+        guard primaryReferenceImage != nil else {
             return "Context: add a reference image"
         }
 
@@ -408,7 +421,7 @@ class ImageGenerationViewModel: ObservableObject {
     }
 
     var outpaintCanvasDescription: String {
-        guard let image = referenceImages.first?.image else {
+        guard let image = primaryReferenceImage else {
             return "Canvas: add a reference image"
         }
         guard outpaintPadding.hasExpansion else {
@@ -428,96 +441,9 @@ class ImageGenerationViewModel: ObservableObject {
 
     // MARK: - Image Management
 
-    /// Add a reference image from URL using CGImageSource (pixel-exact, no NSImage re-rendering)
-    func addReferenceImage(from url: URL) {
-        guard referenceImages.count < selectedModel.maxReferenceImages else { return }
-
-        // Use CGImageSource for pixel-exact loading (avoids NSImage roundtrip shifts)
-        guard let data = try? Data(contentsOf: url),
-              let cgImage = Self.cgImageFromData(data) else {
-            errorMessage = "Failed to load image from \(url.lastPathComponent)"
-            return
-        }
-
-        let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-        let refImage = ReferenceImage(
-            id: UUID(),
-            url: url,
-            image: cgImage,
-            thumbnail: createThumbnail(from: nsImage)
-        )
-        referenceImages.append(refImage)
-        resetOutpaintCanvas()
-        cancelBarnDoorsIfActive()
-        ensurePreparationDefaults()
-    }
-
-    /// Add a reference image from NSImage (drag & drop)
-    /// Uses tiffRepresentation + CGImageSource to avoid cgImage(forProposedRect:) re-rendering
-    func addReferenceImage(from nsImage: NSImage) {
-        guard referenceImages.count < selectedModel.maxReferenceImages else { return }
-
-        // Convert via TIFF data + CGImageSource to avoid cgImage(forProposedRect:) shifts
-        guard let tiffData = nsImage.tiffRepresentation,
-              let cgImage = Self.cgImageFromData(tiffData) else {
-            errorMessage = "Failed to process dropped image"
-            return
-        }
-
-        let refImage = ReferenceImage(
-            id: UUID(),
-            url: nil,
-            image: cgImage,
-            thumbnail: createThumbnail(from: nsImage)
-        )
-        referenceImages.append(refImage)
-        resetOutpaintCanvas()
-        cancelBarnDoorsIfActive()
-        ensurePreparationDefaults()
-    }
-
-    /// Add a reference image directly from a CGImage (no NSImage roundtrip)
-    /// Used by "Use as Reference" to avoid pixel shifts on iterative I2I cycles
-    func addReferenceImage(cgImage: CGImage) {
-        guard referenceImages.count < selectedModel.maxReferenceImages else { return }
-
-        let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-        let refImage = ReferenceImage(
-            id: UUID(),
-            url: nil,
-            image: cgImage,
-            thumbnail: createThumbnail(from: nsImage)
-        )
-        referenceImages.append(refImage)
-        resetOutpaintCanvas()
-        cancelBarnDoorsIfActive()
-        ensurePreparationDefaults()
-    }
-
-    /// Remove a reference image
-    func removeReferenceImage(_ id: UUID) {
-        referenceImages.removeAll { $0.id == id }
-        if referenceImages.isEmpty {
-            processArea = nil
-            contextArea = CGRect(x: 0, y: 0, width: 1, height: 1)
-            inpaintMaskTool = .pointer
-        } else {
-            ensurePreparationDefaults()
-        }
-    }
-
-    /// Clear all reference images
-    func clearReferenceImages() {
-        referenceImages.removeAll()
-        processArea = nil
-        contextArea = CGRect(x: 0, y: 0, width: 1, height: 1)
-        inpaintMaskTool = .pointer
-        resetOutpaintCanvas()
-    }
-
     func applySizingControls() {
-        guard let image = referenceImages.first?.image else { return }
-        var settings = currentPreparationSettings()
+        guard let primary = primaryImageSlot, primary.role == .reference, let image = primary.image else { return }
+        var settings = slotPreparationSettings(for: primary, includeLiveArea: true)
         if hasLocalFillSelection {
             settings.contextArea = CGRect(x: 0, y: 0, width: 1, height: 1)
         }
@@ -530,7 +456,7 @@ class ImageGenerationViewModel: ObservableObject {
     /// budget. > 1 means the selected region is smaller than the target and gets
     /// upscaled (a softer reference); surfaced as a gentle advisory.
     var conditioningUpscaleFactor: Double {
-        guard let image = referenceImages.first?.image else { return 1 }
+        guard let image = primaryReferenceImage else { return 1 }
         let sourceRect = integralPixelRect(from: contextArea, in: image)
         let sourcePixels = Double(sourceRect.width * sourceRect.height)
         guard sourcePixels > 0 else { return 1 }
@@ -541,15 +467,13 @@ class ImageGenerationViewModel: ObservableObject {
 
 
     func setSizingFavor(_ favor: ImageSizingFavor) {
-        cancelBarnDoorsIfActive()
-        sizingFavor = favor
-        applySizingControls()
+        guard let primary = primaryImageSlot else { return }
+        setSlotSizingFavor(primary.id, favor: favor)
     }
 
     func setSizingMethod(_ method: ImageSizingMethod) {
-        cancelBarnDoorsIfActive()
-        sizingMethod = method
-        applySizingControls()
+        guard let primary = primaryImageSlot else { return }
+        setSlotSizingMethod(primary.id, method: method)
     }
 
     func resetGuidanceToModelDefault() {
@@ -649,7 +573,7 @@ class ImageGenerationViewModel: ObservableObject {
     }
 
     func updateOutpaintPadding(_ padding: OutpaintPadding) {
-        guard let image = referenceImages.first?.image else { return }
+        guard let image = primaryReferenceImage else { return }
         let maxPixels = Int(megapixelBudget * 1_000_000)
         let clamped = padding.clamped(
             sourceWidth: image.width,
@@ -818,7 +742,7 @@ class ImageGenerationViewModel: ObservableObject {
         selection: VisionSubjectSelection,
         mode: SelectionMode? = nil
     ) {
-        guard let image = referenceImages.first?.image else { return }
+        guard let image = primaryReferenceImage else { return }
         let mode = mode ?? Self.currentSelectionCommitMode
         Task {
             await resolveVisionSubjectLayer(selection: selection, image: image, selectionMode: mode)
@@ -883,7 +807,7 @@ class ImageGenerationViewModel: ObservableObject {
 
     @MainActor
     func refreshVisionSubjectMaskCache() async {
-        guard let image = referenceImages.first?.image else { return }
+        guard let image = primaryReferenceImage else { return }
         for layer in inpaintMaskLayers {
             guard case .visionSubject(let selection) = layer.primitive else { continue }
             if let cached = visionSubjectMasks[layer.id],
@@ -950,8 +874,8 @@ class ImageGenerationViewModel: ObservableObject {
         resetContextArea()
     }
 
-    private func ensurePreparationDefaults() {
-        guard !referenceImages.isEmpty else { return }
+    func ensurePreparationDefaults() {
+        guard hasPrimaryReference else { return }
         contextArea = ImagePreparation.clampUnitRect(contextArea)
         applySizingControls()
     }
@@ -977,22 +901,40 @@ class ImageGenerationViewModel: ObservableObject {
     }
 
     private func currentPreparationSettings() -> ImagePreparationSettings {
-        var settings = ImagePreparationSettings()
-        settings.sizingFavor = sizingFavor
-        settings.sizingMethod = sizingMethod
-        settings.preparationScale = preparationScale
-        settings.megapixelBudget = megapixelBudget
-        settings.contextArea = contextArea
-        settings.processArea = processArea
-        settings.pixelAlignment = pixelAlignment
-        settings.compositeBack = true
-        return settings
+        guard let primary = primaryImageSlot, primary.role == .reference else {
+            return ImagePreparationSettings()
+        }
+        return slotPreparationSettings(for: primary, includeLiveArea: true)
     }
 
     private func prepareImageToImageInput() throws -> PreparedImageToImageInput {
-        try ImagePreparation.prepare(
-            referenceImages: referenceImages.map(\.image),
-            settings: currentPreparationSettings()
+        let refs = orderedReferenceSlots
+        guard let primary = refs.first, let primaryImage = primary.image else {
+            throw Flux2Error.invalidConfiguration("Add a primary reference image before generating")
+        }
+        guard refs.count <= selectedModel.maxReferenceImages else {
+            throw Flux2Error.invalidConfiguration(
+                "Maximum \(selectedModel.maxReferenceImages) reference images allowed for \(selectedModel.displayName)"
+            )
+        }
+
+        var primarySettings = slotPreparationSettings(for: primary, includeLiveArea: true)
+        if hasLocalFillSelection {
+            primarySettings.contextArea = CGRect(x: 0, y: 0, width: 1, height: 1)
+        }
+
+        let partial = try ImagePreparation.prepare(referenceImages: [primaryImage], settings: primarySettings)
+        let additionalPrepared = try refs.dropFirst().compactMap { slot -> CGImage? in
+            guard let image = slot.image else { return nil }
+            let settings = slotPreparationSettings(for: slot, includeLiveArea: false)
+            return try ImagePreparation.formatFullFrameReference(image, settings: settings)
+        }
+
+        return PreparedImageToImageInput(
+            images: partial.images + additionalPrepared,
+            width: partial.width,
+            height: partial.height,
+            compositionPlan: partial.compositionPlan
         )
     }
 
@@ -1025,12 +967,12 @@ class ImageGenerationViewModel: ObservableObject {
     }
 
     /// Decode image data using CGImageSource for pixel-exact results
-    private static func cgImageFromData(_ data: Data) -> CGImage? {
+    static func cgImageFromData(_ data: Data) -> CGImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         return CGImageSourceCreateImageAtIndex(source, 0, nil)
     }
 
-    private func createThumbnail(from image: NSImage) -> NSImage {
+    func createThumbnail(from image: NSImage) -> NSImage {
         let targetSize = NSSize(width: 100, height: 100)
         let thumbnail = NSImage(size: targetSize)
         thumbnail.lockFocus()
@@ -1056,15 +998,11 @@ class ImageGenerationViewModel: ObservableObject {
         width = 1024
         height = 1024
         seed = ""
-        sizingFavor = .original
-        sizingMethod = .crop
-        preparationScale = 1.0
         megapixelBudget = 1.0
         preparationOverlayOpacity = 0.22
         processArea = nil
         contextArea = CGRect(x: 0, y: 0, width: 1, height: 1)
-        referenceImages.removeAll()
-        interpretImageURLs.removeAll()
+        clearAllImageSlots()
         generatedImage = nil
         checkpointImages.removeAll()
         errorMessage = nil
@@ -1164,7 +1102,7 @@ class ImageGenerationViewModel: ObservableObject {
             statusMessage = "Opened project \(url.lastPathComponent) (F2SM_PROJECT)"
             writeSmokeMarker(
                 outcome: "ok",
-                detail: "project=\(url.path)\nreferences=\(referenceImages.count)\nprompt=\(prompt)"
+                detail: "project=\(url.path)\nreferences=\(assignedReferenceCount)\nprompt=\(prompt)"
             )
         } catch {
             let message = "Failed to open F2SM_PROJECT: \(error.localizedDescription)"
@@ -1220,67 +1158,47 @@ class ImageGenerationViewModel: ObservableObject {
     private func loadProject(from url: URL) throws {
         lastSavedImageURL = nil
         let data = try Data(contentsOf: url)
-        let project = try JSONDecoder().decode(FluxGenerationProject.self, from: data)
-        let restoredReferences = try project.referenceImages.map { stored in
-            try referenceImage(from: stored)
+
+        if let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let version = object["version"] as? Int,
+           version < FluxGenerationProject.currentVersion {
+            let legacy = try JSONDecoder().decode(FluxGenerationProjectV1Legacy.self, from: data)
+            applyProjectV1Shell(legacy)
+            clearAllImageSlots()
+            generatedImage = nil
+            formattedComparisonImage = nil
+            upsampledPrompt = nil
+            checkpointImages.removeAll()
+            errorMessage = nil
+            statusMessage = "This project used the old image format (v1). Images were cleared — add them again in the Images palette."
+            applySizingControls()
+            return
         }
 
-        skipNextModelDefaultApplication = true
-        selectedModel = Flux2Model(rawValue: project.selectedModel) ?? .klein4B
-        selectedFamily = project.selectedFamily.flatMap(ModelFamily.init(rawValue:)) ?? selectedModel.family
-        textQuantization = MistralQuantization(rawValue: project.textQuantization) ?? .mlx8bit
-        transformerQuantization = TransformerQuantization(rawValue: project.transformerQuantization) ?? .qint8
-        prompt = project.prompt
-        upsamplePrompt = project.upsamplePrompt
-        width = project.width
-        height = project.height
-        steps = project.steps
-        guidance = project.guidance
-        seed = project.seed
-        sizingFavor = ImageSizingFavor(rawValue: project.sizingFavor) ?? .original
-        sizingMethod = ImageSizingMethod(rawValue: project.sizingMethod) ?? .crop
-        preparationScale = max(0.1, min(1.0, project.preparationScale ?? 1.0))
-        preparationOverlayOpacity = project.preparationOverlayOpacity ?? 0.22
-        megapixelBudget = min(max(project.megapixelBudget ?? 1.0, Self.minMegapixelBudget), Self.maxMegapixelBudget)
-        clearPromptAfterGeneration = project.clearPromptAfterGeneration ?? false
-        processArea = project.processArea?.cgRect
-        contextArea = Self.clampUnitRect(project.contextArea.cgRect)
-        let legacyRoute = I2IGenerateRoute.fromLegacyProjectValue(project.editMode)
-        inpaintIntent = project.inpaintIntent.flatMap(Flux2InpaintIntent.init(rawValue:)) ?? .modify
-        if let toolRaw = project.inpaintMaskTool,
-           let tool = InpaintMaskTool(rawValue: toolRaw) {
-            inpaintMaskTool = tool
-        } else if legacyRoute == .outpaint {
-            inpaintMaskTool = .cropCanvas
-        } else {
-            inpaintMaskTool = .pointer
-        }
-        enrichInpaintPromptWithVLM = project.enrichInpaintPromptWithVLM
-            ?? (!(project.inpaintMaskLayers ?? []).isEmpty || legacyRoute == .localFill)
-        vlmContextManual = project.vlmContextManual ?? false
-        inpaintMaskLayers = project.inpaintMaskLayers ?? []
-        outpaintPadding = project.outpaintPadding ?? .zero
-        outpaintCanvasIsDefined = outpaintPadding.hasExpansion
-        draftPolygonPoints.removeAll()
-        visionSubjectMasks.removeAll()
-        visionSubjectStatusMessage = nil
-        if hasLocalFillSelection, enrichInpaintPromptWithVLM, !vlmContextManual {
-            syncAutoVLMContextArea()
-        }
-        interpretImageURLs = project.interpretImagePaths.map { URL(fileURLWithPath: $0) }
-        referenceImages = restoredReferences
+        let project = try FluxGenerationProject.load(from: data)
+        applyProjectShell(from: project)
+        try restoreImageSlots(from: project)
         Task { await refreshVisionSubjectMaskCache() }
         generatedImage = nil
         formattedComparisonImage = nil
         upsampledPrompt = nil
         checkpointImages.removeAll()
         errorMessage = nil
-        // Recompute the budget-driven generation size from the loaded barn doors.
         applySizingControls()
     }
 
     private func makeProject() throws -> FluxGenerationProject {
-        FluxGenerationProject(
+        let records: [GenerationImageRecord] = try imageSlots.map { slot in
+            let pngBase64: String?
+            if slot.hasImage, let image = slot.image {
+                pngBase64 = try pngData(from: image).base64EncodedString()
+            } else {
+                pngBase64 = nil
+            }
+            return slot.toProjectRecord(pngBase64: pngBase64)
+        }
+
+        return FluxGenerationProject(
             selectedModel: selectedModel.rawValue,
             textQuantization: textQuantization.rawValue,
             transformerQuantization: transformerQuantization.rawValue,
@@ -1291,9 +1209,6 @@ class ImageGenerationViewModel: ObservableObject {
             steps: steps,
             guidance: guidance,
             seed: seed,
-            sizingFavor: sizingFavor.rawValue,
-            sizingMethod: sizingMethod.rawValue,
-            preparationScale: preparationScale,
             preparationOverlayOpacity: preparationOverlayOpacity,
             megapixelBudget: megapixelBudget,
             clearPromptAfterGeneration: clearPromptAfterGeneration,
@@ -1307,33 +1222,12 @@ class ImageGenerationViewModel: ObservableObject {
             enrichInpaintPromptWithVLM: enrichInpaintPromptWithVLM,
             vlmContextManual: vlmContextManual,
             inpaintMaskLayers: inpaintMaskLayers.isEmpty ? nil : inpaintMaskLayers,
-            interpretImagePaths: interpretImageURLs.map(\.path),
-            referenceImages: try referenceImages.map { reference in
-                FluxGenerationProject.ReferenceImage(
-                    sourcePath: reference.url?.path,
-                    pngBase64: try pngData(from: reference.image).base64EncodedString()
-                )
-            }
+            images: records,
+            selectedImageSlotID: selectedImageSlotID
         )
     }
 
-    private func referenceImage(from stored: FluxGenerationProject.ReferenceImage) throws -> ReferenceImage {
-        guard let data = Data(base64Encoded: stored.pngBase64),
-              let cgImage = Self.cgImageFromData(data) else {
-            throw NSError(domain: "FluxProject", code: 1, userInfo: [NSLocalizedDescriptionKey: "Project contains an invalid reference image"])
-        }
-
-        let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-        let url = stored.sourcePath.map { URL(fileURLWithPath: $0) }
-        return ReferenceImage(
-            id: UUID(),
-            url: url,
-            image: cgImage,
-            thumbnail: createThumbnail(from: nsImage)
-        )
-    }
-
-    private func pngData(from image: CGImage) throws -> Data {
+    func pngData(from image: CGImage) throws -> Data {
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil) else {
             throw NSError(domain: "FluxProject", code: 2, userInfo: [NSLocalizedDescriptionKey: "Could not encode reference image"])
@@ -1398,7 +1292,7 @@ class ImageGenerationViewModel: ObservableObject {
 
             // Generate
             var image: CGImage
-            let interpretPaths = interpretImageURLs.map { $0.path }
+            let interpretPaths = try interpretPathsForGeneration()
 
             // Checkpoint callback
             var checkpointCallback: (@Sendable (Int, CGImage) -> Void)? = nil
@@ -1420,7 +1314,7 @@ class ImageGenerationViewModel: ObservableObject {
                 }
             }
 
-            if referenceImages.isEmpty {
+            if workflow == .textToImage {
                 // Text-to-Image
                 statusMessage = "Generating image..."
                 let result = try await pipeline!.generateTextToImageWithResult(
@@ -1456,7 +1350,9 @@ class ImageGenerationViewModel: ObservableObject {
                     try await ensureQwen35VLMLoaded()
                 }
 
-                let sourceImage = referenceImages[0].image
+                guard let sourceImage = primaryReferenceImage else {
+                    throw Flux2Error.invalidConfiguration("Add a primary reference image before generating.")
+                }
                 statusMessage = "Building fill mask..."
                 let mask = try buildGenerativeFillMask(for: sourceImage)
 
@@ -1503,7 +1399,9 @@ class ImageGenerationViewModel: ObservableObject {
                     throw Flux2Error.invalidConfiguration("Expand the canvas on the preview before generating.")
                 }
 
-                let sourceImage = referenceImages[0].image
+                guard let sourceImage = primaryReferenceImage else {
+                    throw Flux2Error.invalidConfiguration("Add a primary reference image before generating.")
+                }
                 statusMessage = "Running outpaint..."
                 let maxPixels = Int(megapixelBudget * 1_000_000)
                 let chain = Flux2OutpaintingChain(
@@ -1660,7 +1558,7 @@ class ImageGenerationViewModel: ObservableObject {
     private func resolveInputSaveImage(for source: ImageInputSaveSource) throws -> (CGImage, String?) {
         switch source {
         case .raw:
-            guard let image = referenceImages.first?.image else {
+            guard let image = primaryReferenceImage else {
                 throw Flux2Error.invalidConfiguration("Add a reference image before saving the raw input.")
             }
             return (image, "-raw")
@@ -1701,7 +1599,7 @@ class ImageGenerationViewModel: ObservableObject {
     /// the output's budget-filled, alignment-floored sizing so the saved input
     /// shares the model's grid.
     func formattedFullInputImage() throws -> CGImage {
-        guard let original = referenceImages.first?.image else {
+        guard let original = primaryReferenceImage else {
             throw Flux2Error.invalidConfiguration("Add a reference image before saving the input")
         }
 
@@ -1712,14 +1610,14 @@ class ImageGenerationViewModel: ObservableObject {
 
     /// The barn-door crop plus formatting — the first reference image sent to the model.
     func preparedInputImage() throws -> CGImage {
-        guard !referenceImages.isEmpty else {
+        guard hasPrimaryReference else {
             throw Flux2Error.invalidConfiguration("Add a reference image before saving the prepared input")
         }
         return try prepareImageToImageInput().images[0]
     }
 
     private func cacheFormattedComparisonImage(for output: CGImage) {
-        guard let original = referenceImages.first?.image else {
+        guard let original = primaryReferenceImage else {
             formattedComparisonImage = nil
             return
         }
@@ -1795,7 +1693,7 @@ class ImageGenerationViewModel: ObservableObject {
             inpaintIntent: inpaintIntent.rawValue,
             enrichInpaintPromptWithVLM: enrichInpaintPromptWithVLM,
             vlmContextManual: vlmContextManual,
-            interpretImagePaths: interpretImageURLs.map(\.path),
+            interpretImagePaths: (try? interpretPathsForGeneration()) ?? [],
             showCheckpoints: showCheckpoints,
             checkpointInterval: checkpointInterval,
             previewZoomScale: previewZoomScale,
@@ -1821,12 +1719,20 @@ class ImageGenerationViewModel: ObservableObject {
             steps = state.steps
             guidance = state.guidance
             seed = state.seed
-            interpretImageURLs = state.interpretImagePaths.map { URL(fileURLWithPath: $0) }
 
             if workflow == .imageToImage {
-                sizingFavor = ImageSizingFavor(rawValue: state.sizingFavor ?? sizingFavor.rawValue) ?? sizingFavor
-                sizingMethod = ImageSizingMethod(rawValue: state.sizingMethod ?? sizingMethod.rawValue) ?? sizingMethod
-                preparationScale = state.preparationScale ?? preparationScale
+                bootstrapImageSlotsIfNeeded()
+                if let index = imageSlots.indices.first {
+                    if let favor = state.sizingFavor.flatMap(ImageSizingFavor.init(rawValue:)) {
+                        imageSlots[index].sizingFavor = favor
+                    }
+                    if let method = state.sizingMethod.flatMap(ImageSizingMethod.init(rawValue:)) {
+                        imageSlots[index].sizingMethod = method
+                    }
+                    if let scale = state.preparationScale {
+                        imageSlots[index].preparationScale = max(0.1, min(1.0, scale))
+                    }
+                }
                 preparationOverlayOpacity = state.preparationOverlayOpacity ?? preparationOverlayOpacity
                 megapixelBudget = state.megapixelBudget ?? megapixelBudget
                 contextArea = Self.clampUnitRect(CGRect(

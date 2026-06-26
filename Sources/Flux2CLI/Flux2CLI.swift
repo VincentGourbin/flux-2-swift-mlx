@@ -634,6 +634,9 @@ struct ImageToImage: AsyncParsableCommand {
 
         // Validate interpret image paths exist (VLM will load them directly)
         var interpretImagePaths: [String] = []
+        if interpret.isEmpty, let loadedProject {
+            interpretImagePaths = try loadedProject.loadInterpretPaths()
+        }
         for path in interpret {
             guard FileManager.default.fileExists(atPath: path) else {
                 throw ValidationError("Interpret image not found: \(path)")

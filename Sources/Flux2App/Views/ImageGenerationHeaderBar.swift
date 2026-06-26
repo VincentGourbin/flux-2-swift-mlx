@@ -277,7 +277,7 @@ struct ImageGenerationHeaderGenerateControls: View {
             return false
         }
         if viewModel.requiresReferenceImages {
-            return !viewModel.referenceImages.isEmpty
+            return viewModel.hasPrimaryReference
         }
         return true
     }
