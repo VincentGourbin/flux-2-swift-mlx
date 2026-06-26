@@ -62,6 +62,11 @@ extension ImageGenerationViewModel {
         appendEditHistory(image: image, kind: .adopt, label: historyLabel(for: .adopt))
     }
 
+    func maybeRecordImportHistory(cgImage: CGImage) {
+        guard requiresReferenceImages, editHistoryStore.entries.isEmpty else { return }
+        appendEditHistory(image: cgImage, kind: .import, label: historyLabel(for: .import))
+    }
+
     func loadEditHistory(from project: FluxGenerationProject, bundleRoot: URL?) {
         editHistoryStore.load(from: project, bundleRoot: bundleRoot)
     }
@@ -190,10 +195,15 @@ extension ImageGenerationViewModel {
     }
 
     private func historyLabel(for kind: EditHistoryKind) -> String {
-        switch generateRoute {
-        case .fullImage: "Prompt edit"
-        case .localFill: "Generative fill"
-        case .outpaint: "Outpaint"
+        switch kind {
+        case .import:
+            return "Import"
+        case .generate, .adopt:
+            switch generateRoute {
+            case .fullImage: return "Prompt edit"
+            case .localFill: return "Generative fill"
+            case .outpaint: return "Outpaint"
+            }
         }
     }
 }

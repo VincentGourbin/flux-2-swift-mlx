@@ -3,11 +3,13 @@ import Foundation
 public enum EditHistoryKind: String, Codable, Sendable, CaseIterable {
     case generate
     case adopt
+    case `import`
 
     public var displayName: String {
         switch self {
         case .generate: "Generate"
         case .adopt: "Adopt"
+        case .import: "Import"
         }
     }
 }

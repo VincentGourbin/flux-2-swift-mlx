@@ -8,6 +8,8 @@ import AppKit
 
 @MainActor
 final class EditHistoryStore: ObservableObject {
+    static let maxEntryCount = 30
+
     @Published private(set) var entries: [EditHistoryEntry] = []
     @Published private(set) var currentIndex: Int?
 
@@ -82,6 +84,7 @@ final class EditHistoryStore: ObservableObject {
         currentIndex = entries.count - 1
         masterImages[entry.id] = master
         thumbImages[entry.id] = thumb
+        trimToMaxDepth()
         return entry
     }
 
@@ -124,6 +127,17 @@ final class EditHistoryStore: ObservableObject {
     private func sequenceNumber(from path: String) -> Int? {
         let stem = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
         return Int(stem)
+    }
+
+    private func trimToMaxDepth() {
+        while entries.count > Self.maxEntryCount {
+            let removed = entries.removeFirst()
+            masterImages.removeValue(forKey: removed.id)
+            thumbImages.removeValue(forKey: removed.id)
+            if let index = currentIndex {
+                currentIndex = max(0, index - 1)
+            }
+        }
     }
 }
 

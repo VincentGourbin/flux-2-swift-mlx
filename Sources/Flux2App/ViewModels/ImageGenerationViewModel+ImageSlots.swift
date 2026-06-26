@@ -315,6 +315,9 @@ extension ImageGenerationViewModel {
         cancelBarnDoorsIfActive()
         ensurePreparationDefaults()
         applySizingControlsForPreview()
+        if isFirstImage {
+            maybeRecordImportHistory(cgImage: cgImage)
+        }
     }
 
     private func reconcilePrimaryAssignment() {

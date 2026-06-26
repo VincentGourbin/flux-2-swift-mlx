@@ -8,6 +8,7 @@ import AppKit
 struct EditHistoryPanel: View {
     @ObservedObject var viewModel: ImageGenerationViewModel
     @ObservedObject var historyStore: EditHistoryStore
+    @State private var showClearConfirmation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -19,11 +20,17 @@ struct EditHistoryPanel: View {
                     Text("\(historyStore.entries.count)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                    Button("Clear…") {
+                        showClearConfirmation = true
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .font(.caption)
                 }
             }
 
             if historyStore.entries.isEmpty {
-                Text("Successful generates appear here. Click a step to restore preview and primary reference.")
+                Text("Import or generate to build history. Click a step to restore preview and primary reference.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -43,11 +50,29 @@ struct EditHistoryPanel: View {
                     }
                 }
                 .frame(maxHeight: 220)
+
+                if historyStore.entries.count >= EditHistoryStore.maxEntryCount {
+                    Text("Oldest steps drop off at \(EditHistoryStore.maxEntryCount) entries.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(10)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.35))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .confirmationDialog(
+            "Clear all history steps?",
+            isPresented: $showClearConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Clear History", role: .destructive) {
+                viewModel.clearEditHistory()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes every saved step from the project. The current canvas is unchanged until you save.")
+        }
     }
 }
 
