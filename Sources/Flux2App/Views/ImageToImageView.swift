@@ -119,6 +119,12 @@ struct ImageToImageView: View {
         ))
         .focusedSceneValue(\.generationProjectName, viewModel.projectDisplayName)
         .focusedSceneValue(\.generationModelConfiguration, viewModel)
+        .focusedSceneValue(\.generationSelectionUndo, GenerationSelectionUndoCommands(
+            undo: { viewModel.undoSelection() },
+            redo: { viewModel.redoSelection() },
+            canUndo: { viewModel.canUndoSelection },
+            canRedo: { viewModel.canRedoSelection }
+        ))
         .onChange(of: viewModel.generateRoute) { _, route in
             if route == .localFill {
                 viewModel.upsamplePrompt = false
@@ -673,13 +679,13 @@ struct ImageToImageView: View {
                                 get: { viewModel.processArea },
                                 set: { viewModel.setProcessArea($0) }
                             ),
-                            onCommitFillRectangle: { rect in
-                                viewModel.commitFillRectangle(rect)
+                            onCommitFillRectangle: { rect, mode in
+                                viewModel.commitFillRectangle(rect, mode: mode)
                             },
                             onPolygonPoint: { viewModel.addDraftPolygonPoint($0) },
                             onLassoPoint: { viewModel.appendLassoPoint($0) },
-                            onCommitLasso: {
-                                viewModel.commitLassoSelection()
+                            onCommitLasso: { mode in
+                                viewModel.commitLassoSelection(mode: mode)
                             },
                             onDeselect: { viewModel.deselectSelections() },
                             onResetBarnDoors: { viewModel.resetBarnDoors() }
@@ -960,10 +966,10 @@ struct ImagePreparationPreview: View {
     @Binding var isDrawingSelection: Bool
     @Binding var contextArea: CGRect
     @Binding var processArea: CGRect?
-    var onCommitFillRectangle: ((CGRect) -> Void)?
+    var onCommitFillRectangle: ((CGRect, SelectionMode) -> Void)?
     var onPolygonPoint: ((CGPoint) -> Void)?
     var onLassoPoint: ((CGPoint) -> Void)?
-    var onCommitLasso: (() -> Void)?
+    var onCommitLasso: ((SelectionMode) -> Void)?
     var onDeselect: (() -> Void)?
     var onResetBarnDoors: (() -> Void)?
 
@@ -974,6 +980,13 @@ struct ImagePreparationPreview: View {
     @State private var outpaintPaddingBeforeDrag: OutpaintPadding?
     @State private var lassoSampleDistance: CGFloat = 0.004
     @State private var heldSelectionModifier: SelectionModifierHint?
+    @State private var previewPointerLocation: CGPoint?
+    @State private var selectionCommitMode: SelectionMode = .replace
+    @State private var cachedComposedOutlinePoints: [CGPoint] = []
+
+    /// Offset from the pointer hotspot to the modifier badge center (lower-right of crosshair).
+    private let selectionModifierBadgeOffset = CGPoint(x: 15, y: 15)
+    private let composedOutlineMaxDimension = 512
 
     private enum DragMode {
         case contextLeft
@@ -1124,9 +1137,11 @@ struct ImagePreparationPreview: View {
                 #if canImport(AppKit)
                 switch phase {
                 case .active(let location):
-                    refreshHeldSelectionModifier()
+                    previewPointerLocation = location
+                    refreshHeldSelectionModifier(at: location, in: imageRect)
                     cursor(for: location, in: imageRect, canvasRect: canvasRect).set()
                 case .ended:
+                    previewPointerLocation = nil
                     heldSelectionModifier = nil
                     NSCursor.arrow.set()
                 }
@@ -1135,84 +1150,106 @@ struct ImagePreparationPreview: View {
             #if canImport(AppKit)
             .background {
                 ModifierFlagsChangeMonitor {
-                    refreshHeldSelectionModifier()
+                    refreshHeldSelectionModifier(at: previewPointerLocation, in: imageRect)
                 }
             }
             #endif
+            .task(id: composedOutlineCacheKey) {
+                await refreshComposedOutlineCache()
+            }
         }
+    }
+
+    private struct ComposedOutlineCacheKey: Equatable {
+        var layers: [InpaintMaskLayer]
+        var visionMaskSignatures: [VisionMaskSignature]
+
+        struct VisionMaskSignature: Equatable {
+            var layerID: UUID
+            var width: Int
+            var height: Int
+        }
+
+        init(layers: [InpaintMaskLayer], visionMasks: [UUID: CGImage]) {
+            self.layers = layers
+            visionMaskSignatures = visionMasks.map {
+                VisionMaskSignature(layerID: $0.key, width: $0.value.width, height: $0.value.height)
+            }
+            .sorted { $0.layerID.uuidString < $1.layerID.uuidString }
+        }
+    }
+
+    private var composedOutlineCacheKey: ComposedOutlineCacheKey {
+        ComposedOutlineCacheKey(layers: maskLayers, visionMasks: visionSubjectMasks)
+    }
+
+    private var usesComposedSelectionOverlay: Bool {
+        maskLayers.count > 1 || maskLayers.contains(where: { $0.combineMode == .clip })
+    }
+
+    private var usesFastSelectionOverlayPath: Bool {
+        isDrawingSelection
+            || processArea != nil
+            || !draftPolygonPoints.isEmpty
+            || !draftLassoPoints.isEmpty
+    }
+
+    @MainActor
+    private func refreshComposedOutlineCache() async {
+        guard usesComposedSelectionOverlay, !usesFastSelectionOverlayPath else {
+            cachedComposedOutlinePoints = []
+            return
+        }
+
+        let layers = maskLayers
+        let visionMasks = visionSubjectMasks
+        let source = image
+        let maxDimension = composedOutlineMaxDimension
+        let points = await Task.detached(priority: .utility) {
+            let longer = max(source.width, source.height)
+            let scale = min(1, CGFloat(maxDimension) / CGFloat(max(longer, 1)))
+            let width = max(1, Int((CGFloat(source.width) * scale).rounded()))
+            let height = max(1, Int((CGFloat(source.height) * scale).rounded()))
+            guard let mask = try? ImageMaskBuilder.buildHardInpaintMask(
+                definition: InpaintMaskDefinition(layers: layers),
+                width: width,
+                height: height,
+                visionMasks: visionMasks
+            ) else {
+                return [CGPoint]()
+            }
+            return InpaintMaskOutline.normalizedBoundaryPoints(from: mask)
+        }.value
+        cachedComposedOutlinePoints = points
     }
 
     #if canImport(AppKit)
     @ViewBuilder
     private func selectionModifierBadge(in imageRect: CGRect) -> some View {
         if let hint = heldSelectionModifier,
-           let bounds = selectionBadgeBounds(in: imageRect),
-           bounds.width > 4,
-           bounds.height > 4 {
+           let location = previewPointerLocation,
+           isSelectionTool,
+           imageRect.contains(location) {
             SelectionModifierCornerBadge(hint: hint)
-                .position(x: bounds.maxX - 7, y: bounds.maxY - 7)
+                .position(
+                    x: location.x + selectionModifierBadgeOffset.x,
+                    y: location.y + selectionModifierBadgeOffset.y
+                )
         }
     }
 
-    private func refreshHeldSelectionModifier() {
-        guard selectionModifierBadgeContextActive else {
+    private func refreshHeldSelectionModifier(at location: CGPoint?, in imageRect: CGRect) {
+        guard let location, isSelectionTool, imageRect.contains(location) else {
             heldSelectionModifier = nil
             return
         }
         heldSelectionModifier = SelectionModifierHint.from(flags: NSEvent.modifierFlags)
     }
 
-    private var selectionModifierBadgeContextActive: Bool {
-        isDrawingSelection
-            || activeDrag == .processSelection
-            || activeDrag == .lassoSelection
-            || processArea != nil
-            || !draftPolygonPoints.isEmpty
-            || !draftLassoPoints.isEmpty
-            || !maskLayers.isEmpty
+    private func captureSelectionCommitModeFromCurrentModifiers() {
+        selectionCommitMode = ImageGenerationViewModel.selectionModeFromModifierFlags(NSEvent.modifierFlags)
     }
 
-    private func selectionBadgeBounds(in imageRect: CGRect) -> CGRect? {
-        if let processArea {
-            return pixelAligned(displayRect(for: processArea, in: imageRect))
-        }
-        if !draftLassoPoints.isEmpty {
-            return pixelAligned(boundingDisplayRect(points: draftLassoPoints, in: imageRect))
-        }
-        if !draftPolygonPoints.isEmpty {
-            return pixelAligned(boundingDisplayRect(points: draftPolygonPoints, in: imageRect))
-        }
-        return committedSelectionBounds(in: imageRect)
-    }
-
-    private func committedSelectionBounds(in imageRect: CGRect) -> CGRect? {
-        var union: CGRect?
-        for layer in maskLayers {
-            let layerRect: CGRect?
-            switch layer.primitive {
-            case .rectangle(let rect):
-                layerRect = displayRect(for: rect.cgRect, in: imageRect)
-            case .polygon(let points):
-                layerRect = boundingDisplayRect(points: points.map(\.cgPoint), in: imageRect)
-            case .visionSubject:
-                layerRect = nil
-            }
-            if let layerRect {
-                union = union.map { $0.union(layerRect) } ?? layerRect
-            }
-        }
-        return union
-    }
-
-    private func boundingDisplayRect(points: [CGPoint], in imageRect: CGRect) -> CGRect {
-        guard let first = points.first else { return .zero }
-        var bounds = CGRect(origin: displayPoint(first, in: imageRect), size: .zero)
-        for point in points.dropFirst() {
-            let display = displayPoint(point, in: imageRect)
-            bounds = bounds.union(CGRect(origin: display, size: .zero))
-        }
-        return bounds
-    }
     #endif
 
     private var outpaintCanvasLabel: String {
@@ -1473,12 +1510,25 @@ struct ImagePreparationPreview: View {
     private func dragGesture(canvasRect: CGRect, imageRect: CGRect) -> some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .local)
             .onChanged { value in
+                previewPointerLocation = value.location
+                #if canImport(AppKit)
+                refreshHeldSelectionModifier(at: value.location, in: imageRect)
+                #endif
+
                 if activeDrag == nil {
                     activeDrag = dragMode(for: value.startLocation, canvasRect: canvasRect, imageRect: imageRect)
                     selectionStart = normalizedPoint(for: value.startLocation, in: imageRect)
                     if generateRoute == .outpaint {
                         outpaintPaddingBeforeDrag = outpaintPadding
                     }
+                    #if canImport(AppKit)
+                    switch activeDrag {
+                    case .processSelection, .lassoSelection:
+                        captureSelectionCommitModeFromCurrentModifiers()
+                    default:
+                        break
+                    }
+                    #endif
                 }
 
                 let point = normalizedPoint(for: value.location, in: imageRect)
@@ -1497,15 +1547,9 @@ struct ImagePreparationPreview: View {
                 case .processSelection:
                     isDrawingSelection = true
                     updateProcessSelection(to: point, in: imageRect)
-                    #if canImport(AppKit)
-                    refreshHeldSelectionModifier()
-                    #endif
                 case .lassoSelection:
                     isDrawingSelection = true
                     appendLassoPointIfNeeded(point)
-                    #if canImport(AppKit)
-                    refreshHeldSelectionModifier()
-                    #endif
                 case .outpaintLeft:
                     updateOutpaintLeft(to: value.location.x, canvasRect: canvasRect, imageRect: imageRect)
                 case .outpaintRight:
@@ -1526,8 +1570,8 @@ struct ImagePreparationPreview: View {
                     contextBeforeDrag = nil
                     processBeforeDrag = nil
                     outpaintPaddingBeforeDrag = nil
-                    heldSelectionModifier = nil
                     #if canImport(AppKit)
+                    refreshHeldSelectionModifier(at: previewPointerLocation, in: imageRect)
                     NSCursor.arrow.set()
                     #endif
                 }
@@ -1547,13 +1591,18 @@ struct ImagePreparationPreview: View {
                         onDeselect?()
                         return
                     }
+                    if draftPolygonPoints.isEmpty {
+                        #if canImport(AppKit)
+                        captureSelectionCommitModeFromCurrentModifiers()
+                        #endif
+                    }
                     onPolygonPoint?(endPoint)
                     return
                 }
 
                 if maskTool == .visionSubject, activeDrag == .lassoSelection {
                     if draftLassoPoints.count >= 3 {
-                        onCommitLasso?()
+                        onCommitLasso?(selectionCommitMode)
                     } else {
                         onDeselect?()
                     }
@@ -1564,7 +1613,7 @@ struct ImagePreparationPreview: View {
                     let minWidthNorm = 12 / max(imageRect.width, 1)
                     let minHeightNorm = 12 / max(imageRect.height, 1)
                     if rect.width >= minWidthNorm, rect.height >= minHeightNorm {
-                        onCommitFillRectangle?(rect)
+                        onCommitFillRectangle?(rect, selectionCommitMode)
                     } else {
                         onDeselect?()
                     }
@@ -1695,6 +1744,19 @@ struct ImagePreparationPreview: View {
 
     @ViewBuilder
     private func committedMaskOverlays(in imageRect: CGRect) -> some View {
+        if usesFastSelectionOverlayPath || !usesComposedSelectionOverlay {
+            perLayerCommittedMaskOverlays(in: imageRect)
+        } else if cachedComposedOutlinePoints.count >= 3 {
+            MarchingAntsPath(
+                path: polygonPath(points: cachedComposedOutlinePoints, in: imageRect, closed: true)
+            )
+        } else {
+            perLayerCommittedMaskOverlays(in: imageRect)
+        }
+    }
+
+    @ViewBuilder
+    private func perLayerCommittedMaskOverlays(in imageRect: CGRect) -> some View {
         ForEach(maskLayers) { layer in
             switch layer.primitive {
             case .rectangle(let rect):

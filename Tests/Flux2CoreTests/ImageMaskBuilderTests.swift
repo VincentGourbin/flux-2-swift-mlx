@@ -45,6 +45,59 @@ final class ImageMaskBuilderTests: XCTestCase {
         )
     }
 
+    func testBuildInpaintMaskUnion() throws {
+        let image = solidGrayImage(width: 20, height: 20)
+        let definition = InpaintMaskDefinition(layers: [
+            InpaintMaskLayer(
+                combineMode: .add,
+                primitive: .rectangle(.init(CGRect(x: 0, y: 0, width: 0.5, height: 1)))
+            ),
+            InpaintMaskLayer(
+                combineMode: .add,
+                primitive: .rectangle(.init(CGRect(x: 0.5, y: 0, width: 0.5, height: 1)))
+            ),
+        ])
+        let mask = try ImageMaskBuilder.buildInpaintMask(definition: definition, image: image)
+        XCTAssertGreaterThan(sampleGray(mask, x: 4, y: 10), 200)
+        XCTAssertGreaterThan(sampleGray(mask, x: 16, y: 10), 200)
+    }
+
+    func testBuildInpaintMaskSubtract() throws {
+        let image = solidGrayImage(width: 20, height: 20)
+        let definition = InpaintMaskDefinition(layers: [
+            InpaintMaskLayer(
+                combineMode: .add,
+                primitive: .rectangle(.init(CGRect(x: 0, y: 0, width: 1, height: 1)))
+            ),
+            InpaintMaskLayer(
+                combineMode: .clip,
+                primitive: .rectangle(.init(CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)))
+            ),
+        ])
+        let mask = try ImageMaskBuilder.buildInpaintMask(definition: definition, image: image)
+        XCTAssertGreaterThan(sampleGray(mask, x: 2, y: 10), 200)
+        XCTAssertLessThan(sampleGray(mask, x: 10, y: 10), 55)
+    }
+
+    private func solidGrayImage(width: Int, height: Int) -> CGImage {
+        var bytes = [UInt8](repeating: 128, count: width * height)
+        let colorSpace = CGColorSpaceCreateDeviceGray()
+        return bytes.withUnsafeMutableBytes { raw in
+            guard let context = CGContext(
+                data: raw.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ), let image = context.makeImage() else {
+                fatalError("Failed to allocate test image")
+            }
+            return image
+        }
+    }
+
     private func sampleGray(_ image: CGImage, x: Int, y: Int) -> UInt8 {
         var bytes = [UInt8](repeating: 0, count: 1)
         let colorSpace = CGColorSpaceCreateDeviceGray()

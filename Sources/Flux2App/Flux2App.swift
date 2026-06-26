@@ -28,6 +28,7 @@ struct Flux2App: App {
         .defaultSize(width: 1200, height: 800)
         .commands {
             ProjectFileCommands()
+            SelectionUndoCommands()
             DefaultsCommands()
             CommandGroup(replacing: .appInfo) {
                 Button("About FLUX.2") {

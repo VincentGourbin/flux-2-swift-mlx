@@ -112,6 +112,8 @@ class ImageGenerationViewModel: ObservableObject {
     /// Resolved Vision silhouettes keyed by mask-layer id (preview + generate).
     @Published var visionSubjectMasks: [UUID: CGImage] = [:]
     @Published var visionSubjectStatusMessage: String?
+    private let selectionUndoStore = SelectionUndoStore()
+    private var isApplyingSelectionUndo = false
     /// Target generation budget in megapixels (the *maximum* total pixels). The
     /// barn doors set the aspect ratio; the generation fills this budget at that
     /// aspect, so a small barn-door region no longer shrinks the output — it just
@@ -426,6 +428,66 @@ class ImageGenerationViewModel: ObservableObject {
         !inpaintMaskLayers.isEmpty
     }
 
+    var canUndoSelection: Bool {
+        workflow == .imageToImage && selectionUndoStore.canUndo
+    }
+
+    var canRedoSelection: Bool {
+        workflow == .imageToImage && selectionUndoStore.canRedo
+    }
+
+    func undoSelection() {
+        guard workflow == .imageToImage else { return }
+        guard let snapshot = selectionUndoStore.popUndo(current: captureSelectionSnapshot()) else { return }
+        restoreSelectionSnapshot(snapshot)
+    }
+
+    func redoSelection() {
+        guard workflow == .imageToImage else { return }
+        guard let snapshot = selectionUndoStore.popRedo(current: captureSelectionSnapshot()) else { return }
+        restoreSelectionSnapshot(snapshot)
+    }
+
+    func clearSelectionUndoHistory() {
+        selectionUndoStore.reset()
+        objectWillChange.send()
+    }
+
+    private func captureSelectionSnapshot() -> SelectionUndoSnapshot {
+        SelectionUndoSnapshot(
+            inpaintMaskLayers: inpaintMaskLayers,
+            processArea: processArea,
+            draftPolygonPoints: draftPolygonPoints,
+            draftLassoPoints: draftLassoPoints,
+            fillContextMaskScale: fillContextMaskScale,
+            inpaintIntent: inpaintIntent
+        )
+    }
+
+    private func recordSelectionUndoPoint() {
+        guard workflow == .imageToImage, !isApplyingSelectionUndo else { return }
+        selectionUndoStore.pushUndoPoint(captureSelectionSnapshot())
+        objectWillChange.send()
+    }
+
+    private func restoreSelectionSnapshot(_ snapshot: SelectionUndoSnapshot) {
+        isApplyingSelectionUndo = true
+        defer { isApplyingSelectionUndo = false }
+
+        inpaintMaskLayers = snapshot.inpaintMaskLayers
+        processArea = snapshot.processArea
+        draftPolygonPoints = snapshot.draftPolygonPoints
+        draftLassoPoints = snapshot.draftLassoPoints
+        fillContextMaskScale = snapshot.fillContextMaskScale
+        inpaintIntent = snapshot.inpaintIntent
+        visionSubjectMasks.removeAll()
+        visionSubjectStatusMessage = nil
+        isDrawingSelection = false
+        objectWillChange.send()
+
+        Task { await refreshVisionSubjectMaskCache() }
+    }
+
     /// How much the resolution cap shrinks the working image before generative fill.
     var fillDownscaleFactor: Double {
         guard let image = primaryReferenceImage else { return 1 }
@@ -654,10 +716,16 @@ class ImageGenerationViewModel: ObservableObject {
         }
     }
 
-    func deselectSelections() {
+    func deselectSelections(recordUndo: Bool = true) {
+        if recordUndo, hasActiveSelection {
+            recordSelectionUndoPoint()
+        }
         inpaintMaskLayers.removeAll()
         draftPolygonPoints.removeAll()
         draftLassoPoints.removeAll()
+        #if canImport(AppKit)
+        polygonSelectionCommitMode = nil
+        #endif
         visionSubjectMasks.removeAll()
         visionSubjectStatusMessage = nil
         processArea = nil
@@ -696,6 +764,7 @@ class ImageGenerationViewModel: ObservableObject {
     }
 
     private func appendCommittedLayer(_ primitive: InpaintMaskPrimitive, mode: SelectionMode) {
+        recordSelectionUndoPoint()
         prepareSelectionCommit(mode: mode)
         inpaintMaskLayers.append(
             InpaintMaskLayer(
@@ -707,36 +776,50 @@ class ImageGenerationViewModel: ObservableObject {
         applyGenerativeFillDefaultsIfNeeded()
     }
 
-    func commitFillRectangle(_ rect: CGRect) {
+    func commitFillRectangle(_ rect: CGRect, mode: SelectionMode? = nil) {
         guard inpaintMaskTool != .visionSubject else { return }
-        let mode = Self.currentSelectionCommitMode
+        let resolvedMode = mode ?? Self.currentSelectionCommitMode
         let clamped = Self.clampUnitRect(rect)
-        appendCommittedLayer(.rectangle(.init(clamped)), mode: mode)
+        appendCommittedLayer(.rectangle(.init(clamped)), mode: resolvedMode)
     }
 
+    #if canImport(AppKit)
+    private var polygonSelectionCommitMode: SelectionMode?
+    #endif
+
     func addDraftPolygonPoint(_ point: CGPoint) {
+        #if canImport(AppKit)
+        if draftPolygonPoints.isEmpty {
+            polygonSelectionCommitMode = Self.currentSelectionCommitMode
+        }
+        #endif
         draftPolygonPoints.append(Self.clampUnitPoint(point))
     }
 
-    func closeDraftPolygon() {
+    func closeDraftPolygon(mode: SelectionMode? = nil) {
         guard draftPolygonPoints.count >= 3 else { return }
         let points = draftPolygonPoints.map { FluxGenerationProject.NormalizedPoint($0) }
-        let mode = Self.currentSelectionCommitMode
+        #if canImport(AppKit)
+        let resolvedMode = mode ?? polygonSelectionCommitMode ?? Self.currentSelectionCommitMode
+        polygonSelectionCommitMode = nil
+        #else
+        let resolvedMode = mode ?? Self.currentSelectionCommitMode
+        #endif
         if inpaintMaskTool == .visionSubject {
-            commitVisionSubject(selection: .polygon(points), mode: mode)
+            commitVisionSubject(selection: .polygon(points), mode: resolvedMode)
             return
         }
-        appendCommittedLayer(.polygon(points), mode: mode)
+        appendCommittedLayer(.polygon(points), mode: resolvedMode)
         draftPolygonPoints.removeAll()
     }
 
-    func commitLassoSelection() {
+    func commitLassoSelection(mode: SelectionMode? = nil) {
         guard inpaintMaskTool == .visionSubject, draftLassoPoints.count >= 3 else { return }
-        let mode = Self.currentSelectionCommitMode
+        let resolvedMode = mode ?? Self.currentSelectionCommitMode
         let points = draftLassoPoints.map { FluxGenerationProject.NormalizedPoint($0) }
         draftLassoPoints.removeAll()
         isDrawingSelection = false
-        commitVisionSubject(selection: .polygon(points), mode: mode)
+        commitVisionSubject(selection: .polygon(points), mode: resolvedMode)
     }
 
     func appendLassoPoint(_ point: CGPoint) {
@@ -770,6 +853,7 @@ class ImageGenerationViewModel: ObservableObject {
                     inpaintIntent: inpaintIntent
                 )
             }.value
+            recordSelectionUndoPoint()
             if selectionMode == .replace {
                 inpaintMaskLayers.removeAll()
                 visionSubjectMasks.removeAll()
@@ -1176,6 +1260,7 @@ class ImageGenerationViewModel: ObservableObject {
             checkpointImages.removeAll()
             errorMessage = nil
             statusMessage = "This project used the old image format (v1). Images were cleared — add them again in the Images palette."
+            clearSelectionUndoHistory()
             applySizingControls()
             return
         }
@@ -1189,6 +1274,7 @@ class ImageGenerationViewModel: ObservableObject {
         upsampledPrompt = nil
         checkpointImages.removeAll()
         errorMessage = nil
+        clearSelectionUndoHistory()
         applySizingControls()
     }
 

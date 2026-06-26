@@ -49,7 +49,7 @@ extension View {
     }
 }
 
-/// Transient add/subtract hint shown at the selection's bottom-right while ⇧ / ⌥ are held.
+/// Transient add/subtract hint shown at the cursor's lower-right while ⇧ / ⌥ are held.
 enum SelectionModifierHint: Equatable {
     case add
     case subtract

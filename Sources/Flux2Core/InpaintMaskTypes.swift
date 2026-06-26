@@ -72,7 +72,7 @@ public enum InpaintMaskTool: String, CaseIterable, Codable, Sendable, Identifiab
 public enum InpaintMaskCombineMode: String, CaseIterable, Codable, Sendable, Identifiable {
     /// Union — extend the inpaint region.
     case add
-    /// Intersection — clip the inpaint region.
+    /// Subtract — remove the inpaint region under this primitive.
     case clip
 
     public var id: String { rawValue }

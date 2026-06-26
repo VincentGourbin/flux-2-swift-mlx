@@ -212,7 +212,7 @@ History belongs in the **I2I palette column** (`ImageToImageView`), not the app 
 
 ## Phasing
 
-0. **Selection undo/redo** — snapshot stack + Cmd+Z; no bundle work required; ships value early.
+0. **Selection undo/redo** — snapshot stack + Cmd+Z; no bundle work required; ships value early. **(implemented)**
 1. **Bundle + JXL slots/preview** — prove save/load without history UI.
 2. **Linear history** — append on generate; left-column list; click to restore.
 3. **Document history shortcuts** (optional) — if keyboard milestone stepping is wanted.

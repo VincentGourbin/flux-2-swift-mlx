@@ -55,10 +55,11 @@ public enum ImageMaskBuilder {
         }
     }
 
-    /// Compose layered primitives, then apply automatic edge feathering.
-    public static func buildInpaintMask(
+    /// Compose layered primitives without feathering (preview outlines, further processing).
+    public static func buildHardInpaintMask(
         definition: InpaintMaskDefinition,
-        image: CGImage,
+        width: Int,
+        height: Int,
         legacyRectangle: CGRect? = nil,
         visionMasks: [UUID: CGImage] = [:]
     ) throws -> CGImage {
@@ -76,8 +77,48 @@ public enum ImageMaskBuilder {
             throw Flux2Error.invalidConfiguration("Draw a fill region before generating.")
         }
 
-        let width = image.width
-        let height = image.height
+        guard let combined = try composeHardMaskBytes(
+            layers: layers,
+            width: width,
+            height: height,
+            visionMasks: visionMasks
+        ) else {
+            throw Flux2Error.imageProcessingFailed("Failed to compose inpaint mask.")
+        }
+
+        return try grayImage(from: combined, width: width, height: height)
+    }
+
+    /// Compose layered primitives, then apply automatic edge feathering.
+    public static func buildInpaintMask(
+        definition: InpaintMaskDefinition,
+        image: CGImage,
+        legacyRectangle: CGRect? = nil,
+        visionMasks: [UUID: CGImage] = [:]
+    ) throws -> CGImage {
+        let hardMask = try buildHardInpaintMask(
+            definition: definition,
+            width: image.width,
+            height: image.height,
+            legacyRectangle: legacyRectangle,
+            visionMasks: visionMasks
+        )
+        return try featherAutomatically(hardMask)
+    }
+
+    public static func automaticFeatherRadiusPixels(width: Int, height: Int) -> CGFloat {
+        let shorter = CGFloat(min(max(width, 1), max(height, 1)))
+        return min(12, max(2, shorter / 200))
+    }
+
+    // MARK: - Private helpers
+
+    private static func composeHardMaskBytes(
+        layers: [InpaintMaskLayer],
+        width: Int,
+        height: Int,
+        visionMasks: [UUID: CGImage]
+    ) throws -> [UInt8]? {
         var combined: [UInt8]?
 
         for (index, layer) in layers.enumerated() {
@@ -86,7 +127,6 @@ public enum ImageMaskBuilder {
                 layerID: layer.id,
                 width: width,
                 height: height,
-                sourceImage: image,
                 visionMasks: visionMasks
             )
 
@@ -100,59 +140,45 @@ public enum ImageMaskBuilder {
             case .add:
                 base = zip(base, raster).map { max($0, $1) }
             case .clip:
-                base = zip(base, raster).map { min($0, $1) }
+                // White in the subtract shape forces keep (black); union is handled by `.add`.
+                base = zip(base, raster).map { keep, cut in
+                    cut > 127 ? 0 : keep
+                }
             }
             combined = base
         }
 
-        guard let combined else {
-            throw Flux2Error.imageProcessingFailed("Failed to compose inpaint mask.")
-        }
-
-        let hardMask = try grayImage(from: combined, width: width, height: height)
-        return try featherAutomatically(hardMask)
+        return combined
     }
-
-    public static func automaticFeatherRadiusPixels(width: Int, height: Int) -> CGFloat {
-        let shorter = CGFloat(min(max(width, 1), max(height, 1)))
-        return min(12, max(2, shorter / 200))
-    }
-
-    // MARK: - Private helpers
 
     private static func rasterLayer(
         _ primitive: InpaintMaskPrimitive,
         layerID: UUID,
         width: Int,
         height: Int,
-        sourceImage: CGImage,
         visionMasks: [UUID: CGImage]
     ) throws -> [UInt8] {
-        let maskImage: CGImage
         switch primitive {
         case .rectangle(let rect):
-            maskImage = try rectangularInpaintMask(
+            let maskImage = try rectangularInpaintMask(
                 width: width,
                 height: height,
                 normalizedRect: rect.cgRect
             )
+            return try grayBytes(from: maskImage)
         case .polygon(let points):
-            maskImage = try polygonInpaintMask(
+            let maskImage = try polygonInpaintMask(
                 width: width,
                 height: height,
                 normalizedPoints: points.map(\.cgPoint)
             )
+            return try grayBytes(from: maskImage)
         case .visionSubject:
             guard let visionMask = visionMasks[layerID] else {
                 throw Flux2Error.invalidConfiguration("Vision subject mask is not available.")
             }
-            guard visionMask.width == width, visionMask.height == height else {
-                throw Flux2Error.imageProcessingFailed("Vision mask dimensions must match the source image.")
-            }
-            maskImage = visionMask
+            return try grayBytes(from: visionMask, width: width, height: height)
         }
-
-        return try grayBytes(from: maskImage)
     }
 
     private static func rasterMask(
@@ -188,8 +214,29 @@ public enum ImageMaskBuilder {
     }
 
     private static func grayBytes(from image: CGImage) throws -> [UInt8] {
-        let width = image.width
-        let height = image.height
+        try grayBytes(from: image, width: image.width, height: image.height)
+    }
+
+    private static func grayBytes(from image: CGImage, width: Int, height: Int) throws -> [UInt8] {
+        if image.width == width, image.height == height {
+            let count = width * height
+            var bytes = [UInt8](repeating: 0, count: count)
+            let colorSpace = CGColorSpaceCreateDeviceGray()
+            guard let context = CGContext(
+                data: &bytes,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ) else {
+                throw Flux2Error.imageProcessingFailed("Failed to read mask bytes")
+            }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return bytes
+        }
+
         let count = width * height
         var bytes = [UInt8](repeating: 0, count: count)
         let colorSpace = CGColorSpaceCreateDeviceGray()
@@ -204,6 +251,7 @@ public enum ImageMaskBuilder {
         ) else {
             throw Flux2Error.imageProcessingFailed("Failed to read mask bytes")
         }
+        context.interpolationQuality = .medium
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         return bytes
     }

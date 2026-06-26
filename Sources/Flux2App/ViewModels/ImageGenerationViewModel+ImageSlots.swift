@@ -174,6 +174,7 @@ extension ImageGenerationViewModel {
         imageSlots = [GenerationImageSlot.empty()]
         selectedImageSlotID = imageSlots[0].id
         resetSpatialStateForEmptyImages()
+        clearSelectionUndoHistory()
     }
 
     func setSlotRole(_ id: UUID, role: GenerationImageRole) {
