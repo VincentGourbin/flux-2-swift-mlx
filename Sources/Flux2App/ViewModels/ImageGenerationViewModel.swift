@@ -802,7 +802,7 @@ class ImageGenerationViewModel: ObservableObject {
             }
             return try Flux2SubjectMask.pickSubjectInpaintMask(from: image, region: region)
         }
-        throw Flux2Error.invalidConfiguration("Apple Vision subject masks require macOS 14 or later.")
+        throw Flux2Error.invalidConfiguration("Apple Vision subject detection requires macOS 14 or later.")
     }
 
     @MainActor
@@ -1342,7 +1342,7 @@ class ImageGenerationViewModel: ObservableObject {
                 if result.wasUpsampled { upsampledPrompt = result.usedPrompt }
             } else if generateRoute == .localFill {
                 guard hasFillMask else {
-                    throw Flux2Error.invalidConfiguration("Draw a fill region on the reference image before generating.")
+                    throw Flux2Error.invalidConfiguration("Draw a selection on the reference image before generating.")
                 }
 
                 if enrichInpaintPromptWithVLM {
@@ -1353,7 +1353,7 @@ class ImageGenerationViewModel: ObservableObject {
                 guard let sourceImage = primaryReferenceImage else {
                     throw Flux2Error.invalidConfiguration("Add a primary reference image before generating.")
                 }
-                statusMessage = "Building fill mask..."
+                statusMessage = "Preparing selection..."
                 let mask = try buildGenerativeFillMask(for: sourceImage)
 
                 statusMessage = "Running generative fill..."

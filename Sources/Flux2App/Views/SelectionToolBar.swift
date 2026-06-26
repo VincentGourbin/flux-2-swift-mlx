@@ -57,7 +57,7 @@ struct SelectionToolBar: View {
             .buttonStyle(.plain)
             .disabled(!enabled)
             .opacity(enabled ? 1 : 0.38)
-            .help(tool.displayName)
+            .help(tool.helpText)
         }
     }
 }

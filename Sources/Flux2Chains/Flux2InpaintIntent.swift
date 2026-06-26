@@ -96,15 +96,15 @@ extension Flux2InpaintIntent {
     public var fillHelp: String {
         switch self {
         case .replace:
-            "Swap what is inside the mask for a new subject named in the prompt."
+            "Swap what is inside the selection for a new subject named in the prompt."
         case .remove:
-            "Erase what is inside the mask; the surrounding surface continues through the gap."
+            "Erase what is inside the selection; the surrounding surface continues through the gap."
         case .fill:
             "Complete a missing, empty, or damaged patch from surrounding context."
         case .modify:
-            "Repair or adjust what is inside the mask while keeping it recognisable."
+            "Repair or adjust what is inside the selection while keeping it recognisable."
         case .changeScene:
-            "Keep the detected subject and replace the background around it."
+            "Keep the detected subject and replace the background around it. Use the Subject tool with a lasso hint."
         }
     }
 }

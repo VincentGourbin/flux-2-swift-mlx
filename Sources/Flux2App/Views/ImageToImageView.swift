@@ -221,7 +221,7 @@ struct ImageToImageView: View {
 
             switch viewModel.generateRoute {
             case .fullImage:
-                Text("Barn doors on the preview define the live area. Select the Live Area tool to adjust them. The megapixel budget in Generation Parameters sets output resolution at that aspect ratio.")
+                Text("Barn doors on the preview define the Live Area (context mask for generation). Select the Live Area tool to adjust them. The megapixel budget in Generation Parameters sets output resolution at that aspect ratio.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             case .localFill:
@@ -245,6 +245,12 @@ struct ImageToImageView: View {
 
     @ViewBuilder
     private var selectionControls: some View {
+        if viewModel.enrichInpaintPromptWithVLM {
+            Text("Selection = where to edit. Live Area = context mask for Qwen.")
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+        }
+
         Text("Hold ⇧ to add to the selection and ⌥ to subtract. Click the canvas without drawing to clear.")
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -261,7 +267,7 @@ struct ImageToImageView: View {
             .foregroundStyle(.secondary)
 
         if viewModel.enrichInpaintPromptWithVLM {
-            Text("Use the Live Area tool to frame what Qwen sees for prompt writing.")
+            Text("Use Live Area to set the context mask — the frame Qwen sees when writing the prompt.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -1657,8 +1663,8 @@ struct ImagePreparationPreview: View {
         ProgressView()
             .controlSize(.small)
             .position(x: imageRect.midX, y: imageRect.midY)
-            .help("Resolving subject mask")
-            .accessibilityLabel("Resolving subject mask")
+            .help("Detecting subject from selection")
+            .accessibilityLabel("Detecting subject from selection")
     }
 
     private func selectionPolygonOverlay(points: [CGPoint], in imageRect: CGRect) -> some View {

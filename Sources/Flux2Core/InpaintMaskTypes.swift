@@ -27,6 +27,24 @@ public enum InpaintMaskTool: String, CaseIterable, Codable, Sendable, Identifiab
         }
     }
 
+    /// Tooltip for the canvas tool toolbar (user-facing terminology).
+    public var helpText: String {
+        switch self {
+        case .pointer:
+            "Pointer — pan and click without drawing"
+        case .liveArea:
+            "Live Area — set the context mask (barn doors) for generation and Qwen prompt framing"
+        case .rectangle:
+            "Rectangle — draw a selection for generative fill"
+        case .polygon:
+            "Polygon — draw a selection for generative fill"
+        case .visionSubject:
+            "Subject — lasso a hint; Apple Vision refines the selection"
+        case .cropCanvas:
+            "Crop — expand the canvas for outpaint"
+        }
+    }
+
     public var systemImage: String {
         switch self {
         case .pointer: "arrow.up.left"

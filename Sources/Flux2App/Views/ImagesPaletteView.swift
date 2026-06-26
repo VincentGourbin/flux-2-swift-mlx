@@ -18,7 +18,7 @@ struct ImagesPaletteView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("One image per tab. Assign Reference or Interpret (VLM) roles before generating. Live Area and canvas tools apply to the Primary reference only.")
+            Text("One image per tab. Assign Reference or Interpret (VLM) roles before generating. Live Area, selections, and crop apply to the Primary reference only.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
