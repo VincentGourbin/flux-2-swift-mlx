@@ -308,7 +308,9 @@ struct ImageToImageView: View {
                     in: -1...1,
                     onEditingChanged: { editing in
                         if editing {
-                            viewModel.beginFillContextMaskScaleEdit()
+                            viewModel.noteFillContextMaskScaleEditBegan()
+                        } else {
+                            viewModel.commitFillContextMaskScaleEditIfChanged()
                         }
                     }
                 )

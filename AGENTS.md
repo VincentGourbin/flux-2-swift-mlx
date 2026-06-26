@@ -215,8 +215,9 @@ Pause so the user can see what's happening (VM off, tunnel down, app not install
 | Fork (keep) | Upstream (keep after rebase) |
 | --- | --- |
 | Image Preparation (formatting, Live Area, megapixel budget) | `Flux2Chains` (inpaint, outpaint, subject mask) |
-| `ImageSaveService`, project files | Small Decoder VAE, profiling CLI |
-| `ImageCoordinateMapper`, compositing | VLM training scoring, mlx 0.31.4 pin |
+| Edit history (linear document history, bundle persist, sidebar UI) | Small Decoder VAE, profiling CLI |
+| `ImageSaveService`, project files | VLM training scoring, mlx 0.31.4 pin |
+| `ImageCoordinateMapper`, compositing | |
 
 Dormant `processArea` plumbing in prompt-edit mode is intentional — reserved for future paste-back UI, not barn-door Live Area.
 
@@ -225,6 +226,8 @@ Dormant `processArea` plumbing in prompt-edit mode is intentional — reserved f
 The primary workflow is **Image Preparation**: barn doors + megapixel budget + prompt I2I + composite back. Barn doors define a **minimum sufficient scene** (light path, room volume, shadow landing zones) and **megapixel/aspect economics** — not tight selection of edit targets. See [docs/ImagePreparation.md — Operator intent](docs/ImagePreparation.md#operator-intent-how-barn-doors-are-actually-used).
 
 **Generative fill** (rectangle over a blemish, optional Qwen3.5 VLM, RePaint chain) is the in-app surgical path. Full inpaint intent control stays **CLI** (`flux2 inpaint`). See [docs/ImagePreparation.md — Generative fill](docs/ImagePreparation.md#generative-fill).
+
+**Edit history** (sidebar under Mode, ⌃⌘Z document stepping, bundle JXL steps) — agent file map and invariants: [docs/EditHistory-Architecture.md](docs/EditHistory-Architecture.md).
 
 **Do not propose** unless the user asks: Apple Vision integration, polygon mask UI, or FluxForge Studio parity.
 

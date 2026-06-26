@@ -116,6 +116,7 @@ class ImageGenerationViewModel: ObservableObject {
     let editHistoryStore = EditHistoryStore()
     private var isApplyingSelectionUndo = false
     private(set) var isRestoringEditHistory = false
+    var fillContextMaskScaleUndoBaseline: Double?
 
     func beginEditHistoryRestore() {
         isRestoringEditHistory = true
@@ -1207,7 +1208,12 @@ class ImageGenerationViewModel: ObservableObject {
             statusMessage = "Opened project \(url.lastPathComponent) (F2SM_PROJECT)"
             writeSmokeMarker(
                 outcome: "ok",
-                detail: "project=\(url.path)\nreferences=\(assignedReferenceCount)\nprompt=\(prompt)"
+                detail: """
+                project=\(url.path)
+                references=\(assignedReferenceCount)
+                prompt=\(prompt)
+                \(editHistorySmokeSummary())
+                """
             )
         } catch {
             let message = "Failed to open F2SM_PROJECT: \(error.localizedDescription)"
@@ -1313,6 +1319,7 @@ class ImageGenerationViewModel: ObservableObject {
         errorMessage = nil
         clearSelectionUndoHistory()
         applySizingControls()
+        applyLoadedHistoryPointer(bundleRoot: loaded.bundleRoot)
     }
 
     private func makeProject(forBundle: Bool = false) throws -> FluxGenerationProject {

@@ -1,3 +1,13 @@
+// EditHistoryStore.swift
+//
+// In-memory linear document history for Image to Image.
+//
+// Agent invariants:
+// - `entries` + `currentIndex` are persisted in the project manifest; JXL masters/thumbs live in the bundle.
+// - On load, thumbs are cached; masters load lazily on jump/save via `masterImage(for:bundleRoot:)`.
+// - On save, `historyAssets(bundleRoot:)` must resolve every manifest entry (memory or disk) before the bundle is replaced.
+// - Append truncates the redo tail when `currentIndex` is not at the end; prune drops oldest at `maxEntryCount`.
+
 import CoreGraphics
 import Flux2Core
 import Foundation
@@ -12,6 +22,8 @@ final class EditHistoryStore: ObservableObject {
 
     @Published private(set) var entries: [EditHistoryEntry] = []
     @Published private(set) var currentIndex: Int?
+    /// Steps removed by the most recent `append` call (0 when nothing was pruned).
+    private(set) var lastPrunedStepCount = 0
 
     private var masterImages: [UUID: CGImage] = [:]
     private var thumbImages: [UUID: CGImage] = [:]
@@ -33,6 +45,7 @@ final class EditHistoryStore: ObservableObject {
         masterImages.removeAll()
         thumbImages.removeAll()
         nextSequence = 1
+        lastPrunedStepCount = 0
     }
 
     func load(from project: FluxGenerationProject, bundleRoot: URL?) {
@@ -63,6 +76,8 @@ final class EditHistoryStore: ObservableObject {
         settings: EditHistorySettings,
         spatial: EditHistorySpatial
     ) throws -> EditHistoryEntry {
+        lastPrunedStepCount = 0
+
         if let currentIndex, currentIndex + 1 < entries.count {
             let removed = entries[(currentIndex + 1)...]
             for entry in removed {
@@ -88,7 +103,7 @@ final class EditHistoryStore: ObservableObject {
         currentIndex = entries.count - 1
         masterImages[entry.id] = master
         thumbImages[entry.id] = thumb
-        trimToMaxDepth()
+        lastPrunedStepCount = trimToMaxDepth()
         return entry
     }
 
@@ -115,6 +130,15 @@ final class EditHistoryStore: ObservableObject {
             let thumb = try resolvedThumb(for: entry, bundleRoot: bundleRoot)
             return FluxGenerationProjectBundle.HistoryAsset(entry: entry, master: master, thumb: thumb)
         }
+    }
+
+    func select(index: Int) {
+        guard entries.indices.contains(index) else { return }
+        currentIndex = index
+    }
+
+    func manifestFields() -> (entries: [EditHistoryEntry], currentIndex: Int?) {
+        (entries, currentIndex)
     }
 
     private func resolvedMaster(for entry: EditHistoryEntry, bundleRoot: URL?) throws -> CGImage {
@@ -146,21 +170,14 @@ final class EditHistoryStore: ObservableObject {
         return try ProjectBundleImageWriter.loadCGImage(from: url)
     }
 
-    func select(index: Int) {
-        guard entries.indices.contains(index) else { return }
-        currentIndex = index
-    }
-
-    func manifestFields() -> (entries: [EditHistoryEntry], currentIndex: Int?) {
-        (entries, currentIndex)
-    }
-
     private func sequenceNumber(from path: String) -> Int? {
         let stem = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
         return Int(stem)
     }
 
-    private func trimToMaxDepth() {
+    @discardableResult
+    private func trimToMaxDepth() -> Int {
+        var pruned = 0
         while entries.count > Self.maxEntryCount {
             let removed = entries.removeFirst()
             masterImages.removeValue(forKey: removed.id)
@@ -168,7 +185,9 @@ final class EditHistoryStore: ObservableObject {
             if let index = currentIndex {
                 currentIndex = max(0, index - 1)
             }
+            pruned += 1
         }
+        return pruned
     }
 }
 

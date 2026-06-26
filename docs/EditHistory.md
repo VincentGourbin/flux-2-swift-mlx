@@ -205,7 +205,8 @@ The I2I palette column keeps canvas tools and Images / Workflow / Parameters onl
 | `ImageGenerationViewModel` | `EditHistoryStore` (document) + `SelectionUndoStore` (session) |
 | Save / load | `FileWrapper` / `.flux2project` UTType; path-relative asset resolution |
 | `ImageToImageView` | I2I palettes + canvas (history is **not** here) |
-| `ContentView` | Mode sidebar `List` + `EditHistorySidebarSection` under Mode when I2I is active |
+| `Sources/Flux2App/EditHistory/` | Store, sidebar UI, capture/restore, shortcuts — see [EditHistory-Architecture.md](EditHistory-Architecture.md) |
+| `ContentView` | Mode sidebar `List` + `EditHistorySidebarSection` when I2I is active |
 | Encode | `ProjectBundleImageWriter` — JXL lossless + thumb helper |
 | Checkpoints | unchanged — ephemeral, not history |
 
@@ -225,6 +226,7 @@ The I2I palette column keeps canvas tools and Images / Workflow / Parameters onl
 
 ## Relationship to other docs
 
+- **Agent architecture** ([EditHistory-Architecture.md](EditHistory-Architecture.md)) — file map, invariants, where to change what.
 - **Image Preparation** (`docs/ImagePreparation.md`) — prompt-edit barn doors and compositing; history restores `contextArea` and formatting state per entry.
 - **Generative fill** — history restores selection + `fillContextMaskScale` from `spatial`; Live Area barn doors remain in `contextArea` unchanged across fill steps (see recent fill context-mask work).
 - **Export** (`ImageSaveService`) — unchanged; bundle is the document, Pictures folder is deliberate export.

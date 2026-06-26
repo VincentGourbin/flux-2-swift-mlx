@@ -5,6 +5,29 @@ import XCTest
 
 @MainActor
 final class EditHistoryStoreTests: XCTestCase {
+    func testHistoryAssetsFromMemoryWithoutBundleRoot() throws {
+        try XCTSkipUnless(ProjectBundleImageWriter.isSupported(), "JPEG XL encoding is not available")
+
+        let store = EditHistoryStore()
+        let master = try makeTestImage(width: 16, height: 16)
+        let spatial = EditHistorySpatial(
+            contextArea: FluxGenerationProject.NormalizedRect(CGRect(x: 0, y: 0, width: 1, height: 1))
+        )
+        let settings = EditHistorySettings(selectedModel: "klein-4b", steps: 4, guidance: 1)
+        _ = try store.append(
+            master: master,
+            label: "Import",
+            kind: .import,
+            prompt: "test",
+            settings: settings,
+            spatial: spatial
+        )
+
+        let assets = try store.historyAssets(bundleRoot: nil)
+        XCTAssertEqual(assets.count, 1)
+        XCTAssertEqual(assets[0].master.width, 16)
+    }
+
     func testHistoryAssetsLoadsMastersFromBundleAfterLoad() throws {
         try XCTSkipUnless(ProjectBundleImageWriter.isSupported(), "JPEG XL encoding is not available")
 
@@ -104,6 +127,31 @@ final class EditHistoryStoreTests: XCTestCase {
         store.load(from: project, bundleRoot: nil)
         XCTAssertEqual(store.entries.count, 1)
         XCTAssertNil(store.currentIndex)
+    }
+
+    func testAppendPruneReportsDroppedStepCount() throws {
+        try XCTSkipUnless(ProjectBundleImageWriter.isSupported(), "JPEG XL encoding is not available")
+
+        let store = EditHistoryStore()
+        let master = try makeTestImage(width: 8, height: 8)
+        let spatial = EditHistorySpatial(
+            contextArea: FluxGenerationProject.NormalizedRect(CGRect(x: 0, y: 0, width: 1, height: 1))
+        )
+        let settings = EditHistorySettings(selectedModel: "klein-4b", steps: 4, guidance: 1)
+
+        for step in 1...EditHistoryStore.maxEntryCount + 2 {
+            _ = try store.append(
+                master: master,
+                label: "Step \(step)",
+                kind: .generate,
+                prompt: "test",
+                settings: settings,
+                spatial: spatial
+            )
+        }
+
+        XCTAssertEqual(store.entries.count, EditHistoryStore.maxEntryCount)
+        XCTAssertGreaterThan(store.lastPrunedStepCount, 0)
     }
 
     private func makeTestImage(width: Int, height: Int) throws -> CGImage {

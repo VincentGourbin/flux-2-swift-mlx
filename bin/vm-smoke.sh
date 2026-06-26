@@ -62,6 +62,12 @@ if [[ "$(printf '%s' "$marker" | head -1)" != "ok" ]]; then
   exit 1
 fi
 
+if ! printf '%s\n' "$marker" | grep -q '^history_steps='; then
+  echo "Smoke marker missing history_steps (edit history hook):" >&2
+  printf '%s\n' "$marker" >&2
+  exit 1
+fi
+
 circus_exec --timeout 30 -- 'pgrep -l Flux2App || { echo "Flux2App not running"; cat /tmp/flux2-smoke.log; exit 1; }'
 circus_exec --timeout 30 -- "screencapture -x $(printf '%q' "$GUEST_SCREENSHOT")"
 circus_get "$GUEST_SCREENSHOT" "$OUT"
