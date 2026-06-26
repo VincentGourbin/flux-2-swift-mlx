@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-26  
 **Branch:** `mix/v2.4.0`  
-**Status:** **FIX APPLIED** (2026-06-26) — `EditHistorySidebarSection` inside sidebar `List` under Mode. Awaiting operator visual confirmation.  
+**Status:** **FIXED** (2026-06-26) — sidebar placement confirmed; history save/restore bugs addressed in follow-up commits.  
 **Scope:** **Layout only.** History store, bundle I/O, restore semantics, and keyboard shortcuts are done and must not be reworked.
 
 ---

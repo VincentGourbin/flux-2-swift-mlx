@@ -73,10 +73,24 @@ extension ImageGenerationViewModel {
 
     func clearEditHistory() {
         editHistoryStore.reset()
+        if let cgImage = primaryReferenceImage {
+            maybeRecordImportHistory(cgImage: cgImage)
+        }
     }
 
-    func historyAssetsForSave() -> [FluxGenerationProjectBundle.HistoryAsset] {
-        editHistoryStore.historyAssets()
+    func replacePrimaryReference(with cgImage: CGImage, preservingSpatialWorkflow: Bool = false) {
+        bootstrapImageSlotsIfNeeded()
+        if let primaryID = primaryImageSlot?.id {
+            loadImageIntoSlot(primaryID, cgImage: cgImage, preservingSpatialWorkflow: preservingSpatialWorkflow)
+            return
+        }
+        if let firstID = imageSlots.first?.id {
+            loadImageIntoSlot(firstID, cgImage: cgImage, preservingSpatialWorkflow: preservingSpatialWorkflow)
+        }
+    }
+
+    func historyAssetsForSave() throws -> [FluxGenerationProjectBundle.HistoryAsset] {
+        try editHistoryStore.historyAssets(bundleRoot: currentBundleRootURL)
     }
 
     func editHistoryManifestFields() -> (entries: [EditHistoryEntry]?, currentIndex: Int?) {
@@ -85,17 +99,6 @@ extension ImageGenerationViewModel {
             return (nil, nil)
         }
         return (fields.entries, fields.currentIndex)
-    }
-
-    func replacePrimaryReference(with cgImage: CGImage) {
-        bootstrapImageSlotsIfNeeded()
-        if let primaryID = primaryImageSlot?.id {
-            loadImageIntoSlot(primaryID, cgImage: cgImage)
-            return
-        }
-        if let firstID = imageSlots.first?.id {
-            loadImageIntoSlot(firstID, cgImage: cgImage)
-        }
     }
 
     var currentBundleRootURL: URL? {
@@ -151,10 +154,21 @@ extension ImageGenerationViewModel {
 
     private func restoreFromHistoryEntry(_ entry: EditHistoryEntry, master: CGImage) throws {
         clearSelectionUndoHistory()
+        beginEditHistoryRestore()
+        defer {
+            Task { @MainActor in
+                self.endEditHistoryRestore()
+            }
+        }
+
         applyHistorySettings(entry.settings)
         applySpatialFromHistory(entry.spatial)
+        applyGenerateRouteFromHistory(settings: entry.settings, spatial: entry.spatial)
         prompt = entry.prompt
-        replacePrimaryReference(with: master)
+        replacePrimaryReference(with: master, preservingSpatialWorkflow: true)
+        if outpaintPadding.hasExpansion {
+            updateOutpaintPadding(outpaintPadding)
+        }
         generatedImage = master
         previewComparisonSide = .processed
         cacheFormattedComparisonImage(for: master)
@@ -183,15 +197,43 @@ extension ImageGenerationViewModel {
         if let intentRaw = spatial.inpaintIntent,
            let intent = Flux2InpaintIntent(rawValue: intentRaw) {
             inpaintIntent = intent
+        } else {
+            inpaintIntent = (spatial.inpaintMaskLayers ?? []).isEmpty ? .modify : .fill
         }
-        if let enrich = spatial.enrichInpaintPromptWithVLM {
-            enrichInpaintPromptWithVLM = enrich
-        }
+        enrichInpaintPromptWithVLM = spatial.enrichInpaintPromptWithVLM
+            ?? !(spatial.inpaintMaskLayers ?? []).isEmpty
         draftPolygonPoints.removeAll()
         draftLassoPoints.removeAll()
         visionSubjectMasks.removeAll()
         visionSubjectStatusMessage = nil
         isDrawingSelection = false
+    }
+
+    private func applyGenerateRouteFromHistory(settings: EditHistorySettings, spatial: EditHistorySpatial) {
+        let route = historyGenerateRoute(settings: settings, spatial: spatial)
+        switch route {
+        case .outpaint:
+            inpaintMaskTool = .cropCanvas
+        case .localFill, .fullImage:
+            inpaintMaskTool = .pointer
+        }
+    }
+
+    private func historyGenerateRoute(
+        settings: EditHistorySettings,
+        spatial: EditHistorySpatial
+    ) -> I2IGenerateRoute {
+        if let raw = settings.generateRoute,
+           let route = I2IGenerateRoute(rawValue: raw) {
+            return route
+        }
+        if spatial.outpaintPadding?.hasExpansion == true {
+            return .outpaint
+        }
+        if !(spatial.inpaintMaskLayers ?? []).isEmpty {
+            return .localFill
+        }
+        return .fullImage
     }
 
     private func historyLabel(for kind: EditHistoryKind) -> String {

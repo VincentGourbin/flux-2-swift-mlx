@@ -38,7 +38,11 @@ final class EditHistoryStore: ObservableObject {
     func load(from project: FluxGenerationProject, bundleRoot: URL?) {
         reset()
         entries = project.history ?? []
-        currentIndex = project.currentHistoryIndex
+        if let index = project.currentHistoryIndex, entries.indices.contains(index) {
+            currentIndex = index
+        } else {
+            currentIndex = nil
+        }
         nextSequence = (entries.compactMap { sequenceNumber(from: $0.master) }.max() ?? 0) + 1
 
         guard let bundleRoot else { return }
@@ -105,14 +109,41 @@ final class EditHistoryStore: ObservableObject {
         thumbImages[entry.id]
     }
 
-    func historyAssets() -> [FluxGenerationProjectBundle.HistoryAsset] {
-        entries.compactMap { entry in
-            guard let master = masterImages[entry.id],
-                  let thumb = thumbImages[entry.id] else {
-                return nil
-            }
+    func historyAssets(bundleRoot: URL?) throws -> [FluxGenerationProjectBundle.HistoryAsset] {
+        try entries.map { entry in
+            let master = try resolvedMaster(for: entry, bundleRoot: bundleRoot)
+            let thumb = try resolvedThumb(for: entry, bundleRoot: bundleRoot)
             return FluxGenerationProjectBundle.HistoryAsset(entry: entry, master: master, thumb: thumb)
         }
+    }
+
+    private func resolvedMaster(for entry: EditHistoryEntry, bundleRoot: URL?) throws -> CGImage {
+        if let cached = masterImages[entry.id] {
+            return cached
+        }
+        return try loadImage(relativePath: entry.master, bundleRoot: bundleRoot, label: "master")
+    }
+
+    private func resolvedThumb(for entry: EditHistoryEntry, bundleRoot: URL?) throws -> CGImage {
+        if let cached = thumbImages[entry.id] {
+            return cached
+        }
+        return try loadImage(relativePath: entry.thumb, bundleRoot: bundleRoot, label: "thumbnail")
+    }
+
+    private func loadImage(relativePath: String, bundleRoot: URL?, label: String) throws -> CGImage {
+        guard let bundleRoot else {
+            throw Flux2Error.invalidConfiguration(
+                "History \(label) for “\(relativePath)” is not in memory and the project has not been saved to a bundle yet."
+            )
+        }
+        let url = bundleRoot.appendingPathComponent(relativePath, isDirectory: false)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw Flux2Error.invalidConfiguration(
+                "History \(label) file is missing from the project bundle: \(relativePath)"
+            )
+        }
+        return try ProjectBundleImageWriter.loadCGImage(from: url)
     }
 
     func select(index: Int) {

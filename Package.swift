@@ -94,5 +94,9 @@ let package = Package(
             name: "Flux2ChainsTests",
             dependencies: ["Flux2Chains", "Flux2Core"]
         ),
+        .testTarget(
+            name: "Flux2AppTests",
+            dependencies: ["Flux2App"]
+        ),
     ]
 )

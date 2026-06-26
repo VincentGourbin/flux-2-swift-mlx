@@ -242,9 +242,15 @@ extension ImageGenerationViewModel {
         assignImageToSlot(id, url: nil, cgImage: cgImage, thumbnail: createThumbnail(from: nsImage))
     }
 
-    func loadImageIntoSlot(_ id: UUID, cgImage: CGImage) {
+    func loadImageIntoSlot(_ id: UUID, cgImage: CGImage, preservingSpatialWorkflow: Bool = false) {
         let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-        assignImageToSlot(id, url: nil, cgImage: cgImage, thumbnail: createThumbnail(from: nsImage))
+        assignImageToSlot(
+            id,
+            url: nil,
+            cgImage: cgImage,
+            thumbnail: createThumbnail(from: nsImage),
+            preservingSpatialWorkflow: preservingSpatialWorkflow
+        )
     }
 
     func addReferenceImage(from url: URL) {
@@ -300,7 +306,13 @@ extension ImageGenerationViewModel {
         clearAllImageSlots()
     }
 
-    private func assignImageToSlot(_ id: UUID, url: URL?, cgImage: CGImage, thumbnail: NSImage) {
+    private func assignImageToSlot(
+        _ id: UUID,
+        url: URL?,
+        cgImage: CGImage,
+        thumbnail: NSImage,
+        preservingSpatialWorkflow: Bool = false
+    ) {
         guard let index = imageSlots.firstIndex(where: { $0.id == id }) else { return }
         let isFirstImage = !imageSlots.contains(where: \.hasImage)
         imageSlots[index].url = url
@@ -311,8 +323,10 @@ extension ImageGenerationViewModel {
             imageSlots[index].isPrimary = true
         }
         reconcilePrimaryAssignment()
-        resetOutpaintCanvas()
-        cancelBarnDoorsIfActive()
+        if !preservingSpatialWorkflow {
+            resetOutpaintCanvas()
+            cancelBarnDoorsIfActive()
+        }
         ensurePreparationDefaults()
         applySizingControlsForPreview()
         if isFirstImage {

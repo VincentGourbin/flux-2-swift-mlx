@@ -72,7 +72,7 @@ struct EditHistorySidebarSection: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes every saved step from the project. The current canvas is unchanged until you save.")
+            Text("This removes every saved step from the project. The current canvas is unchanged; save the project to drop history files from the bundle.")
         }
     }
 }

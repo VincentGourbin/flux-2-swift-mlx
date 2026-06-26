@@ -137,6 +137,7 @@ struct ImageToImageView: View {
             }
         }
         .onChange(of: viewModel.hasActiveSelection) { _, active in
+            guard !viewModel.isRestoringEditHistory else { return }
             if active {
                 viewModel.enrichInpaintPromptWithVLM = true
                 viewModel.inpaintIntent = .fill
@@ -596,10 +597,7 @@ struct ImageToImageView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .disabled(
-                viewModel.generatedImage == nil
-                    || (!viewModel.canAddImageSlot && viewModel.activeImageSlot?.hasImage == true)
-            )
+            .disabled(viewModel.generatedImage == nil)
 
             Button(action: { viewModel.saveImage() }) {
                 Label("Save Preview", systemImage: "square.and.arrow.down")
@@ -837,7 +835,7 @@ struct ImageToImageView: View {
 
     private func useAsReference() {
         guard let cgImage = viewModel.generatedImage else { return }
-        viewModel.addReferenceImage(cgImage: cgImage)
+        viewModel.replacePrimaryReference(with: cgImage)
         viewModel.appendEditHistoryAfterAdopt(image: cgImage)
     }
 }

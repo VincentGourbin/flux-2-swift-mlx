@@ -115,6 +115,15 @@ class ImageGenerationViewModel: ObservableObject {
     private let selectionUndoStore = SelectionUndoStore()
     let editHistoryStore = EditHistoryStore()
     private var isApplyingSelectionUndo = false
+    private(set) var isRestoringEditHistory = false
+
+    func beginEditHistoryRestore() {
+        isRestoringEditHistory = true
+    }
+
+    func endEditHistoryRestore() {
+        isRestoringEditHistory = false
+    }
     /// Target generation budget in megapixels (the *maximum* total pixels). The
     /// barn doors set the aspect ratio; the generation fills this budget at that
     /// aspect, so a small barn-door region no longer shrinks the output — it just
@@ -1254,7 +1263,7 @@ class ImageGenerationViewModel: ObservableObject {
             project: project,
             slotImages: slotImages,
             previewImage: previewDisplayImage,
-            historyAssets: historyAssetsForSave(),
+            historyAssets: try historyAssetsForSave(),
             to: bundleURL
         )
     }
