@@ -2,9 +2,14 @@ import CoreGraphics
 import Foundation
 import ImageIO
 
-/// Flux2App generation project JSON (version 2).
+/// Flux2App generation project JSON (flat v2 or bundle v3 manifest).
 public struct FluxGenerationProject: Codable, Sendable {
-    public static let currentVersion = 2
+    /// Version written by **Save** today (v3 bundle manifest).
+    public static let currentVersion = 3
+    /// Oldest flat JSON manifest still opened directly.
+    public static let minimumLoadableVersion = 2
+    /// Bundle packages require this manifest version.
+    public static let bundleVersion = 3
     public static let maxImageSlots = 16
 
     public var version: Int = currentVersion
@@ -114,38 +119,51 @@ public struct FluxGenerationProject: Codable, Sendable {
 
     public static func load(from path: String) throws -> FluxGenerationProject {
         let url = URL(fileURLWithPath: path)
-        let data = try Data(contentsOf: url)
-        return try load(from: data)
+        return try load(at: url).project
     }
 
-    public static func load(from data: Data) throws -> FluxGenerationProject {
+    /// Load a flat `project.json` file or a `.flux2project` package.
+    public static func load(at url: URL) throws -> FluxGenerationProjectBundle.LoadedPackage {
+        if FluxGenerationProjectBundle.isBundleURL(url) {
+            return try FluxGenerationProjectBundle.load(from: url)
+        }
+        let data = try Data(contentsOf: url)
+        let project = try loadManifest(from: data)
+        return FluxGenerationProjectBundle.LoadedPackage(project: project, bundleRoot: nil, previewImage: nil)
+    }
+
+    public static func loadManifest(from data: Data) throws -> FluxGenerationProject {
         if let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
            let version = object["version"] as? Int,
-           version < currentVersion {
+           version < minimumLoadableVersion {
             throw FluxGenerationProjectError.unsupportedVersion(version)
         }
         let project = try JSONDecoder().decode(FluxGenerationProject.self, from: data)
-        guard project.version >= currentVersion else {
+        guard project.version >= minimumLoadableVersion else {
             throw FluxGenerationProjectError.unsupportedVersion(project.version)
         }
         return project
     }
 
+    public static func load(from data: Data) throws -> FluxGenerationProject {
+        try loadManifest(from: data)
+    }
+
     /// Reference-role images for generation: primary first, then tab order.
-    public var referenceImageRecords: [GenerationImageRecord] {
-        let references = images.filter { $0.role == .reference && $0.hasStoredImage }
+    public func referenceImageRecords(bundleRoot: URL? = nil) -> [GenerationImageRecord] {
+        let references = images.filter { $0.role == .reference && $0.hasStoredImage(bundleRoot: bundleRoot) }
         guard let primary = references.first(where: \.isPrimary) else {
             return references
         }
         return [primary] + references.filter { $0.id != primary.id }
     }
 
-    public var interpretImageRecords: [GenerationImageRecord] {
-        images.filter { $0.role == .interpretive && $0.hasStoredImage }
+    public func interpretImageRecords(bundleRoot: URL? = nil) -> [GenerationImageRecord] {
+        images.filter { $0.role == .interpretive && $0.hasStoredImage(bundleRoot: bundleRoot) }
     }
 
-    public func primaryReferenceRecord() -> GenerationImageRecord? {
-        referenceImageRecords.first
+    public func primaryReferenceRecord(bundleRoot: URL? = nil) -> GenerationImageRecord? {
+        referenceImageRecords(bundleRoot: bundleRoot).first
     }
 
     public func preparationSettings(
@@ -153,7 +171,7 @@ public struct FluxGenerationProject: Codable, Sendable {
         pixelAlignment: Int = 32
     ) -> ImagePreparationSettings {
         let budget = megapixelBudget ?? 1.0
-        var settings = (primaryReferenceRecord()?.formatting ?? ImageSlotFormatting())
+        var settings = (primaryReferenceRecord(bundleRoot: nil)?.formatting ?? ImageSlotFormatting())
             .preparationSettings(megapixelBudget: budget, pixelAlignment: pixelAlignment, compositeBack: compositeBack)
         settings.contextArea = ImagePreparation.clampUnitRect(contextArea.cgRect)
         settings.processArea = processArea?.cgRect
@@ -161,14 +179,21 @@ public struct FluxGenerationProject: Codable, Sendable {
         return settings
     }
 
-    public func loadReferenceCGImages() throws -> [CGImage] {
-        try referenceImageRecords.map { try loadCGImage(from: $0) }
+    public func loadReferenceCGImages(bundleRoot: URL? = nil) throws -> [CGImage] {
+        try referenceImageRecords(bundleRoot: bundleRoot).map { try loadCGImage(from: $0, bundleRoot: bundleRoot) }
     }
 
-    public func loadInterpretPaths() throws -> [String] {
-        try interpretImageRecords.compactMap { record in
+    public func loadInterpretPaths(bundleRoot: URL? = nil) throws -> [String] {
+        try interpretImageRecords(bundleRoot: bundleRoot).compactMap { record in
             if let path = record.sourcePath, FileManager.default.fileExists(atPath: path) {
                 return path
+            }
+            if let bundleRoot,
+               let bundlePath = record.bundlePath {
+                let url = bundleRoot.appendingPathComponent(bundlePath, isDirectory: false)
+                if FileManager.default.fileExists(atPath: url.path) {
+                    return url.path
+                }
             }
             guard let pngBase64 = record.pngBase64,
                   let data = Data(base64Encoded: pngBase64) else {
@@ -181,7 +206,14 @@ public struct FluxGenerationProject: Codable, Sendable {
         }
     }
 
-    private func loadCGImage(from record: GenerationImageRecord) throws -> CGImage {
+    private func loadCGImage(from record: GenerationImageRecord, bundleRoot: URL?) throws -> CGImage {
+        if let bundleRoot,
+           let bundlePath = record.bundlePath {
+            let url = bundleRoot.appendingPathComponent(bundlePath, isDirectory: false)
+            if FileManager.default.fileExists(atPath: url.path) {
+                return try ProjectBundleImageWriter.loadCGImage(from: url)
+            }
+        }
         if let path = record.sourcePath,
            FileManager.default.fileExists(atPath: path),
            let image = Self.loadCGImage(from: path) {

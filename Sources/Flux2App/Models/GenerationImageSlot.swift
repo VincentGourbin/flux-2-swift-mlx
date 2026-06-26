@@ -71,13 +71,14 @@ extension GenerationImageSlot {
         return ReferenceImage(id: id, url: url, image: image, thumbnail: thumbnail)
     }
 
-    func toProjectRecord(pngBase64: String?) -> GenerationImageRecord {
+    func toProjectRecord(pngBase64: String? = nil, bundlePath: String? = nil) -> GenerationImageRecord {
         GenerationImageRecord(
             id: id,
             role: role,
             isPrimary: isPrimary,
             sourcePath: url?.path,
             pngBase64: pngBase64,
+            bundlePath: bundlePath,
             formatting: ImageSlotFormatting(
                 sizingFavor: sizingFavor.rawValue,
                 sizingMethod: sizingMethod.rawValue,

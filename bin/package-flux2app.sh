@@ -58,6 +58,45 @@ cat >"$BUNDLE/Contents/Info.plist" <<'PLIST'
 	<string>15.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>flux2project</string>
+			</array>
+			<key>CFBundleTypeName</key>
+			<string>FLUX.2 Project</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.realnotsteve.flux2-project</string>
+			</array>
+		</dict>
+	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>com.apple.package</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>FLUX.2 Project</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.realnotsteve.flux2-project</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>flux2project</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
 </dict>
 </plist>
 PLIST

@@ -551,7 +551,9 @@ struct ImageToImage: AsyncParsableCommand {
         }
 
         // Load optional project and resolve prompt / references / preparation.
-        let loadedProject = try project.map { try FluxGenerationProject.load(from: $0) }
+        let loadedPackage = try project.map { try FluxGenerationProject.load(at: URL(fileURLWithPath: $0)) }
+        let loadedProject = loadedPackage?.project
+        let projectBundleRoot = loadedPackage?.bundleRoot
         let effectivePrompt = prompt.isEmpty ? (loadedProject?.prompt ?? "") : prompt
         guard !effectivePrompt.isEmpty else {
             throw ValidationError("Provide a prompt argument or --project containing a prompt")
@@ -575,7 +577,7 @@ struct ImageToImage: AsyncParsableCommand {
             guard let loadedProject else {
                 throw ValidationError("Provide --images or --project with reference images")
             }
-            refImages = try loadedProject.loadReferenceCGImages()
+            refImages = try loadedProject.loadReferenceCGImages(bundleRoot: projectBundleRoot)
         } else {
             for path in images {
                 guard let image = loadImage(from: path) else {
@@ -635,7 +637,7 @@ struct ImageToImage: AsyncParsableCommand {
         // Validate interpret image paths exist (VLM will load them directly)
         var interpretImagePaths: [String] = []
         if interpret.isEmpty, let loadedProject {
-            interpretImagePaths = try loadedProject.loadInterpretPaths()
+            interpretImagePaths = try loadedProject.loadInterpretPaths(bundleRoot: projectBundleRoot)
         }
         for path in interpret {
             guard FileManager.default.fileExists(atPath: path) else {

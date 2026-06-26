@@ -493,11 +493,19 @@ extension ImageGenerationViewModel {
         ))
     }
 
-    func restoreImageSlots(from project: FluxGenerationProject) throws {
+    func restoreImageSlots(from project: FluxGenerationProject, bundleRoot: URL? = nil) throws {
         var restored: [GenerationImageSlot] = []
         for record in project.images {
             let cgImage: CGImage?
-            if let path = record.sourcePath,
+            if let bundleRoot,
+               let bundlePath = record.bundlePath {
+                let assetURL = bundleRoot.appendingPathComponent(bundlePath, isDirectory: false)
+                if FileManager.default.fileExists(atPath: assetURL.path) {
+                    cgImage = try? ProjectBundleImageWriter.loadCGImage(from: assetURL)
+                } else {
+                    cgImage = nil
+                }
+            } else if let path = record.sourcePath,
                FileManager.default.fileExists(atPath: path),
                let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
                let image = Self.cgImageFromData(data) {

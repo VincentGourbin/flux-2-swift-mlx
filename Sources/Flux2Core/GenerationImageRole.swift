@@ -59,13 +59,15 @@ public struct ImageSlotFormatting: Codable, Sendable, Equatable {
     }
 }
 
-/// One image tab persisted in a generation project (project v2).
+/// One image tab persisted in a generation project (v2+ flat JSON, v3 bundle paths).
 public struct GenerationImageRecord: Codable, Sendable, Identifiable, Equatable {
     public var id: UUID
     public var role: GenerationImageRole
     public var isPrimary: Bool
     public var sourcePath: String?
     public var pngBase64: String?
+    /// Relative path inside a `.flux2project` bundle (v3+), e.g. `slots/<uuid>.jxl`.
+    public var bundlePath: String?
     public var formatting: ImageSlotFormatting
     /// Optional user-defined tab label (project v2).
     public var tabLabel: String?
@@ -76,6 +78,7 @@ public struct GenerationImageRecord: Codable, Sendable, Identifiable, Equatable 
         isPrimary: Bool = false,
         sourcePath: String? = nil,
         pngBase64: String? = nil,
+        bundlePath: String? = nil,
         formatting: ImageSlotFormatting = ImageSlotFormatting(),
         tabLabel: String? = nil
     ) {
@@ -84,11 +87,17 @@ public struct GenerationImageRecord: Codable, Sendable, Identifiable, Equatable 
         self.isPrimary = isPrimary
         self.sourcePath = sourcePath
         self.pngBase64 = pngBase64
+        self.bundlePath = bundlePath
         self.formatting = formatting
         self.tabLabel = tabLabel
     }
 
-    public var hasStoredImage: Bool {
+    public func hasStoredImage(bundleRoot: URL? = nil) -> Bool {
+        if let bundlePath,
+           let bundleRoot,
+           FileManager.default.fileExists(atPath: bundleRoot.appendingPathComponent(bundlePath).path) {
+            return true
+        }
         if let path = sourcePath, FileManager.default.fileExists(atPath: path) {
             return true
         }
@@ -99,11 +108,14 @@ public struct GenerationImageRecord: Codable, Sendable, Identifiable, Equatable 
 
 public enum FluxGenerationProjectError: Error, LocalizedError, Sendable {
     case unsupportedVersion(Int)
+    case unsupportedBundleVersion(Int)
 
     public var errorDescription: String? {
         switch self {
         case .unsupportedVersion(let version):
-            return "Generation project version \(version) is no longer supported (requires version 2)"
+            return "Generation project version \(version) is no longer supported (requires version \(FluxGenerationProject.minimumLoadableVersion)+)"
+        case .unsupportedBundleVersion(let version):
+            return "FLUX.2 project bundle version \(version) is not supported (requires version \(FluxGenerationProject.bundleVersion)+)"
         }
     }
 }
