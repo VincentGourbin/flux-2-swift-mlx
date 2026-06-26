@@ -27,41 +27,52 @@ struct ImageToImageView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             HSplitView {
-                PaletteColumn {
-                    PalettePanel(
-                        storageKey: "i2i.images",
-                        title: "Images",
-                        systemImage: "photo.stack",
-                        coordinator: paletteCoordinator,
-                        headerTrailing: { imagesHeaderTrailing },
-                        content: { ImagesPaletteView(viewModel: viewModel) }
-                    )
+                VStack(spacing: 0) {
+                    ImageToImageCanvasToolsSidebar(viewModel: viewModel)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(Color(nsColor: .windowBackgroundColor).opacity(0.92))
 
-                    if viewModel.hasPrimaryReference {
-                        PalettePanel(
-                            storageKey: "i2i.workflow",
-                            title: "Workflow",
-                            systemImage: "arrow.triangle.branch",
-                            coordinator: paletteCoordinator,
-                            content: { workflowContextPaletteContent }
-                        )
+                    Divider()
+
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 10) {
+                            PalettePanel(
+                                storageKey: "i2i.images",
+                                title: "Images",
+                                systemImage: "photo.stack",
+                                coordinator: paletteCoordinator,
+                                headerTrailing: { imagesHeaderTrailing },
+                                content: { ImagesPaletteView(viewModel: viewModel) }
+                            )
+
+                            PalettePanel(
+                                storageKey: "i2i.workflow",
+                                title: "Workflow",
+                                systemImage: "arrow.triangle.branch",
+                                coordinator: paletteCoordinator,
+                                content: { workflowContextPaletteContent }
+                            )
+
+                            PalettePanel(
+                                storageKey: "i2i.parameters",
+                                title: "Generation Parameters",
+                                systemImage: "slider.horizontal.3",
+                                coordinator: paletteCoordinator,
+                                content: { parametersPaletteContent }
+                            )
+
+                            PalettePanel(
+                                storageKey: "i2i.outputOptions",
+                                title: "Output Options",
+                                systemImage: "slider.horizontal.below.rectangle",
+                                coordinator: paletteCoordinator,
+                                content: { outputOptionsPaletteContent }
+                            )
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-
-                    PalettePanel(
-                        storageKey: "i2i.parameters",
-                        title: "Generation Parameters",
-                        systemImage: "slider.horizontal.3",
-                        coordinator: paletteCoordinator,
-                        content: { parametersPaletteContent }
-                    )
-
-                    PalettePanel(
-                        storageKey: "i2i.outputOptions",
-                        title: "Output Options",
-                        systemImage: "slider.horizontal.below.rectangle",
-                        coordinator: paletteCoordinator,
-                        content: { outputOptionsPaletteContent }
-                    )
                 }
                 .frame(minWidth: 380, idealWidth: 450, maxWidth: 550)
                 .clipped()
@@ -171,7 +182,7 @@ struct ImageToImageView: View {
                 content: { ImagesPaletteView(viewModel: viewModel) }
             )
         }
-        if paletteCoordinator.isDetached("i2i.workflow"), viewModel.hasPrimaryReference {
+        if paletteCoordinator.isDetached("i2i.workflow") {
             PaletteFloatingPanel(
                 storageKey: "i2i.workflow",
                 title: "Workflow",
@@ -208,37 +219,43 @@ struct ImageToImageView: View {
     @ViewBuilder
     private var workflowContextPaletteContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if viewModel.assignedImageCount > 0 {
-                Text(viewModel.imageAssignmentSummary)
-                    .font(.caption.bold())
-                if viewModel.assignedReferenceCount > viewModel.selectedModel.maxReferenceImages {
-                    Text("Too many reference images for \(viewModel.selectedModel.displayName) (max \(viewModel.selectedModel.maxReferenceImages)).")
+            if !viewModel.hasPrimaryReference {
+                Text("Add a primary reference image to use workflow tools on the preview.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                if viewModel.assignedImageCount > 0 {
+                    Text(viewModel.imageAssignmentSummary)
+                        .font(.caption.bold())
+                    if viewModel.assignedReferenceCount > viewModel.selectedModel.maxReferenceImages {
+                        Text("Too many reference images for \(viewModel.selectedModel.displayName) (max \(viewModel.selectedModel.maxReferenceImages)).")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                    Divider()
+                }
+
+                switch viewModel.generateRoute {
+                case .fullImage:
+                    Text("Barn doors on the preview define the Live Area (context mask for generation). Select the Live Area tool to adjust them. The megapixel budget in Generation Parameters sets output resolution at that aspect ratio.")
                         .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-                Divider()
-            }
+                        .foregroundStyle(.secondary)
+                case .localFill:
+                    selectionControls
+                case .outpaint:
+                    Text(viewModel.outpaintCanvasDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("Drag the outer canvas edges on the preview. Padding snaps to 32 px. Megapixel budget in Generation Parameters caps the expanded canvas size.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
 
-            switch viewModel.generateRoute {
-            case .fullImage:
-                Text("Barn doors on the preview define the Live Area (context mask for generation). Select the Live Area tool to adjust them. The megapixel budget in Generation Parameters sets output resolution at that aspect ratio.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            case .localFill:
-                selectionControls
-            case .outpaint:
-                Text(viewModel.outpaintCanvasDescription)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("Drag the outer canvas edges on the preview. Padding snaps to 32 px. Megapixel budget in Generation Parameters caps the expanded canvas size.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-
-                Button("Reset Canvas") {
-                    viewModel.resetOutpaintCanvas()
+                    Button("Reset Canvas") {
+                        viewModel.resetOutpaintCanvas()
+                    }
+                    .controlSize(.small)
+                    .disabled(!viewModel.outpaintCanvasIsDefined)
                 }
-                .controlSize(.small)
-                .disabled(!viewModel.outpaintCanvasIsDefined)
             }
         }
     }
@@ -352,10 +369,11 @@ struct ImageToImageView: View {
     private func megapixelBudgetControls(help: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
-                Slider(
+                ResetOnDoubleClickSlider(
                     value: $viewModel.megapixelBudget,
-                    in: ImageGenerationViewModel.minMegapixelBudget...ImageGenerationViewModel.maxMegapixelBudget,
-                    step: 0.25
+                    range: ImageGenerationViewModel.minMegapixelBudget...ImageGenerationViewModel.maxMegapixelBudget,
+                    step: 0.25,
+                    defaultValue: ImageGenerationViewModel.defaultMegapixelBudget
                 )
 
                 TextField(
@@ -385,7 +403,10 @@ struct ImageToImageView: View {
     private var parametersPaletteContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             if viewModel.hasPrimaryReference {
-                GroupBox("Megapixel budget") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Megapixel budget")
+                        .font(.caption.bold())
+
                     megapixelBudgetControls(help: megapixelBudgetHelp)
 
                     if viewModel.hasLocalFillSelection, let primaryImage = viewModel.primaryReferenceImage {
@@ -395,6 +416,8 @@ struct ImageToImageView: View {
                         )
                     }
                 }
+
+                Divider()
             }
 
             // Dimensions — hidden: the barn-door aspect ratio + megapixel budget
@@ -433,50 +456,66 @@ struct ImageToImageView: View {
                 }
             }
 
-            // Steps and Guidance
-            HStack(spacing: 16) {
+            // Seed, Steps, and Guidance — one row
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Seed")
+                        .font(.caption)
+                    HStack(spacing: 4) {
+                        #if canImport(AppKit)
+                        NonAutofocusTextField(text: $viewModel.seed, placeholder: "Random", width: 60)
+                            .frame(width: 60)
+                        #else
+                        TextField("Random", text: $viewModel.seed)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 60)
+                        #endif
+                        Button(action: {
+                            viewModel.seed = String(UInt64.random(in: 0...UInt64.max))
+                        }) {
+                            Image(systemName: "dice")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                        .help("Generate random seed")
+                    }
+                }
+                .fixedSize(horizontal: true, vertical: false)
+
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Steps: \(viewModel.steps)")
                         .font(.caption)
-                    Slider(value: Binding(
-                        get: { Double(viewModel.steps) },
-                        set: { viewModel.steps = Int($0) }
-                    ), in: 4...100, step: 1)
+                    ResetOnDoubleClickIntSlider(
+                        value: $viewModel.steps,
+                        range: 4...64,
+                        step: 1,
+                        defaultValue: viewModel.recommendedSteps
+                    )
                 }
+                .frame(maxWidth: .infinity)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack {
+                    HStack(spacing: 4) {
                         Text("Guidance: \(String(format: "%.1f", viewModel.guidance))")
                             .font(.caption)
-                        Spacer()
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
                         Button("Default") {
                             viewModel.resetGuidanceToModelDefault()
                         }
                         .controlSize(.mini)
                     }
-                    Slider(value: Binding(
-                        get: { Double(viewModel.guidance) },
-                        set: { viewModel.guidance = Float($0) }
-                    ), in: 1...10, step: 0.5)
+                    ResetOnDoubleClickSlider(
+                        value: Binding(
+                            get: { Double(viewModel.guidance) },
+                            set: { viewModel.guidance = Float($0) }
+                        ),
+                        range: 1...10,
+                        step: 0.5,
+                        defaultValue: Double(viewModel.selectedModel.defaultGuidance)
+                    )
                 }
-            }
-
-            Divider()
-
-            // Seed
-            HStack {
-                Text("Seed:")
-                    .font(.caption)
-                TextField("Random", text: $viewModel.seed)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 120)
-                Button(action: {
-                    viewModel.seed = String(UInt64.random(in: 0...UInt64.max))
-                }) {
-                    Image(systemName: "dice")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .frame(maxWidth: .infinity)
             }
         }
     }
@@ -490,70 +529,69 @@ struct ImageToImageView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            if viewModel.canTogglePreviewComparison {
-                Picker("Compare", selection: $viewModel.previewComparisonSide) {
-                    Text("A").tag(PreviewComparisonSide.formatted)
-                    Text("B").tag(PreviewComparisonSide.processed)
-                }
-                .pickerStyle(.segmented)
-                .help("A: formatted input aligned to output · B: processed result")
+            Picker("Compare", selection: $viewModel.previewComparisonSide) {
+                Text("A").tag(PreviewComparisonSide.formatted)
+                Text("B").tag(PreviewComparisonSide.processed)
             }
+            .pickerStyle(.segmented)
+            .disabled(!viewModel.canTogglePreviewComparison)
+            .opacity(viewModel.canTogglePreviewComparison ? 1 : 0.45)
+            .help("A: formatted input aligned to output · B: processed result")
 
             HStack(spacing: 8) {
-                if viewModel.generatedImage != nil {
-                    Button(action: { viewModel.saveImage() }) {
-                        Label("Save", systemImage: "square.and.arrow.down")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-
-                    Button(action: { useAsReference() }) {
-                        Label("Use as Reference", systemImage: "arrow.uturn.left")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(!viewModel.canAddImageSlot && viewModel.activeImageSlot?.hasImage == true)
-                }
-
-                Button(action: { viewModel.clearPreview() }) {
-                    Label("Clear Preview", systemImage: "xmark.circle")
+                Button(action: { viewModel.saveImage() }) {
+                    Label("Save", systemImage: "square.and.arrow.down")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .disabled(!viewModel.hasPreviewContent)
-                .help("Clear the generated image from the preview pane")
+                .disabled(viewModel.generatedImage == nil)
+
+                Button(action: { useAsReference() }) {
+                    Label("Use as Reference", systemImage: "arrow.uturn.left")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(
+                    viewModel.generatedImage == nil
+                        || (!viewModel.canAddImageSlot && viewModel.activeImageSlot?.hasImage == true)
+                )
             }
 
-            if viewModel.hasPrimaryReference {
-                LanczosUpscaleField(factor: $imageSaveUpscaleBy)
+            LanczosUpscaleField(factor: $imageSaveUpscaleBy)
+                .disabled(!viewModel.hasPrimaryReference)
+                .opacity(viewModel.hasPrimaryReference ? 1 : 0.45)
 
-                HStack(spacing: 8) {
-                    Button(action: { viewModel.openOutputFolder() }) {
-                        Label("Open Folder", systemImage: "folder")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .help("Open the image output folder in Finder")
-
-                    Button(action: { viewModel.saveInputImage() }) {
-                        Label("Save Input", systemImage: "square.and.arrow.down.on.square")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .help("Save the selected input variant (raw, formatted, or prepared)")
-
-                    Picker("Stage", selection: $viewModel.inputSaveSource) {
-                        ForEach(ImageInputSaveSource.allCases) { source in
-                            Text(source.menuLabel).tag(source)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .controlSize(.small)
-                    .fixedSize()
-                    .help("Input variant for Save Input: raw reference, formatted (crop/pad), or prepared (model input)")
+            HStack(spacing: 8) {
+                Button(action: { viewModel.saveInputImage() }) {
+                    Label("Save Input", systemImage: "square.and.arrow.down.on.square")
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!viewModel.hasPrimaryReference)
+                .help("Save the selected input variant (raw, formatted, or prepared)")
+
+                Picker("Stage", selection: $viewModel.inputSaveSource) {
+                    ForEach(ImageInputSaveSource.allCases) { source in
+                        Text(source.menuLabel).tag(source)
+                    }
+                }
+                .pickerStyle(.menu)
+                .controlSize(.small)
+                .fixedSize()
+                .disabled(!viewModel.hasPrimaryReference)
+                .help("Input variant for Save Input: raw reference, formatted (crop/pad), or prepared (model input)")
             }
         }
+    }
+
+    private var clearPreviewButton: some View {
+        Button(action: { viewModel.clearPreview() }) {
+            Label("Clear Preview", systemImage: "xmark.circle")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(!viewModel.hasPreviewContent)
+        .help("Clear the generated image from the preview pane")
     }
 
     // MARK: - Output Section
@@ -575,13 +613,23 @@ struct ImageToImageView: View {
             // Main image display
             GeometryReader { geometry in
                 if let cgImage = viewModel.previewDisplayImage ?? viewModel.generatedImage {
-                    PreviewZoomableImageView(
-                        image: cgImage,
-                        zoomScale: Binding(
-                            get: { CGFloat(viewModel.previewZoomScale) },
-                            set: { viewModel.previewZoomScale = Double($0) }
+                    VStack(spacing: 0) {
+                        PreviewZoomableImageView(
+                            image: cgImage,
+                            zoomScale: Binding(
+                                get: { CGFloat(viewModel.previewZoomScale) },
+                                set: { viewModel.previewZoomScale = Double($0) }
+                            )
                         )
-                    )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                        HStack {
+                            Spacer(minLength: 0)
+                            clearPreviewButton
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                    }
                     .frame(width: geometry.size.width, height: geometry.size.height)
                 } else if let previewImage = viewModel.previewSourceImage {
                     VStack(spacing: 10) {
@@ -628,22 +676,7 @@ struct ImageToImageView: View {
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                        if viewModel.hasLocalFillSelection {
-                            FillResolutionInfoRow(
-                                image: previewImage,
-                                megapixelBudget: viewModel.megapixelBudget
-                            )
-                            .padding(.horizontal)
-                            .padding(.bottom, 10)
-                        } else {
-                            PreparationSizeInfoRow(
-                                image: previewImage,
-                                contextArea: viewModel.contextArea,
-                                adjustedSize: viewModel.adjustedGenerationSize
-                            )
-                            .padding(.horizontal)
-                            .padding(.bottom, 10)
-                        }
+                        previewMetricsFooter(image: previewImage)
                         } else {
                             PreviewZoomableImageView(
                                 image: previewImage,
@@ -684,6 +717,29 @@ struct ImageToImageView: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func previewMetricsFooter(image: CGImage) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if viewModel.hasLocalFillSelection {
+                FillResolutionInfoRow(
+                    image: image,
+                    megapixelBudget: viewModel.megapixelBudget
+                )
+            }
+
+            HStack(alignment: .top, spacing: 8) {
+                PreparationSizeInfoRow(
+                    image: image,
+                    contextArea: viewModel.contextArea,
+                    adjustedSize: viewModel.adjustedGenerationSize
+                )
+                clearPreviewButton
+            }
+        }
+        .padding(.horizontal)
+        .padding(.bottom, 10)
     }
 
     private var outputPreviewTitle: String {

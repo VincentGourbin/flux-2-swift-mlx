@@ -89,6 +89,11 @@ struct ImageGenerationPromptSection: View {
             if viewModel.isEnrichInpaintPromptApplicable {
                 Toggle("Enrich prompt with Qwen3.5 VLM", isOn: $viewModel.enrichInpaintPromptWithVLM)
                     .help("Qwen writes the Flux prompt from the image, your selection, and the Live Area context mask")
+            } else {
+                Toggle("Enrich prompt with Qwen3.5 VLM", isOn: .constant(false))
+                    .disabled(true)
+                    .opacity(0.45)
+                    .help("Available when a generative-fill selection is active")
             }
 
             Toggle("Clear prompt after generation", isOn: $viewModel.clearPromptAfterGeneration)

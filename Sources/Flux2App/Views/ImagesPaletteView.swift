@@ -15,6 +15,10 @@ import AppKit
 struct ImagesPaletteView: View {
     @ObservedObject var viewModel: ImageGenerationViewModel
     @State private var isTargetedForDrop = false
+    @State private var renameSlotID: UUID?
+    @State private var renameText = ""
+
+    private static let imagePreviewMaxHeight: CGFloat = 256
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -35,6 +39,27 @@ struct ImagesPaletteView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .alert("Rename Tab", isPresented: renameAlertPresented) {
+            TextField("Tab name", text: $renameText)
+            Button("Save") {
+                if let renameSlotID {
+                    viewModel.setSlotTabLabel(renameSlotID, label: renameText)
+                }
+                self.renameSlotID = nil
+            }
+            Button("Cancel", role: .cancel) {
+                renameSlotID = nil
+            }
+        } message: {
+            Text("Enter a custom name for this image tab.")
+        }
+    }
+
+    private var renameAlertPresented: Binding<Bool> {
+        Binding(
+            get: { renameSlotID != nil },
+            set: { if !$0 { renameSlotID = nil } }
+        )
     }
 
     private var imageTabBar: some View {
@@ -43,10 +68,15 @@ struct ImagesPaletteView: View {
                 HStack(spacing: 4) {
                     ForEach(Array(viewModel.imageSlots.enumerated()), id: \.element.id) { index, slot in
                         ImagePillTab(
-                            title: tabTitle(for: slot, index: index),
+                            title: slot.displayTabTitle(index: index),
                             isSelected: viewModel.activeImageSlot?.id == slot.id,
                             onSelect: { viewModel.selectImageSlot(slot.id) },
-                            onClose: viewModel.imageSlots.count > 1 ? { viewModel.removeImageSlot(slot.id) } : nil
+                            onClose: viewModel.imageSlots.count > 1 ? { viewModel.removeImageSlot(slot.id) } : nil,
+                            onRename: {
+                                renameText = slot.customTabLabel ?? slot.displayTabTitle(index: index)
+                                renameSlotID = slot.id
+                            },
+                            onRemove: viewModel.imageSlots.count > 1 ? { viewModel.removeImageSlot(slot.id) } : nil
                         )
                     }
                 }
@@ -71,15 +101,6 @@ struct ImagesPaletteView: View {
         }
     }
 
-    private func tabTitle(for slot: GenerationImageSlot, index: Int) -> String {
-        if slot.isPrimary { return "Primary" }
-        switch slot.role {
-        case .reference: return "Ref \(index + 1)"
-        case .interpretive: return "VLM \(index + 1)"
-        case .unassigned: return "Image \(index + 1)"
-        }
-    }
-
     @ViewBuilder
     private func activeSlotContent(_ slot: GenerationImageSlot) -> some View {
         if let cgImage = slot.image {
@@ -87,7 +108,7 @@ struct ImagesPaletteView: View {
                 viewModel.clearImageSlot(slot.id)
             }
         } else {
-            AddImageSlot(edge: 280, onAdd: { selectImage(for: slot.id) })
+            AddImageSlot(edge: Self.imagePreviewMaxHeight, onAdd: { selectImage(for: slot.id) })
                 .frame(maxWidth: .infinity)
                 .onDrop(of: [.image], isTargeted: $isTargetedForDrop) { providers in
                     handleImageDrop(providers, slotID: slot.id)
@@ -95,18 +116,22 @@ struct ImagesPaletteView: View {
                 }
         }
 
-        Picker("Role", selection: roleBinding(for: slot.id)) {
-            ForEach(GenerationImageRole.allCases) { role in
-                Text(role.displayName).tag(role)
+        HStack(alignment: .center, spacing: 12) {
+            Picker("Role", selection: roleBinding(for: slot.id)) {
+                ForEach(GenerationImageRole.allCases) { role in
+                    Text(role.displayName).tag(role)
+                }
             }
-        }
-        .pickerStyle(.menu)
+            .pickerStyle(.menu)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-        Toggle(
-            "Primary",
-            isOn: primaryBinding(for: slot.id)
-        )
-        .disabled(slot.role != .reference)
+            Toggle(
+                "Primary",
+                isOn: primaryBinding(for: slot.id)
+            )
+            .disabled(slot.role != .reference)
+            .fixedSize()
+        }
 
         Divider()
 
@@ -195,6 +220,8 @@ private struct ImagePillTab: View {
     let isSelected: Bool
     let onSelect: () -> Void
     let onClose: (() -> Void)?
+    var onRename: (() -> Void)?
+    var onRemove: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 6) {
@@ -221,6 +248,18 @@ private struct ImagePillTab: View {
         )
         .contentShape(Capsule())
         .onTapGesture(perform: onSelect)
+        .contextMenu {
+            if let onRename {
+                Button("Rename Tab…") {
+                    onRename()
+                }
+            }
+            if let onRemove {
+                Button("Remove Tab", role: .destructive) {
+                    onRemove()
+                }
+            }
+        }
     }
 }
 
@@ -228,12 +267,14 @@ private struct ImagesPaletteImagePreview: View {
     let cgImage: CGImage
     let onRemove: () -> Void
 
+    private static let maxHeight: CGFloat = 256
+
     var body: some View {
         Image(decorative: cgImage, scale: 1)
             .resizable()
             .aspectRatio(contentMode: .fit)
             .frame(maxWidth: .infinity)
-            .frame(minHeight: 280)
+            .frame(maxHeight: Self.maxHeight)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(
                 RoundedRectangle(cornerRadius: 8)

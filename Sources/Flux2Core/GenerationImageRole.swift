@@ -67,6 +67,8 @@ public struct GenerationImageRecord: Codable, Sendable, Identifiable, Equatable 
     public var sourcePath: String?
     public var pngBase64: String?
     public var formatting: ImageSlotFormatting
+    /// Optional user-defined tab label (project v2).
+    public var tabLabel: String?
 
     public init(
         id: UUID = UUID(),
@@ -74,7 +76,8 @@ public struct GenerationImageRecord: Codable, Sendable, Identifiable, Equatable 
         isPrimary: Bool = false,
         sourcePath: String? = nil,
         pngBase64: String? = nil,
-        formatting: ImageSlotFormatting = ImageSlotFormatting()
+        formatting: ImageSlotFormatting = ImageSlotFormatting(),
+        tabLabel: String? = nil
     ) {
         self.id = id
         self.role = role
@@ -82,6 +85,7 @@ public struct GenerationImageRecord: Codable, Sendable, Identifiable, Equatable 
         self.sourcePath = sourcePath
         self.pngBase64 = pngBase64
         self.formatting = formatting
+        self.tabLabel = tabLabel
     }
 
     public var hasStoredImage: Bool {

@@ -136,6 +136,18 @@ enum ImageSaveService {
         return directory
     }
 
+    #if canImport(AppKit)
+    /// Reveal the configured output directory in Finder, optionally selecting a file.
+    @MainActor
+    static func revealOutputDirectoryInFinder(selecting url: URL? = nil) throws {
+        if let url {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            NSWorkspace.shared.open(try outputDirectory())
+        }
+    }
+    #endif
+
     @MainActor
     static func save(_ image: CGImage, metadata: ImageSaveMetadata, stemSuffix: String? = nil) throws -> URL {
         let defaults = UserDefaults.standard

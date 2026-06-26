@@ -147,6 +147,12 @@ extension ImageGenerationViewModel {
         applySizingControlsForPreview()
     }
 
+    func setSlotTabLabel(_ id: UUID, label: String) {
+        guard let index = imageSlots.firstIndex(where: { $0.id == id }) else { return }
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        imageSlots[index].customTabLabel = trimmed.isEmpty ? nil : trimmed
+    }
+
     func clearImageSlot(_ id: UUID) {
         guard let index = imageSlots.firstIndex(where: { $0.id == id }) else { return }
         let wasPrimary = imageSlots[index].isPrimary

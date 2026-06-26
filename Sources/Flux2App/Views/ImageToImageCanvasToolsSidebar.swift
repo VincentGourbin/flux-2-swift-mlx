@@ -1,21 +1,17 @@
 import Flux2Core
 import SwiftUI
 
-/// Canvas tools shown in the app sidebar while Image to Image is active.
+/// Canvas tools fixed at the top of the I2I palette column.
 struct ImageToImageCanvasToolsSidebar: View {
     @ObservedObject var viewModel: ImageGenerationViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Canvas Tools")
-                .font(.caption.bold())
-                .foregroundStyle(.secondary)
-
+        VStack(alignment: .leading, spacing: 8) {
             SelectionToolBar(
                 selectedTool: $viewModel.inpaintMaskTool,
                 onSelect: { viewModel.selectMaskTool($0) },
                 isToolEnabled: { viewModel.isMaskToolEnabled($0) },
-                layout: .vertical
+                layout: .horizontal
             )
 
             if !viewModel.hasPrimaryReference {

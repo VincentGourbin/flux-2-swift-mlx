@@ -22,7 +22,6 @@ struct ContentView: View {
     @State private var selectedTab = Self.initialSelectedTab
     // Set by the focused image view; falls back to the app name on other tabs.
     @FocusedValue(\.generationProjectName) private var projectName
-    @FocusedValue(\.generationModelConfiguration) private var generationViewModel
 
     var body: some View {
         NavigationSplitView {
@@ -52,16 +51,6 @@ struct ContentView: View {
                         .tag(7)
                 }
 
-                if selectedTab == 5, let generationViewModel {
-                    Section {
-                        ImageToImageCanvasToolsSidebar(viewModel: generationViewModel)
-                            .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 12, trailing: 12))
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
-                    } header: {
-                        canvasToolsSectionDivider
-                    }
-                }
             }
             .listStyle(.sidebar)
             .frame(minWidth: 200)
@@ -105,12 +94,6 @@ struct ContentView: View {
         .onChange(of: selectedTab) { _, tab in
             Flux2AppSessionStore.saveShell(selectedTab: tab)
         }
-    }
-
-    private var canvasToolsSectionDivider: some View {
-        Rectangle()
-            .fill(Color(nsColor: .separatorColor).opacity(0.55))
-            .frame(height: 10)
     }
 }
 
@@ -2647,6 +2630,10 @@ struct SettingsView: View {
                     Button("Choose...") {
                         chooseOutputRoot()
                     }
+                }
+
+                Button("Show Folder in Finder") {
+                    try? ImageSaveService.revealOutputDirectoryInFinder()
                 }
 
                 Picker("Path", selection: $imageSaveOutputMode) {

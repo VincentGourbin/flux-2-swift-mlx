@@ -21,6 +21,7 @@ struct GenerationImageSlot: Identifiable, Equatable {
     var sizingFavor: ImageSizingFavor
     var sizingMethod: ImageSizingMethod
     var preparationScale: Double
+    var customTabLabel: String?
 
     var hasImage: Bool { image != nil }
 
@@ -34,11 +35,25 @@ struct GenerationImageSlot: Identifiable, Equatable {
             thumbnail: nil,
             sizingFavor: .original,
             sizingMethod: .crop,
-            preparationScale: 1.0
+            preparationScale: 1.0,
+            customTabLabel: nil
         )
     }
 
+    func displayTabTitle(index: Int) -> String {
+        if let customTabLabel, !customTabLabel.isEmpty {
+            return customTabLabel
+        }
+        if isPrimary { return "Primary" }
+        switch role {
+        case .reference: return "Ref \(index + 1)"
+        case .interpretive: return "VLM \(index + 1)"
+        case .unassigned: return "Image \(index + 1)"
+        }
+    }
+
     var tabTitle: String {
+        if let customTabLabel, !customTabLabel.isEmpty { return customTabLabel }
         if isPrimary { return "Primary" }
         if let badge = role.tabBadge { return badge }
         return "Image"
@@ -67,7 +82,8 @@ extension GenerationImageSlot {
                 sizingFavor: sizingFavor.rawValue,
                 sizingMethod: sizingMethod.rawValue,
                 preparationScale: preparationScale
-            )
+            ),
+            tabLabel: customTabLabel
         )
     }
 
@@ -86,7 +102,8 @@ extension GenerationImageSlot {
             thumbnail: thumbnail,
             sizingFavor: ImageSizingFavor(rawValue: formatting.sizingFavor) ?? .original,
             sizingMethod: ImageSizingMethod(rawValue: formatting.sizingMethod) ?? .crop,
-            preparationScale: max(0.1, min(1.0, formatting.preparationScale ?? 1.0))
+            preparationScale: max(0.1, min(1.0, formatting.preparationScale ?? 1.0)),
+            customTabLabel: record.tabLabel
         )
     }
 }

@@ -312,6 +312,15 @@ class ImageGenerationViewModel: ObservableObject {
         workflow == .imageToImage && generateRoute == .localFill
     }
 
+    var recommendedSteps: Int {
+        switch selectedModel {
+        case .dev: return 28
+        case .klein4B, .klein4BBase, .klein9B, .klein9BBase, .klein9BKV: return 4
+        }
+    }
+
+    static let defaultMegapixelBudget: Double = 1.0
+
     var progress: Double {
         guard totalSteps > 0 else { return 0 }
         return Double(currentStep) / Double(totalSteps)
@@ -1574,10 +1583,9 @@ class ImageGenerationViewModel: ObservableObject {
         #if canImport(AppKit)
         do {
             if let url = lastSavedImageURL {
-                NSWorkspace.shared.activateFileViewerSelecting([url])
+                try ImageSaveService.revealOutputDirectoryInFinder(selecting: url)
             } else {
-                let directory = try ImageSaveService.outputDirectory()
-                NSWorkspace.shared.open(directory)
+                try ImageSaveService.revealOutputDirectoryInFinder()
             }
         } catch {
             errorMessage = "Failed to open output folder: \(error.localizedDescription)"

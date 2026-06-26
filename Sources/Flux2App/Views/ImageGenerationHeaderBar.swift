@@ -195,9 +195,6 @@ struct ImageGenerationModelHeaderControls: View {
 
             readyIndicator
 
-            Divider()
-                .frame(height: 16)
-
             ImageGenerationHeaderGenerateControls(viewModel: viewModel)
         }
     }
@@ -260,6 +257,8 @@ struct ImageGenerationModelHeaderControls: View {
             Text(label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
             content()
         }
     }
@@ -310,6 +309,9 @@ struct ImageGenerationHeaderGenerateControls: View {
                 .controlSize(.small)
                 .tint(.red)
             } else {
+                Divider()
+                    .frame(height: 16)
+
                 Button {
                     viewModel.startGeneration()
                 } label: {
