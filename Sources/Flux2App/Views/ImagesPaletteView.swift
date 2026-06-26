@@ -116,14 +116,14 @@ struct ImagesPaletteView: View {
                 }
         }
 
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center, spacing: 8) {
             Picker("Role", selection: roleBinding(for: slot.id)) {
                 ForEach(GenerationImageRole.allCases) { role in
                     Text(role.displayName).tag(role)
                 }
             }
             .pickerStyle(.menu)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize()
 
             Toggle(
                 "Primary",
@@ -131,6 +131,27 @@ struct ImagesPaletteView: View {
             )
             .disabled(slot.role != .reference)
             .fixedSize()
+
+            Spacer(minLength: 8)
+
+            Button(action: { viewModel.saveInputImage() }) {
+                Label("Save", systemImage: "square.and.arrow.down.on.square")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(!canSaveInput(for: slot))
+            .help("Save the selected input variant (raw, formatted, or prepared)")
+
+            Picker("Stage", selection: $viewModel.inputSaveSource) {
+                ForEach(ImageInputSaveSource.allCases) { source in
+                    Text(source.menuLabel).tag(source)
+                }
+            }
+            .pickerStyle(.menu)
+            .controlSize(.small)
+            .fixedSize()
+            .disabled(!canSaveInput(for: slot))
+            .help("Input variant for Save: raw reference, formatted (crop/pad), or prepared (model input)")
         }
 
         Divider()
@@ -154,6 +175,10 @@ struct ImagesPaletteView: View {
                 .font(.caption2)
                 .foregroundStyle(.orange)
         }
+    }
+
+    private func canSaveInput(for slot: GenerationImageSlot) -> Bool {
+        slot.isPrimary && slot.role == .reference && slot.hasImage
     }
 
     private func roleBinding(for slotID: UUID) -> Binding<GenerationImageRole> {

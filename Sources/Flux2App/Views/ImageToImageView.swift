@@ -525,68 +525,49 @@ struct ImageToImageView: View {
     @ViewBuilder
     private var outputOptionsPaletteContent: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(outputPreviewTitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Picker("Compare", selection: $viewModel.previewComparisonSide) {
-                Text("A").tag(PreviewComparisonSide.formatted)
-                Text("B").tag(PreviewComparisonSide.processed)
-            }
-            .pickerStyle(.segmented)
-            .disabled(!viewModel.canTogglePreviewComparison)
-            .opacity(viewModel.canTogglePreviewComparison ? 1 : 0.45)
-            .help("A: formatted input aligned to output · B: processed result")
-
-            HStack(spacing: 8) {
-                Button(action: { viewModel.saveImage() }) {
-                    Label("Save", systemImage: "square.and.arrow.down")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(viewModel.generatedImage == nil)
-
-                Button(action: { useAsReference() }) {
-                    Label("Use as Reference", systemImage: "arrow.uturn.left")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(
-                    viewModel.generatedImage == nil
-                        || (!viewModel.canAddImageSlot && viewModel.activeImageSlot?.hasImage == true)
-                )
-            }
-
             LanczosUpscaleField(factor: $imageSaveUpscaleBy)
                 .disabled(!viewModel.hasPrimaryReference)
                 .opacity(viewModel.hasPrimaryReference ? 1 : 0.45)
-
-            HStack(spacing: 8) {
-                Button(action: { viewModel.saveInputImage() }) {
-                    Label("Save Input", systemImage: "square.and.arrow.down.on.square")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(!viewModel.hasPrimaryReference)
-                .help("Save the selected input variant (raw, formatted, or prepared)")
-
-                Picker("Stage", selection: $viewModel.inputSaveSource) {
-                    ForEach(ImageInputSaveSource.allCases) { source in
-                        Text(source.menuLabel).tag(source)
-                    }
-                }
-                .pickerStyle(.menu)
-                .controlSize(.small)
-                .fixedSize()
-                .disabled(!viewModel.hasPrimaryReference)
-                .help("Input variant for Save Input: raw reference, formatted (crop/pad), or prepared (model input)")
-            }
 
             Divider()
 
             ImageSaveWorkingNamingPreferencesView(
                 previewPrompt: viewModel.prompt.isEmpty ? "sample prompt" : viewModel.prompt
             )
+        }
+    }
+
+    @ViewBuilder
+    private var previewTrailingActions: some View {
+        HStack(spacing: 8) {
+            Picker("Compare", selection: $viewModel.previewComparisonSide) {
+                Text("A").tag(PreviewComparisonSide.formatted)
+                Text("B").tag(PreviewComparisonSide.processed)
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 140)
+            .disabled(!viewModel.canTogglePreviewComparison)
+            .opacity(viewModel.canTogglePreviewComparison ? 1 : 0.45)
+            .help("A: formatted input aligned to output · B: processed result")
+
+            Button(action: { useAsReference() }) {
+                Label("Use as Reference", systemImage: "arrow.uturn.left")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(
+                viewModel.generatedImage == nil
+                    || (!viewModel.canAddImageSlot && viewModel.activeImageSlot?.hasImage == true)
+            )
+
+            Button(action: { viewModel.saveImage() }) {
+                Label("Save Preview", systemImage: "square.and.arrow.down")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(viewModel.generatedImage == nil)
+
+            clearPreviewButton
         }
     }
 
@@ -629,12 +610,9 @@ struct ImageToImageView: View {
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                        HStack {
-                            Spacer(minLength: 0)
-                            clearPreviewButton
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
+                        previewMetricsFooter(image: viewModel.previewSourceImage ?? cgImage)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
                     }
                     .frame(width: geometry.size.width, height: geometry.size.height)
                 } else if let previewImage = viewModel.previewSourceImage {
@@ -733,31 +711,19 @@ struct ImageToImageView: View {
                     image: image,
                     megapixelBudget: viewModel.megapixelBudget
                 )
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            HStack(alignment: .top, spacing: 8) {
-                PreparationSizeInfoRow(
-                    image: image,
-                    contextArea: viewModel.contextArea,
-                    adjustedSize: viewModel.adjustedGenerationSize
-                )
-                clearPreviewButton
-            }
+            PreparationSizeInfoRow(
+                image: image,
+                contextArea: viewModel.contextArea,
+                adjustedSize: viewModel.adjustedGenerationSize,
+                trailingControls: { previewTrailingActions }
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal)
         .padding(.bottom, 10)
-    }
-
-    private var outputPreviewTitle: String {
-        if viewModel.generatedImage != nil {
-            switch viewModel.previewComparisonSide {
-            case .formatted:
-                return "Formatted (A)"
-            case .processed:
-                return "Processed (B)"
-            }
-        }
-        return "Image Preview"
     }
 
     // MARK: - Checkpoints Section
@@ -2030,14 +1996,15 @@ enum AspectRatioAdvisory {
     }
 }
 
-struct PreparationSizeInfoRow: View {
+struct PreparationSizeInfoRow<Trailing: View>: View {
     let image: CGImage
     let contextArea: CGRect?
     let adjustedSize: (width: Int, height: Int)
+    @ViewBuilder let trailingControls: () -> Trailing
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
                 sizeItem(label: "Original", value: "\(image.width)x\(image.height)")
 
                 verticalSeparator
@@ -2052,7 +2019,9 @@ struct PreparationSizeInfoRow: View {
 
                 sizeItem(label: "Pixels", value: megapixelValue)
 
-                Spacer(minLength: 0)
+                Spacer(minLength: 8)
+
+                trailingControls()
             }
             .foregroundStyle(.secondary)
 

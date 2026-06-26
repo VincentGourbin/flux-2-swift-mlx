@@ -10,7 +10,7 @@ struct DefaultsCommands: Commands {
 
     var body: some Commands {
         CommandGroup(after: .appSettings) {
-            Button("Defaults...") {
+            Button("Defaults...", systemImage: "slider.horizontal.3") {
                 openWindow(id: "image-save-defaults")
             }
         }

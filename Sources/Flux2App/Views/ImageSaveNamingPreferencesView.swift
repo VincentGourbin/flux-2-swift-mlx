@@ -19,7 +19,6 @@ struct ImageSaveNamingPreferencesView: View {
     @Binding var autoIncrementStep: Int
 
     var previewPrompt: String = "sample prompt"
-    var compact: Bool = false
 
     private var namingValues: ImageSaveNamingValues {
         ImageSaveNamingValues(
@@ -38,8 +37,8 @@ struct ImageSaveNamingPreferencesView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: compact ? 8 : 12) {
-            labeledRow("Path") {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 8) {
                 Picker("Path", selection: $outputMode) {
                     ForEach(ImageSaveOutputMode.allCases) { mode in
                         Text(mode.rawValue).tag(mode.rawValue)
@@ -47,9 +46,8 @@ struct ImageSaveNamingPreferencesView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
-            }
+                .frame(width: Layout.segmentedWidth, alignment: .leading)
 
-            labeledRow("Preset") {
                 Picker("Preset", selection: $preset) {
                     ForEach(ImageSavePreset.allCases) { preset in
                         Text(preset.rawValue).tag(preset.rawValue)
@@ -57,16 +55,13 @@ struct ImageSaveNamingPreferencesView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.menu)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize()
                 .disabled(outputMode != ImageSaveOutputMode.preset.rawValue)
+
+                Spacer(minLength: 0)
             }
 
-            Text("File Names")
-                .font(compact ? .caption.bold() : .headline)
-                .frame(maxWidth: .infinity)
-                .padding(.top, compact ? 2 : 4)
-
-            labeledRow("Base") {
+            HStack(alignment: .center, spacing: 8) {
                 Picker("Base", selection: $inputBase) {
                     ForEach(ImageSaveInputBase.allCases) { inputBase in
                         Text(inputBase.rawValue).tag(inputBase.rawValue)
@@ -74,23 +69,22 @@ struct ImageSaveNamingPreferencesView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
-            }
+                .frame(width: Layout.segmentedWidth, alignment: .leading)
 
-            labeledRow("Static Prefix") {
                 TextField("image", text: $filenamePrefix)
                     .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: .infinity)
                     .disabled(inputBase != ImageSaveInputBase.staticPrefix.rawValue)
-            }
 
-            labeledRow("Free Text Segment") {
-                TextField("", text: $freeText)
+                TextField("Free text", text: $freeText)
                     .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: .infinity)
             }
 
-            Toggle("Add timestamp", isOn: $useTimestamp)
-                .font(compact ? .caption : .body)
+            HStack(alignment: .center, spacing: 8) {
+                Toggle("Add timestamp", isOn: $useTimestamp)
+                    .font(.caption)
 
-            labeledRow("Timestamp") {
                 Picker("Timestamp", selection: $timestampFormat) {
                     ForEach(ImageSaveTimestampFormat.allCases) { format in
                         Text(format.rawValue).tag(format.rawValue)
@@ -98,22 +92,27 @@ struct ImageSaveNamingPreferencesView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.menu)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize()
                 .disabled(!useTimestamp)
             }
 
-            Toggle("Add auto-increment", isOn: $useAutoIncrement)
-                .font(compact ? .caption : .body)
+            HStack(alignment: .center, spacing: 6) {
+                Toggle("Add auto-increment", isOn: $useAutoIncrement)
+                    .font(.caption)
+                    .fixedSize()
 
-            Stepper("Digits: \(autoIncrementDigits)", value: $autoIncrementDigits, in: 1...12)
-                .font(compact ? .caption : .body)
-                .disabled(!useAutoIncrement)
-            Stepper("Start: \(autoIncrementStart)", value: $autoIncrementStart, in: 0...999_999)
-                .font(compact ? .caption : .body)
-                .disabled(!useAutoIncrement)
-            Stepper("Step: \(autoIncrementStep)", value: $autoIncrementStep, in: 1...999)
-                .font(compact ? .caption : .body)
-                .disabled(!useAutoIncrement)
+                Stepper("Digits: \(autoIncrementDigits)", value: $autoIncrementDigits, in: 1...12)
+                    .font(.caption)
+                    .disabled(!useAutoIncrement)
+
+                Stepper("Start: \(autoIncrementStart)", value: $autoIncrementStart, in: 0...999_999)
+                    .font(.caption)
+                    .disabled(!useAutoIncrement)
+
+                Stepper("Step: \(autoIncrementStep)", value: $autoIncrementStep, in: 1...999)
+                    .font(.caption)
+                    .disabled(!useAutoIncrement)
+            }
 
             Text("Preview: \(ImageSaveService.previewFilename(metadata: ImageSaveMetadata(prompt: previewPrompt), naming: namingValues))")
                 .font(.caption)
@@ -122,23 +121,8 @@ struct ImageSaveNamingPreferencesView: View {
         }
     }
 
-    @ViewBuilder
-    private func labeledRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        if compact {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.caption.bold())
-                    .foregroundStyle(.secondary)
-                content()
-            }
-        } else {
-            HStack(alignment: .center, spacing: 12) {
-                Text(title)
-                    .frame(width: 120, alignment: .trailing)
-                content()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
+    private enum Layout {
+        static let segmentedWidth: CGFloat = 132
     }
 }
 
@@ -171,8 +155,7 @@ struct ImageSaveWorkingNamingPreferencesView: View {
             autoIncrementDigits: $autoIncrementDigits,
             autoIncrementStart: $autoIncrementStart,
             autoIncrementStep: $autoIncrementStep,
-            previewPrompt: previewPrompt,
-            compact: true
+            previewPrompt: previewPrompt
         )
     }
 }
@@ -239,8 +222,7 @@ struct ImageSaveDefaultsViewContent: View {
                 useAutoIncrement: $useAutoIncrement,
                 autoIncrementDigits: $autoIncrementDigits,
                 autoIncrementStart: $autoIncrementStart,
-                autoIncrementStep: $autoIncrementStep,
-                compact: false
+                autoIncrementStep: $autoIncrementStep
             )
         }
         .padding(20)
