@@ -51,6 +51,8 @@ groot_training*.yaml
 scripts/train_all_models.sh
 scripts/*.py
 *.safetensors
+# ...but the bundled SCUNet cleanup weights are a tracked Flux2Core resource
+!Sources/Flux2Core/Resources/*.safetensors
 
 # Obsolete plans directory
 docs/plans/

@@ -47,6 +47,7 @@ struct Flux2CLI: AsyncParsableCommand {
             TrainLoRA.self,
             TrainingControlCommand.self,
             ScunetParity.self,
+            CleanImage.self,
         ],
         defaultSubcommand: TextToImage.self
     )

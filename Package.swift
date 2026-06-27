@@ -49,6 +49,10 @@ let package = Package(
                 .product(name: "MLXOptimizers", package: "mlx-swift"),
                 .product(name: "Transformers", package: "swift-transformers"),
                 .product(name: "MLXProfiler", package: "swift-mlx-profiler"),
+            ],
+            resources: [
+                // SCUNet (image cleanup) weights, bundled so ImageCleanup is always available.
+                .copy("Resources/scunet_color_real_psnr_mlx.safetensors"),
             ]
         ),
         .target(
