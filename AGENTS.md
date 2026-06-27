@@ -6,6 +6,17 @@ Fork of [flux-2-swift-mlx](https://github.com/VincentGourbin/flux-2-swift-mlx) f
 
 Single developer, macOS, one machine.
 
+## Working style (collaboration)
+
+**Ask freely; confirm before any non-trivial decision (rule, 2026-06-27).** This
+developer *prefers* to be consulted — surface choices as questions and wait for
+an answer rather than picking a direction and running with it. Lots of small
+questions are welcome. Silently making a string of decisions — especially
+mid-task, e.g. pushing through repeated failed attempts — is the thing to avoid.
+When something is ambiguous, has trade-offs, or would commit real time/effort,
+stop and ask. Default to *less* autonomous action here than the usual agent
+default.
+
 ---
 
 ## Repos and remotes
@@ -207,7 +218,9 @@ bin/build-mlx-metallib.sh
 
 Models are not bundled — expect “Not Loaded” on first launch unless weights are cached in the VM’s `~/Library/Caches/models/`.
 
-### VM rule — stop, don't thrash
+### VM rule — ask first, then stop, don't thrash
+
+**Ask-first (rule, 2026-06-27):** Before running *any* Circus / Tart VM command — `bin/vm-smoke*.sh`, any `circus …` invocation, or anything else that drives the VM — STOP and tell the user exactly what you intend to run and why, then wait for the go-ahead. This pre-flight confirmation is separate from (and precedes) the "stop, don't thrash" guidance below, which governs what to do once a VM action is already underway and goes wrong.
 
 **If you have trouble in the virtual machine, stop immediately** and report what you observed (connection error, hung command, unexpected UI state, missing tunnel). Do **not**:
 
