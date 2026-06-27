@@ -78,4 +78,21 @@ final class ImagePreparationFullFrameTests: XCTestCase {
         let result = try ImagePreparation.prepare(referenceImages: [image], settings: settings)
         XCTAssertNil(result.compositionPlan)
     }
+
+    /// The public settings+image predicate must classify edits identically to the
+    /// composite-back decision inside prepare() — the same resolved rects back both.
+    func testPublicIsFullFramePredicateMatchesPrepareClassification() throws {
+        let image = makeImage(width: 1200, height: 900)
+
+        var full = ImagePreparationSettings()
+        full.megapixelBudget = 1.0
+        full.compositeBack = true
+        XCTAssertTrue(ImagePreparation.isFullFrame(settings: full, image: image))
+        XCTAssertNil(try ImagePreparation.prepare(referenceImages: [image], settings: full).compositionPlan)
+
+        var partial = full
+        partial.processArea = CGRect(x: 0.2, y: 0.2, width: 0.4, height: 0.4)
+        XCTAssertFalse(ImagePreparation.isFullFrame(settings: partial, image: image))
+        XCTAssertNotNil(try ImagePreparation.prepare(referenceImages: [image], settings: partial).compositionPlan)
+    }
 }

@@ -133,8 +133,7 @@ public enum ImagePreparation {
         var settings = settings
         settings.clampValues()
 
-        let contextRect = integralPixelRect(from: settings.contextArea, in: original)
-        let processRect = integralProcessRect(in: original, contextRect: contextRect, processArea: settings.processArea)
+        let (contextRect, processRect) = resolvedRects(settings: settings, image: original)
         let targetSize = generationSize(referenceImage: original, settings: settings)
 
         let contextImage = try cropImage(original, to: contextRect)
@@ -297,6 +296,30 @@ public enum ImagePreparation {
             && processRect.minY <= 0
             && processRect.width >= CGFloat(original.width)
             && processRect.height >= CGFloat(original.height)
+    }
+
+    /// Whether `settings` resolves to a full-frame edit on `image`: the process
+    /// area covers the whole image, so generation outputs at the budget size with
+    /// no composite-back (Fix 2). Resolves the process rect through the exact same
+    /// path `prepare()` uses, so app-layer routing classifies "budget vs
+    /// paste-back" identically to the composite-back decision — the rect-cover rule
+    /// is never re-derived elsewhere.
+    public static func isFullFrame(settings: ImagePreparationSettings, image: CGImage) -> Bool {
+        isFullFrame(processRect: resolvedRects(settings: settings, image: image).process, original: image)
+    }
+
+    /// The integral context + process rects for `settings` on `image` — the single
+    /// derivation shared by `prepare()` and `isFullFrame(settings:image:)` so the
+    /// composite-back decision and the public predicate can never disagree.
+    private static func resolvedRects(
+        settings: ImagePreparationSettings,
+        image: CGImage
+    ) -> (context: CGRect, process: CGRect) {
+        var settings = settings
+        settings.clampValues()
+        let contextRect = integralPixelRect(from: settings.contextArea, in: image)
+        let processRect = integralProcessRect(in: image, contextRect: contextRect, processArea: settings.processArea)
+        return (contextRect, processRect)
     }
 
     private static func preparationTransform(
