@@ -54,3 +54,9 @@ scripts/*.py
 
 # Obsolete plans directory
 docs/plans/
+
+# Cursor local session artifacts
+.cursor/*.log
+
+# Local validation inputs (personal photos — not for the repo)
+Tests/SampleJPEGs/
