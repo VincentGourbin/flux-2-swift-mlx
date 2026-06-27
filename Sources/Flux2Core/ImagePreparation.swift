@@ -19,6 +19,14 @@ public enum ImagePreparation {
         return max(multiple, ((value + multiple - 1) / multiple) * multiple)
     }
 
+    /// Round `value` DOWN to `multiple` (floor), never below `multiple` itself.
+    /// The single home for the floor-to-alignment step — `ScalingPolicy.snapDown`
+    /// and the reference-render sizing both route through here so they can't drift.
+    public static func floorToMultiple(_ value: Int, multiple: Int) -> Int {
+        guard multiple > 0 else { return value }
+        return max(multiple, (value / multiple) * multiple)
+    }
+
     public static func referenceMatchedSize(
         width: Int,
         height: Int,
@@ -33,8 +41,8 @@ public enum ImagePreparation {
             w *= scale
             h *= scale
         }
-        let flooredWidth = max(multiple, (Int(w) / multiple) * multiple)
-        let flooredHeight = max(multiple, (Int(h) / multiple) * multiple)
+        let flooredWidth = floorToMultiple(Int(w), multiple: multiple)
+        let flooredHeight = floorToMultiple(Int(h), multiple: multiple)
         return (flooredWidth, flooredHeight)
     }
 
@@ -170,6 +178,13 @@ public enum ImagePreparation {
         let preparedAdditionalImages = try referenceImages.dropFirst().map { image in
             try formatFullFrameReference(image, settings: settings)
         }
+        // Fix 2: a full-frame edit (process area covers the whole original) has no
+        // surrounding pixels to preserve, so there's nothing to composite back —
+        // pasting the patch into the original would only down-sample the budget
+        // canvas to the source resolution. Skip the plan so a full-frame
+        // enlarge/rebuild outputs at the budget size. Partial / Live-Area edits
+        // still paste back into the full-resolution original.
+        let fullFrame = isFullFrame(processRect: processRect, original: original)
         let plan = ImageCompositionPlan(
             originalImage: original,
             contextRect: contextRect,
@@ -181,7 +196,7 @@ public enum ImagePreparation {
             images: [preparedFirstImage] + preparedAdditionalImages,
             width: targetSize.width,
             height: targetSize.height,
-            compositionPlan: settings.compositeBack ? plan : nil
+            compositionPlan: (settings.compositeBack && !fullFrame) ? plan : nil
         )
     }
 
@@ -270,9 +285,18 @@ public enum ImagePreparation {
         guard outputScale > 1 else { return targetSize }
         let rawWidth = min(Int(CGFloat(targetSize.width) / outputScale), contextWidth)
         let rawHeight = min(Int(CGFloat(targetSize.height) / outputScale), contextHeight)
-        let flooredWidth = max(alignment, (rawWidth / alignment) * alignment)
-        let flooredHeight = max(alignment, (rawHeight / alignment) * alignment)
+        let flooredWidth = floorToMultiple(rawWidth, multiple: alignment)
+        let flooredHeight = floorToMultiple(rawHeight, multiple: alignment)
         return (flooredWidth, flooredHeight)
+    }
+
+    /// Whether the resolved `processRect` covers the whole original — a full-frame
+    /// edit with no surrounding pixels to preserve. Drives the Fix 2 composite skip.
+    static func isFullFrame(processRect: CGRect, original: CGImage) -> Bool {
+        processRect.minX <= 0
+            && processRect.minY <= 0
+            && processRect.width >= CGFloat(original.width)
+            && processRect.height >= CGFloat(original.height)
     }
 
     private static func preparationTransform(

@@ -22,4 +22,19 @@ extension ScalingPolicy {
     ) -> PixelSize {
         ScalingPolicy(family: family).targetSize(for: image, settings: settings)
     }
+
+    /// Authoritative generation dimensions for `image` + `family` at an explicit
+    /// megapixel budget, assuming a full-frame edit with default formatting
+    /// (favour `.original`, scale `1.0`, no Live Area). The NR-IQA quality probe
+    /// uses this so its measurement never inherits a project's live-area / favour /
+    /// scale — only the budget + per-family alignment.
+    static func targetSize(
+        for image: CGImage,
+        family: ModelFamily,
+        megapixelBudget: Double
+    ) -> PixelSize {
+        var settings = ImagePreparationSettings()
+        settings.megapixelBudget = megapixelBudget
+        return targetSize(for: image, family: family, settings: settings)
+    }
 }

@@ -4,7 +4,7 @@
  */
 
 import AppKit
-import CoreImage
+import Flux2Core
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
@@ -161,7 +161,9 @@ enum ImageSaveService {
         let imageToSave: CGImage
         let upscaleBy = defaults.double(forKey: "imageSaveUpscaleBy")
         if upscaleBy > 1.0 {
-            imageToSave = try upscale(image, scale: upscaleBy)
+            let scaledWidth = Int((Double(image.width) * upscaleBy).rounded())
+            let scaledHeight = Int((Double(image.height) * upscaleBy).rounded())
+            imageToSave = try ImageScaler.lanczos(image, to: (width: scaledWidth, height: scaledHeight))
         } else {
             imageToSave = image
         }
@@ -332,23 +334,6 @@ enum ImageSaveService {
         if !CGImageDestinationFinalize(destination) {
             throw saveError("Could not save as \(format.rawValue).")
         }
-    }
-
-    private static func upscale(_ image: CGImage, scale: Double) throws -> CGImage {
-        guard scale > 1 else { return image }
-        let input = CIImage(cgImage: image)
-        guard let filter = CIFilter(name: "CILanczosScaleTransform") else {
-            throw saveError("Lanczos upscale is not available.")
-        }
-        filter.setValue(input, forKey: kCIInputImageKey)
-        filter.setValue(scale, forKey: kCIInputScaleKey)
-        filter.setValue(1.0, forKey: kCIInputAspectRatioKey)
-
-        guard let output = filter.outputImage,
-              let scaled = CIContext().createCGImage(output, from: output.extent.integral) else {
-            throw saveError("Lanczos upscale failed.")
-        }
-        return scaled
     }
 
     private static func flattenAlphaToRGB(_ image: CGImage) throws -> CGImage {

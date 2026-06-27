@@ -10,10 +10,17 @@
  * The one invariant — `alignment` must be a positive multiple of the latent
  * factor (VAE 8 × patch 2 = 16) — is enforced here and nowhere else.
  *
- * Phase 1 (this commit) establishes the API by delegating to the existing
- * ImagePreparation / LatentUtils helpers (delegation, not duplication). A later
- * pass inverts the direction so those helpers become thin wrappers over the
- * policy and the remaining hand-rolled 16/32 copies are removed.
+ * Design: `ImagePreparation` owns the sizing/snap primitives (it has the most
+ * callers); `ScalingPolicy` is the typed facade over them — one alignment, one
+ * budget clamp, one floor/ceil pair (`snapUp`/`snapDown` route through
+ * `ImagePreparation.snapToMultiple`/`floorToMultiple`), one latent map
+ * (`LatentUtils.getLatentDimensions`). Phase 2 folded the fork's hand-rolled
+ * floor copies into `floorToMultiple` and replaced the literal `32` defaults with
+ * `ImagePreparation.generationSizeMultiple`. The latent `/16` copies that remain
+ * live in upstream-tracked pipeline / chains / training files (`LatentUtils`,
+ * `Flux2Pipeline`, `Flux2OutpaintingChain`, the LoRA trainer); they already
+ * centralize on `LatentUtils.getLatentDimensions`, so consolidating them further
+ * is deferred to avoid upstream-rebase friction for no behavior change.
  */
 
 import CoreGraphics
@@ -80,6 +87,6 @@ public struct ScalingPolicy: Sendable, Equatable {
 
     /// Round down to `alignment` (don't exceed source / budget). Minimum result = `alignment`.
     public func snapDown(_ value: Int) -> Int {
-        max(alignment, (value / alignment) * alignment)
+        ImagePreparation.floorToMultiple(value, multiple: alignment)
     }
 }

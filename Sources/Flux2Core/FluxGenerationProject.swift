@@ -174,7 +174,7 @@ public struct FluxGenerationProject: Codable, Sendable {
 
     public func preparationSettings(
         compositeBack: Bool = true,
-        pixelAlignment: Int = 32
+        pixelAlignment: Int = ImagePreparation.generationSizeMultiple
     ) -> ImagePreparationSettings {
         let budget = megapixelBudget ?? 1.0
         var settings = (primaryReferenceRecord(bundleRoot: nil)?.formatting ?? ImageSlotFormatting())

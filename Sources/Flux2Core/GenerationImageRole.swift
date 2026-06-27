@@ -44,7 +44,7 @@ public struct ImageSlotFormatting: Codable, Sendable, Equatable {
 
     public func preparationSettings(
         megapixelBudget: Double,
-        pixelAlignment: Int = 32,
+        pixelAlignment: Int = ImagePreparation.generationSizeMultiple,
         compositeBack: Bool = true
     ) -> ImagePreparationSettings {
         var settings = ImagePreparationSettings()
