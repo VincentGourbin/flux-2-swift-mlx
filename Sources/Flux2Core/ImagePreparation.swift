@@ -137,11 +137,34 @@ public enum ImagePreparation {
             targetHeight: targetSize.height,
             method: settings.sizingMethod
         )
+
+        // Conditioning fidelity: never UP-sample the reference the VAE encodes.
+        // Up-sampling a low-quality JPEG (Core Graphics .high) smears its 8x8
+        // block edges into fuzzy gradients that FLUX.2 reads as real structure —
+        // out of distribution, since super-resolution priors are trained on
+        // native degraded JPEGs, not interpolated ones. Render the reference at
+        // native scale (clamped so the render never exceeds 1.0) and let the
+        // model perform the enlargement generatively. The output canvas and the
+        // composite mapping stay at targetSize via `transform`.
+        let referenceSize = referenceRenderSize(
+            contextWidth: contextImage.width,
+            contextHeight: contextImage.height,
+            targetSize: targetSize,
+            outputScale: transform.scale,
+            alignment: settings.pixelAlignment
+        )
+        let referenceTransform = preparationTransform(
+            sourceWidth: contextImage.width,
+            sourceHeight: contextImage.height,
+            targetWidth: referenceSize.width,
+            targetHeight: referenceSize.height,
+            method: settings.sizingMethod
+        )
         let preparedFirstImage = try renderImage(
             contextImage,
-            targetWidth: targetSize.width,
-            targetHeight: targetSize.height,
-            transform: transform
+            targetWidth: referenceSize.width,
+            targetHeight: referenceSize.height,
+            transform: referenceTransform
         )
 
         let preparedAdditionalImages = try referenceImages.dropFirst().map { image in
@@ -231,6 +254,26 @@ public enum ImagePreparation {
     }
 
     // MARK: - Private helpers
+
+    /// Size for the conditioning reference render. When the output canvas would
+    /// up-sample the source (`outputScale > 1`), cap the reference at the source's
+    /// native pixels (clamped per-dimension and floored to `alignment`) so the VAE
+    /// encodes real pixels, never interpolation-smeared ones. When the source is
+    /// already at/above budget, the reference matches the output size as before.
+    private static func referenceRenderSize(
+        contextWidth: Int,
+        contextHeight: Int,
+        targetSize: (width: Int, height: Int),
+        outputScale: CGFloat,
+        alignment: Int
+    ) -> (width: Int, height: Int) {
+        guard outputScale > 1 else { return targetSize }
+        let rawWidth = min(Int(CGFloat(targetSize.width) / outputScale), contextWidth)
+        let rawHeight = min(Int(CGFloat(targetSize.height) / outputScale), contextHeight)
+        let flooredWidth = max(alignment, (rawWidth / alignment) * alignment)
+        let flooredHeight = max(alignment, (rawHeight / alignment) * alignment)
+        return (flooredWidth, flooredHeight)
+    }
 
     private static func preparationTransform(
         sourceWidth: Int,
