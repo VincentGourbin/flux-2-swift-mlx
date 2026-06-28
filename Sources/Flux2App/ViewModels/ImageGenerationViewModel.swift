@@ -74,6 +74,12 @@ class ImageGenerationViewModel: ObservableObject {
     @Published var textQuantization: MistralQuantization = .mlx8bit
     @Published var transformerQuantization: TransformerQuantization = .qint8
 
+    // MARK: - Upsize (per-image scale / enlarge on the working reference)
+    /// Method the Upsize control applies to the primary reference: a plain
+    /// resampler (Bicubic / Lanczos) or a generative FLUX enlarge. Session state,
+    /// defaulting to the honest, instant resampler.
+    @Published var upsizeMethod: UpsizeMethod = .lanczos
+
     // MARK: - Prompt
     @Published var prompt: String = ""
     @Published var upsamplePrompt: Bool = false

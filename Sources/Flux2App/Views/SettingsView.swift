@@ -19,6 +19,8 @@ struct SettingsView: View {
     @AppStorage(ImageSavePreferenceKeys.outputRootPresetsJSON) private var outputRootPresetsJSON = ""
     @AppStorage("imageSaveFormat") private var imageSaveFormat = ImageSaveFormat.png24.rawValue
     @AppStorage("imageSaveUpscaleBy") private var imageSaveUpscaleBy = 1.0
+    @AppStorage(ImageGenerationViewModel.upsizeFaithfulPromptKey)
+    private var upsizeFaithfulPrompt = ImageGenerationViewModel.defaultFaithfulUpscalePrompt
 
     @State private var defaultOutputDraft = ImageSaveService.defaultOutputRoot
 
@@ -35,6 +37,23 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section("Upsize") {
+                TextField("Faithful enlarge prompt", text: $upsizeFaithfulPrompt, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(3...6)
+                HStack {
+                    Text("Drives the FLUX enlarge on the Images palette — it should ask for more resolution and detail without changing content. Resampling (Bicubic / Lanczos) ignores it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 12)
+                    Button("Reset") {
+                        upsizeFaithfulPrompt = ImageGenerationViewModel.defaultFaithfulUpscalePrompt
+                    }
+                    .controlSize(.small)
+                }
             }
 
             Section {

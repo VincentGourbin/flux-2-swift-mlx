@@ -170,6 +170,10 @@ struct ImagesPaletteView: View {
                 .foregroundStyle(.secondary)
         }
 
+        if slot.isPrimary, slot.role == .reference, slot.hasImage {
+            UpsizeControlView(viewModel: viewModel)
+        }
+
         if !viewModel.isSpatialEditingActive, slot.hasImage {
             Text("Select the Primary reference tab to use Live Area and canvas tools on the preview.")
                 .font(.caption2)
@@ -390,5 +394,68 @@ struct ImageSlotAspectRatioFormattingView: View {
                 }
             }
         }
+    }
+}
+
+/// Scale or generatively enlarge the working (primary) reference to the megapixel
+/// budget. The dropdown picks a resampler or a FLUX model; Apply runs it. FLUX
+/// rows grey out when the source already fills the budget (only resampling
+/// applies when downscaling). The faithful enlarge prompt lives in Settings.
+struct UpsizeControlView: View {
+    @ObservedObject var viewModel: ImageGenerationViewModel
+
+    var body: some View {
+        GroupBox("Upsize") {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Menu {
+                        ForEach(UpsizeMethod.allCases) { method in
+                            Button {
+                                viewModel.upsizeMethod = method
+                            } label: {
+                                if method == viewModel.upsizeMethod {
+                                    Label(method.displayName, systemImage: "checkmark")
+                                } else {
+                                    Text(method.displayName)
+                                }
+                            }
+                            .disabled(method.isGenerative && viewModel.isUpsizeDownscaling)
+                        }
+                    } label: {
+                        Text(viewModel.upsizeMethod.displayName)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(width: 150)
+
+                    Button(action: { viewModel.performUpsize() }) {
+                        Text("Apply")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(!viewModel.canApplyUpsize)
+
+                    if viewModel.isGenerating {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+
+                Text(hint)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var hint: String {
+        if viewModel.upsizeMethod.isGenerative {
+            if viewModel.isUpsizeDownscaling {
+                return "Source already fills the budget — generative enlarge isn’t available; choose Bicubic or Lanczos."
+            }
+            return "Replaces the working image with a FLUX-enlarged version at the megapixel budget (a full generation)."
+        }
+        return "Resamples the working image to the megapixel budget."
     }
 }
