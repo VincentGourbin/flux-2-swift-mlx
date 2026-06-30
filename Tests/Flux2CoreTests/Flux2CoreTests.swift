@@ -2129,7 +2129,8 @@ import Testing
     // Sortie 20 renamed huggingFaceRepo → repoId, huggingFaceSubfolder → repoSubfolder.
     #expect(variant.rawValue == "klein9b-kv-bf16")
     #expect(variant.repoId == "black-forest-labs/FLUX.2-klein-9b-kv")
-    #expect(variant.repoSubfolder == nil)
+    // Klein 9B KV weights live under the transformer/ subfolder (see 639b5dd).
+    #expect(variant.repoSubfolder == "transformer")
     #expect(variant.estimatedSizeGB == 18)
     #expect(variant.isGated)
     #expect(variant.modelType == .klein9BKV)
