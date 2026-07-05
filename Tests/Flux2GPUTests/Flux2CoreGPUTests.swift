@@ -107,24 +107,7 @@ struct Flux2CoreGPUTests {
     }
   }
 
-  // MARK: - Test 4: VAE round-trip encode→latent→decode (no standalone API)
-
-  @Test(.timeLimit(.minutes(3))) func vaeRoundTripEncodeLatentDecode() async throws {
-    guard checkGPUPreconditions(minimumBytes: 16 * 1_073_741_824) else { return }
-    Issue.record(
-      "No standalone VAE encode API — requires full model load (verified by reading source)")
-  }
-
-  // MARK: - Test 5: Klein embedding extractor shape (in FluxTextEncoders, not Flux2Core)
-
-  @Test(.timeLimit(.minutes(3))) func kleinEmbeddingExtractorShape() async throws {
-    guard checkGPUPreconditions(minimumBytes: 16 * 1_073_741_824) else { return }
-    Issue.record(
-      "No standalone KleinEmbeddingExtractor API in Flux2Core — it lives in FluxTextEncoders (verified by reading source)"
-    )
-  }
-
-  // MARK: - Test 6: Fixed seed is deterministic
+  // MARK: - Test 4: Fixed seed is deterministic
 
   @Test(.timeLimit(.minutes(3))) func fixedSeedIsDeterministic() async throws {
     guard checkGPUPreconditions(minimumBytes: 16 * 1_073_741_824) else { return }
@@ -185,7 +168,7 @@ struct Flux2CoreGPUTests {
     #expect(pixels1 == pixels2, "Identical seed must produce identical pixel output")
   }
 
-  // MARK: - Test 7: Cancellation does not crash
+  // MARK: - Test 5: Cancellation does not crash
 
   @Test(.timeLimit(.minutes(3))) func cancellationDoesNotCrash() async throws {
     guard checkGPUPreconditions(minimumBytes: 16 * 1_073_741_824) else { return }
@@ -223,7 +206,7 @@ struct Flux2CoreGPUTests {
     }
   }
 
-  // MARK: - Test 8: LoRA weight shapes match rank
+  // MARK: - Test 6: LoRA weight shapes match rank
 
   @Test(.timeLimit(.minutes(3))) func loraWeightShapesMatchRank() async throws {
     guard checkGPUPreconditions(minimumBytes: 16 * 1_073_741_824) else { return }
@@ -255,7 +238,7 @@ struct Flux2CoreGPUTests {
     #expect(didThrowFileNotFound, "Loading a LoRA with a non-existent path must throw an error")
   }
 
-  // MARK: - Test 9: Quantization preset end-to-end (ultraMinimal)
+  // MARK: - Test 7: Quantization preset end-to-end (ultraMinimal)
 
   @Test(.timeLimit(.minutes(10))) func quantizationPresetEndToEnd() async throws {
     guard checkGPUPreconditions(minimumBytes: 16 * 1_073_741_824) else { return }
@@ -282,7 +265,7 @@ struct Flux2CoreGPUTests {
       image.height > 0, "ultraMinimal preset should produce a non-nil image with positive height")
   }
 
-  // MARK: - Test 10: Image-to-image output is non-trivial
+  // MARK: - Test 8: Image-to-image output is non-trivial
 
   @Test(.timeLimit(.minutes(3))) func imageToImageOutputIsNonTrivial() async throws {
     guard checkGPUPreconditions(minimumBytes: 16 * 1_073_741_824) else { return }
@@ -344,7 +327,7 @@ struct Flux2CoreGPUTests {
       "Mean brightness \(meanBrightness) should be in [0.05, 0.95] for a non-trivial image")
   }
 
-  // MARK: - Test 11: Progress callback fires exactly steps times
+  // MARK: - Test 9: Progress callback fires exactly steps times
 
   @Test(.timeLimit(.minutes(3))) func progressCallbackFiresStepsTimes() async throws {
     guard checkGPUPreconditions(minimumBytes: 16 * 1_073_741_824) else { return }
@@ -382,7 +365,7 @@ struct Flux2CoreGPUTests {
       callCount == steps, "Progress callback should fire exactly \(steps) times, got \(callCount)")
   }
 
-  // MARK: - Test 12: Tiled VAE decode at 768x768 produces a non-nil image (Sortie A5)
+  // MARK: - Test 10: Tiled VAE decode at 768x768 produces a non-nil image (Sortie A5)
 
   @Test(.timeLimit(.minutes(2))) func tiledVAEDecodeAt768ReturnsNonNilImage() {
     guard checkGPUPreconditions(minimumBytes: 8 * 1_073_741_824) else { return }
