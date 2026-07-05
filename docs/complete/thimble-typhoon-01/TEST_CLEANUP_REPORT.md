@@ -1,5 +1,8 @@
 ---
 type: reference
+state: completed
+mission: thimble-typhoon-01
+updated: 2026-07-05
 ---
 
 # Test Cleanup Report — OPERATION THIMBLE TYPHOON

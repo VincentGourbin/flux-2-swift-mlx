@@ -4,6 +4,9 @@ feature_name: OPERATION THIMBLE TYPHOON
 starting_point_commit: 9d94e557dcbc211ef3daa77557b693df4284f611
 mission_branch: mission/thimble-typhoon/01
 iteration: 1
+state: completed
+mission: thimble-typhoon-01
+updated: 2026-07-05
 ---
 
 # EXECUTION_PLAN.md — FLUX.2 on iPad
