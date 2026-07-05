@@ -18,6 +18,9 @@ result_checkpoints/
 output/
 *.png
 
+# Coverage / profiling artifacts
+*.profraw
+
 # But keep documentation images and example datasets
 !docs/examples/**/*.png
 !docs/screenshots/**/*.png
