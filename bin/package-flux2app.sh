@@ -50,6 +50,8 @@ if [[ ! -f "$INFO_TEMPLATE" ]]; then
 fi
 
 rm -rf "$BUNDLE"
+mkdir -p "$STAGING_DIR"
+touch "$STAGING_DIR/.metadata_never_index"
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
 
 cp "$BUILD_DIR/Flux2App" "$BUNDLE/Contents/MacOS/Flux2App"

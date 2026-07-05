@@ -92,7 +92,7 @@ Full config schema and agent contract: [utility-be-project-builder/Configs/AGENT
 | `build/Flux2App.app` | Gitignored compile output — exists only between compile and relocate |
 | `/Applications/Flux2App.app` | **Canonical installed app** — the only copy to run day to day |
 
-The repo keeps the icon source (`Assets/AppIcon/Flux2App-1024.png`), a committed `Supporting/Flux2App/Info.plist` template, and the thin `bin/package-flux2app.sh` wrapper. There is **no** `Flux2App.app` in the repo root.
+The repo keeps the icon source (`Assets/AppIcon/Flux2App-1024.png`), a committed `Supporting/Flux2App/Info.plist` template, and the thin `bin/package-flux2app.sh` wrapper. There is **no** `Flux2App.app` in the repo root. **Relocate deletes `build/Flux2App.app` after install** so macOS only registers one copy in `/Applications`.
 
 **Agent notes:**
 
