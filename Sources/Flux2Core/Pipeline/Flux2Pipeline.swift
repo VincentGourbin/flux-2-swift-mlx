@@ -467,59 +467,99 @@ public class Flux2Pipeline: @unchecked Sendable {
     )
     Flux2Debug.log("Memory optimization: \(memoryOptimization)")
 
-    // Load weights with explicit memory management
-    // For large models (Dev), this can temporarily use 2x memory during mapping
-    Flux2Debug.log("Loading transformer weights from disk...")
-    let transformerLoadStart = Date()
-    var weights = try Flux2WeightLoader.loadWeights(from: modelPath)
-    let transformerParamCount = weights.values.reduce(0) { $0 + $1.size }
-
-    Flux2Debug.log("Applying weights to model...")
-    try Flux2WeightLoader.applyTransformerWeights(&weights, to: transformer!)
-    let transformerLoadDuration = Date().timeIntervalSince(transformerLoadStart)
-
-    // Explicitly release the raw weights dictionary to free memory
-    // This is important for Dev model where weights can be ~32GB
-    weights.removeAll()
-    eval([])  // Sync to ensure weights are released
-    memoryManager.fullCleanup()
-    Flux2Debug.log("Raw weights released from memory")
-
-    await currentTelemetry()?.capture(
-      .weightLoadComplete(
-        component: .transformer,
-        paramCount: transformerParamCount,
-        durationSeconds: transformerLoadDuration,
-        physFootprint: Flux2MemoryFootprint.current()
-      ))
-
-    // Quantize transformer to native MLX QuantizedLinear if requested
-    // This handles both:
-    // 1. Pre-quantized weights (quanto→float16→MLX qint8): negligible precision loss
-    // 2. On-the-fly quantization from bf16 (e.g. Klein 9B qint8, any model int4)
-    // The quantization uses MLX's native QuantizedLinear format which:
-    // - Reduces memory usage proportionally to bit width (8-bit: ~50%, 4-bit: ~75%)
-    // - Uses optimized quantizedMM() for faster inference on Apple Silicon
-    // - Enables efficient dequant→merge→requant for LoRA weight merging
-    if quantization.transformer != .bf16 {
+    if variant.isPreQuantizedMLX {
+      // === Direct pre-quantized (int4) load path — Sortie B2, R2.1/R2.2/R2.3 ===
+      //
+      // The variant ships genuine MLX-native pre-quantized weights (packed uint32
+      // `.weight` + per-layer `.scales`/`.biases`). We load them STRAIGHT into
+      // `QuantizedLinear` with NO bf16 intermediate materialization and we do NOT
+      // enter the on-the-fly `quantize()` block below. This is what keeps peak
+      // `phys_footprint` under the steady-state + working pad (no ≥8 GB spike).
       let bits = quantization.transformer.bits
       let groupSize = quantization.transformer.groupSize
-      Flux2Debug.log("Quantizing transformer on-the-fly to \(bits)-bit (groupSize=\(groupSize))...")
-      memoryManager.logMemoryState()
-      let quantStart = Date()
+      Flux2Debug.log(
+        "Direct pre-quantized \(bits)-bit load (groupSize=\(groupSize)) — "
+          + "no bf16 intermediate, skipping on-the-fly quantize()")
+
+      // 1. Structural conversion: Linear → QuantizedLinear. MLX is lazy, so the
+      //    freshly-initialized (unevaluated) Linear weights are never materialized
+      //    to full bf16 — they are replaced by the loaded packed weights below
+      //    before any eval, so no 8 GB bf16 buffer is ever realized.
       quantize(model: transformer!, groupSize: groupSize, bits: bits)
+
+      // 2. mmap the packed safetensors directly (emits weightLoadComplete with
+      //    phys_footprint on its success path).
+      Flux2Debug.log("Loading pre-quantized transformer weights from disk (mmap)...")
+      var weights = try Flux2WeightLoader.loadQuantizedTransformer(
+        from: modelPath.path, quantization: quantization.transformer)
+
+      // 3. Apply the packed .weight/.scales/.biases onto the QuantizedLinear params.
+      Flux2Debug.log("Applying pre-quantized weights to QuantizedLinear model...")
+      try Flux2WeightLoader.applyTransformerWeights(&weights, to: transformer!)
+
+      weights.removeAll()
       eval(transformer!.parameters())
-      let quantDuration = Date().timeIntervalSince(quantStart)
       memoryManager.fullCleanup()
-      memoryManager.logMemoryState()
-      Flux2Debug.log("Transformer quantized to QuantizedLinear (\(bits)-bit)")
+      Flux2Debug.log("Pre-quantized transformer loaded directly into QuantizedLinear (\(bits)-bit)")
+    } else {
+      // === bf16 / quanto load path (with optional on-the-fly quantization) ===
+      // Load weights with explicit memory management
+      // For large models (Dev), this can temporarily use 2x memory during mapping
+      Flux2Debug.log("Loading transformer weights from disk...")
+      let transformerLoadStart = Date()
+      var weights = try Flux2WeightLoader.loadWeights(from: modelPath)
+      let transformerParamCount = weights.values.reduce(0) { $0 + $1.size }
+
+      Flux2Debug.log("Applying weights to model...")
+      try Flux2WeightLoader.applyTransformerWeights(&weights, to: transformer!)
+      let transformerLoadDuration = Date().timeIntervalSince(transformerLoadStart)
+
+      // Explicitly release the raw weights dictionary to free memory
+      // This is important for Dev model where weights can be ~32GB
+      weights.removeAll()
+      eval([])  // Sync to ensure weights are released
+      memoryManager.fullCleanup()
+      Flux2Debug.log("Raw weights released from memory")
+
       await currentTelemetry()?.capture(
-        .quantizationComplete(
+        .weightLoadComplete(
           component: .transformer,
-          bits: bits,
-          groupSize: groupSize,
-          durationSeconds: quantDuration
+          paramCount: transformerParamCount,
+          durationSeconds: transformerLoadDuration,
+          physFootprint: Flux2MemoryFootprint.current()
         ))
+
+      // Quantize transformer to native MLX QuantizedLinear if requested
+      // This handles both:
+      // 1. Pre-quantized quanto weights (quanto→float16→MLX qint8): negligible precision loss
+      // 2. On-the-fly quantization from bf16 (e.g. Klein 9B qint8, Dev int4)
+      //
+      // Genuine MLX-native pre-quantized variants (klein4B_4bit) never reach here
+      // — they take the direct-load branch above.
+      // The quantization uses MLX's native QuantizedLinear format which:
+      // - Reduces memory usage proportionally to bit width (8-bit: ~50%, 4-bit: ~75%)
+      // - Uses optimized quantizedMM() for faster inference on Apple Silicon
+      // - Enables efficient dequant→merge→requant for LoRA weight merging
+      if quantization.transformer != .bf16 {
+        let bits = quantization.transformer.bits
+        let groupSize = quantization.transformer.groupSize
+        Flux2Debug.log("Quantizing transformer on-the-fly to \(bits)-bit (groupSize=\(groupSize))...")
+        memoryManager.logMemoryState()
+        let quantStart = Date()
+        quantize(model: transformer!, groupSize: groupSize, bits: bits)
+        eval(transformer!.parameters())
+        let quantDuration = Date().timeIntervalSince(quantStart)
+        memoryManager.fullCleanup()
+        memoryManager.logMemoryState()
+        Flux2Debug.log("Transformer quantized to QuantizedLinear (\(bits)-bit)")
+        await currentTelemetry()?.capture(
+          .quantizationComplete(
+            component: .transformer,
+            bits: bits,
+            groupSize: groupSize,
+            durationSeconds: quantDuration
+          ))
+      }
     }
 
     // Merge LoRA weights if any are loaded

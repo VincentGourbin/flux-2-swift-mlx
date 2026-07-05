@@ -171,6 +171,25 @@ public enum ModelRegistry {
       }
     }
 
+    /// Whether this variant ships **genuine MLX-native pre-quantized** weights —
+    /// a packed uint32 `.weight` plus per-layer `.scales`/`.biases` — that load
+    /// DIRECTLY into `QuantizedLinear` with no bf16/float16 intermediate and no
+    /// on-the-fly `quantize()` pass (Sortie B2, R2.1/R2.2/R2.3).
+    ///
+    /// Only `klein4B_4bit` (themindstudio/flux2-klein-4b-mlx-4bit, OQ-1) qualifies.
+    /// The qint8 community repos (`qint8`, `klein4B_8bit`) are quanto-format —
+    /// they are dequantized to float16 and re-quantized on-the-fly, so they are
+    /// NOT pre-quantized MLX and stay on the existing load path.
+    public var isPreQuantizedMLX: Bool {
+      switch self {
+      case .klein4B_4bit:
+        return true
+      case .bf16, .qint8, .klein4B_bf16, .klein4B_8bit, .klein4B_base_bf16,
+        .klein9B_bf16, .klein9B_base_bf16, .klein9B_kv_bf16:
+        return false
+      }
+    }
+
     /// The Flux.2 model type this variant belongs to
     public var modelType: Flux2Model {
       switch self {
@@ -227,8 +246,13 @@ public enum ModelRegistry {
 
     /// Get the appropriate variant for a model type and quantization
     ///
-    /// For quantization levels without a pre-quantized variant (e.g. Klein 9B qint8, any model int4),
+    /// For quantization levels without a pre-quantized variant (e.g. Klein 9B qint8, Dev int4),
     /// this returns the bf16 variant. The pipeline will then quantize on-the-fly after loading.
+    ///
+    /// `(klein4B, .int4)` is the exception: it resolves to `klein4B_4bit`, a genuine
+    /// MLX-native pre-quantized variant (`isPreQuantizedMLX == true`) that the pipeline
+    /// loads DIRECTLY into `QuantizedLinear` — no bf16 intermediate, no on-the-fly
+    /// `quantize()` (Sortie B2, R2.1/R2.2/R2.3).
     public static func variant(for model: Flux2Model, quantization: TransformerQuantization)
       -> TransformerVariant
     {
@@ -238,7 +262,7 @@ public enum ModelRegistry {
       case (.dev, .int4): return .bf16  // Load bf16, quantize on-the-fly
       case (.klein4B, .bf16): return .klein4B_bf16
       case (.klein4B, .qint8): return .klein4B_8bit
-      case (.klein4B, .int4): return .klein4B_bf16  // Load bf16, quantize on-the-fly
+      case (.klein4B, .int4): return .klein4B_4bit  // Direct pre-quantized MLX 4-bit load (B2)
       // Base models only available in bf16
       case (.klein4BBase, _): return .klein4B_base_bf16
       case (.klein9BBase, _): return .klein9B_base_bf16

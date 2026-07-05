@@ -364,8 +364,18 @@ public class Flux2WeightLoader {
       } else if processedKey.hasSuffix(".input_scale") || processedKey.hasSuffix(".output_scale") {
         // Skip activation scales for quanto (value is released)
         continue
+      } else if processedKey.hasSuffix(".scales") || processedKey.hasSuffix(".biases") {
+        // MLX-native pre-quantized params (themindstudio int4, OQ-1 / Sortie B2):
+        // the per-layer `.scales`/`.biases` that pair with the packed uint32
+        // `.weight` of a QuantizedLinear. Unlike the quanto `._data`/`._scale`
+        // pair below, these are NEVER dequantized — they load DIRECTLY onto the
+        // model's QuantizedLinear params with no float16/bf16 intermediate
+        // (R2.1/R2.3). Map the module path and pass the value through as-is.
+        let mappedKey = mapTransformerKeySimple(processedKey)
+        mapped[mappedKey] = value
       } else {
-        // Non-quantized weight, map directly
+        // Non-quantized weight (or the packed uint32 `.weight` of a pre-quantized
+        // MLX layer, which is likewise passed through untouched), map directly.
         let mappedKey = mapTransformerKeySimple(processedKey)
         mapped[mappedKey] = value
       }
@@ -373,7 +383,11 @@ public class Flux2WeightLoader {
     // Input dict is now empty — raw safetensors references freed
     Flux2Debug.log("Input dict cleared — freed raw weight entries")
 
-    // Second pass: dequantize qint8 weights to float16
+    // Second pass: dequantize QUANTO qint8 weights (`._data`/`._scale`) to float16.
+    // This runs ONLY for the quanto format. MLX-native pre-quantized int4
+    // (`.scales`/`.biases` + packed `.weight`, Sortie B2) never populates
+    // `quantizedData`, so this loop is a no-op on the direct-load path — no
+    // dequantization, no bf16 intermediate.
     // Release quanto data/scale entries progressively to keep peak ≈ 60GB (float16 only)
     var dequantCount = 0
     let quantizedKeys = Array(quantizedData.keys)
@@ -717,7 +731,20 @@ public class Flux2WeightLoader {
 
   // MARK: - Quantized Weight Loading
 
-  /// Load quantized transformer weights
+  /// Load pre-quantized transformer weights DIRECTLY, with no bf16 intermediate.
+  ///
+  /// This is the direct-load entry point for genuine MLX-native pre-quantized
+  /// variants (`TransformerVariant.isPreQuantizedMLX == true` — the themindstudio
+  /// int4 Klein 4B, OQ-1 / Sortie B2). The safetensors on disk already hold the
+  /// packed uint32 `.weight` plus per-layer `.scales`/`.biases`, so this loader
+  /// just mmaps them via `loadWeights` (`loadArrays`) and returns them untouched.
+  /// The caller is responsible for having converted the target model's `Linear`
+  /// layers to `QuantizedLinear` (via `quantize(model:)`) BEFORE applying these
+  /// weights, so the packed params map straight onto the quantized modules.
+  ///
+  /// No dequantization and no on-the-fly `quantize()` occur here — that is what
+  /// keeps the peak `phys_footprint` well under the bf16 materialization spike
+  /// (R2.3). Emits `weightLoadComplete(.transformer)` on the success path.
   public static func loadQuantizedTransformer(
     from modelPath: String,
     quantization: TransformerQuantization
@@ -726,12 +753,12 @@ public class Flux2WeightLoader {
     // MLXArray.size (mlx_array_size) — confirmed in MLX/MLXArray.swift line 49.
     let loadStart = Date()
 
+    // mmap the packed safetensors directly — no bf16 intermediate is ever
+    // materialized (the arrays stay in their on-disk quantized dtype).
     let weights = try loadWeights(from: modelPath)
 
-    // For qint8, weights may already be quantized in safetensors
-    // If not, we need to quantize them here
     if quantization != .bf16 {
-      Flux2Debug.log("Loading \(quantization.rawValue) quantized weights")
+      Flux2Debug.log("Direct pre-quantized load of \(quantization.rawValue) weights (no bf16 intermediate)")
     }
 
     // Emit weightLoadComplete for transformer on success path only.

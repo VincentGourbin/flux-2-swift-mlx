@@ -72,9 +72,9 @@ import Testing
       ModelRegistry.TransformerVariant.variant(for: .dev, quantization: .int4) == .bf16
     )
 
-    // Klein 4B int4 should return bf16 variant (quantize on-the-fly)
+    // Klein 4B int4 now returns the pre-quantized MLX 4-bit variant (B2 direct load)
     #expect(
-      ModelRegistry.TransformerVariant.variant(for: .klein4B, quantization: .int4) == .klein4B_bf16
+      ModelRegistry.TransformerVariant.variant(for: .klein4B, quantization: .int4) == .klein4B_4bit
     )
   }
 
@@ -952,6 +952,90 @@ import Testing
 
 // MARK: - On-the-fly Quantization Variant Tests
 
+// MARK: - B2: Direct pre-quantized int4 load routing (pure logic)
+
+/// Sortie B2 (OPERATION THIMBLE TYPHOON) — pure-logic assertions for the
+/// direct pre-quantized int4 load path. These always run in test-core (no
+/// model weights, no GPU): they pin the variant resolution and the
+/// `isPreQuantizedMLX` flag that the pipeline branches on to BYPASS the
+/// on-the-fly `quantize()` block for `(klein4B, .int4)`.
+@Suite struct PreQuantizedInt4RoutingTests {
+
+  /// (klein4B, .int4) must resolve to the pre-quantized MLX 4-bit variant.
+  @Test func klein4BInt4ResolvesToPreQuantized4bit() {
+    #expect(
+      ModelRegistry.TransformerVariant.variant(for: .klein4B, quantization: .int4)
+        == .klein4B_4bit,
+      "(klein4B, .int4) must route to klein4B_4bit, not klein4B_bf16 + on-the-fly quantize"
+    )
+  }
+
+  /// The resolved variant is flagged as genuine MLX-native pre-quantized, and
+  /// carries the int4 quantization + themindstudio repo metadata (B1).
+  @Test func klein4B4bitIsPreQuantizedMLX() {
+    let variant = ModelRegistry.TransformerVariant.variant(for: .klein4B, quantization: .int4)
+    #expect(variant.isPreQuantizedMLX, "klein4B_4bit must be flagged isPreQuantizedMLX")
+    #expect(variant.quantization == .int4)
+    #expect(variant.repoId == "themindstudio/flux2-klein-4b-mlx-4bit")
+    #expect(variant.repoSubfolder == "transformer")
+    #expect(variant.estimatedSizeGB == 2.18)
+  }
+
+  /// Routing/bypass proof (pure logic): the pipeline enters the on-the-fly
+  /// `quantize()` block iff `!variant.isPreQuantizedMLX && quantization != .bf16`.
+  /// For (klein4B, .int4) the guard is false, so the block is bypassed even
+  /// though the requested quantization is non-bf16 (.int4).
+  @Test func klein4BInt4BypassesOnTheFlyQuantizeBlock() {
+    let quantization: TransformerQuantization = .int4
+    let variant = ModelRegistry.TransformerVariant.variant(for: .klein4B, quantization: quantization)
+
+    // This boolean mirrors the pipeline's branch condition exactly.
+    let entersOnTheFlyQuantizeBlock = !variant.isPreQuantizedMLX && quantization != .bf16
+
+    #expect(quantization != .bf16, "precondition: requested quant is non-bf16")
+    #expect(
+      !entersOnTheFlyQuantizeBlock,
+      "(klein4B, .int4) must take the direct-load branch and skip on-the-fly quantize()"
+    )
+  }
+
+  /// Only klein4B_4bit is pre-quantized MLX. All other variants — including the
+  /// quanto qint8 repos and every bf16 variant — must take the existing path.
+  @Test func onlyKlein4B4bitIsPreQuantizedMLX() {
+    for variant in ModelRegistry.TransformerVariant.allCases {
+      let expected = (variant == .klein4B_4bit)
+      #expect(
+        variant.isPreQuantizedMLX == expected,
+        "isPreQuantizedMLX for \(variant.rawValue) should be \(expected)"
+      )
+    }
+  }
+
+  /// The quanto qint8 community repos are NOT pre-quantized MLX — they stay on
+  /// the dequant→re-quantize path (they must still enter the on-the-fly block).
+  @Test func qint8VariantsAreNotPreQuantizedMLX() {
+    #expect(!ModelRegistry.TransformerVariant.klein4B_8bit.isPreQuantizedMLX)
+    #expect(!ModelRegistry.TransformerVariant.qint8.isPreQuantizedMLX)
+  }
+
+  /// Klein 9B int4 still falls back to bf16 + on-the-fly quantize (no CDN int4
+  /// variant), so it must NOT be flagged pre-quantized and MUST enter the block.
+  @Test func klein9BInt4StillUsesOnTheFlyQuantize() {
+    let variant = ModelRegistry.TransformerVariant.variant(for: .klein9B, quantization: .int4)
+    #expect(variant == .klein9B_bf16)
+    #expect(!variant.isPreQuantizedMLX)
+    let entersOnTheFlyQuantizeBlock = !variant.isPreQuantizedMLX && TransformerQuantization.int4 != .bf16
+    #expect(entersOnTheFlyQuantizeBlock, "Klein 9B int4 must still quantize on-the-fly")
+  }
+
+  /// Dev int4 also falls back to bf16 + on-the-fly quantize.
+  @Test func devInt4StillUsesOnTheFlyQuantize() {
+    let variant = ModelRegistry.TransformerVariant.variant(for: .dev, quantization: .int4)
+    #expect(variant == .bf16)
+    #expect(!variant.isPreQuantizedMLX)
+  }
+}
+
 @Suite struct OnTheFlyQuantizationTests {
 
   @Test func devVariantMapping() {
@@ -979,8 +1063,8 @@ import Testing
       "Klein 4B qint8 should use pre-quantized variant"
     )
     #expect(
-      ModelRegistry.TransformerVariant.variant(for: .klein4B, quantization: .int4) == .klein4B_bf16,
-      "Klein 4B int4 should load bf16 and quantize on-the-fly"
+      ModelRegistry.TransformerVariant.variant(for: .klein4B, quantization: .int4) == .klein4B_4bit,
+      "Klein 4B int4 should resolve to the pre-quantized MLX 4-bit variant (B2 direct load)"
     )
   }
 
