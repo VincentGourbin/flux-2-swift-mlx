@@ -1,0 +1,92 @@
+# Integration Tests — real Klein 4B qint8 inference against cached SwiftAcervo
+# models (Sortie A8, OPERATION THIMBLE TYPHOON).
+#
+# Follows the acervo-integration-ci standard: restore the Phase-1 model cache
+# with actions/cache → prime from the public R2 CDN on a miss (credential-free
+# curl+jq, no `acervo` binary) → run ONLY the iPad-16GB smoke suite with
+# TEST_RUNNER_ACERVO_* so xcodebuild forwards the primed cache + offline flag
+# into the xctest runner process.
+#
+# The smoke test is model-presence-gated (`Acervo.isModelAvailable`), so if the
+# prime step ever fails to land a component the suite skips rather than hanging
+# on a multi-GB download (ACERVO_OFFLINE=1 blocks all network in the runner).
+
+name: Integration Tests
+
+on:
+  pull_request:
+    branches: [main, development]
+  workflow_dispatch:
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ipad-16gb-smoke:
+    name: "iPad 16GB qint8 smoke (macOS)"
+    runs-on: macos-26
+    timeout-minutes: 60
+
+    env:
+      # Single source of truth for where models live in CI. Checked FIRST by
+      # Acervo.sharedModelsDirectory, so it overrides any App Group config.
+      # Kept inside the workspace so actions/cache can snapshot it.
+      ACERVO_MODELS_DIR: ${{ github.workspace }}/.acervo-ci-models
+      # Slugs == slugify(modelId) (/ → _). The three Phase-1 components
+      # confirmed .available in CDN_PROVISIONING.md (Sortie A7):
+      #   • aydin99/FLUX.2-klein-4B-int8        → qint8 transformer
+      #   • black-forest-labs/FLUX.2-klein-4B   → VAE (vae/ subfolder)
+      #   • lmstudio-community/Qwen3-4B-MLX-4bit → Klein text encoder
+      ACERVO_CI_MODELS: |
+        aydin99_FLUX.2-klein-4B-int8
+        black-forest-labs_FLUX.2-klein-4B
+        lmstudio-community_Qwen3-4B-MLX-4bit
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Cache SwiftPM dependencies
+        uses: actions/cache@v6
+        with:
+          path: .spm
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.swift') }}
+
+      - name: Compute model cache key
+        id: modelkey
+        run: |
+          echo "value=$(bash .github/scripts/acervo-ci-cache-key.sh)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore model cache
+        id: modelcache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.ACERVO_MODELS_DIR }}
+          key: acervo-models-${{ runner.os }}-${{ steps.modelkey.outputs.value }}
+
+      - name: Prime models from CDN (cache miss)
+        if: steps.modelcache.outputs.cache-hit != 'true'
+        run: bash .github/scripts/acervo-ci-prime.sh
+
+      - name: Resolve dependencies
+        run: xcodebuild -resolvePackageDependencies -scheme Flux2Swift-Package -clonedSourcePackagesDirPath .spm
+
+      - name: iPad 16GB qint8 smoke test
+        env:
+          # xcodebuild strips TEST_RUNNER_ and forwards these INTO the xctest
+          # runner. Without the prefix the test process never sees them:
+          #   • ACERVO_MODELS_DIR → test resolves models from the primed cache
+          #   • ACERVO_OFFLINE=1  → a cache miss fails fast instead of silently
+          #                         pulling multi-GB during the test
+          TEST_RUNNER_ACERVO_MODELS_DIR: ${{ env.ACERVO_MODELS_DIR }}
+          TEST_RUNNER_ACERVO_OFFLINE: "1"
+        run: |
+          xcodebuild test \
+            -scheme Flux2Swift-Package \
+            -destination 'platform=macOS,arch=arm64' \
+            -skipPackagePluginValidation \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            -clonedSourcePackagesDirPath .spm \
+            -only-testing Flux2GPUTests/IPadDeviceMatrixGPUTests

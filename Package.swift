@@ -79,7 +79,15 @@ let package = Package(
         ),
         .testTarget(
             name: "Flux2GPUTests",
-            dependencies: ["Flux2Core", "FluxTextEncoders", "TestHelpers"],
+            dependencies: [
+                "Flux2Core",
+                "FluxTextEncoders",
+                "TestHelpers",
+                // Sortie A8: the iPad-16GB smoke test gates on Acervo model
+                // presence (acervo-integration-ci standard) so it runs for real
+                // in CI against cached models and skips cleanly otherwise.
+                .product(name: "SwiftAcervo", package: "SwiftAcervo"),
+            ],
             path: "Tests/Flux2GPUTests"
         ),
     ]
