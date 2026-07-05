@@ -160,7 +160,10 @@ extension ModelRegistry.TransformerVariant {
     switch self {
     case .bf16, .klein4B_base_bf16, .klein9B_base_bf16, .klein9B_kv_bf16:
       return false
-    case .qint8, .klein4B_bf16, .klein4B_8bit, .klein9B_bf16:
+    case .qint8, .klein4B_bf16, .klein4B_8bit, .klein4B_4bit, .klein9B_bf16:
+      // .klein4B_4bit confirmed .available on the Acervo CDN (Sortie B1 —
+      // themindstudio/flux2-klein-4b-mlx-4bit manifest resolves; see
+      // EXECUTION_PLAN.md B1).
       return true
     }
   }

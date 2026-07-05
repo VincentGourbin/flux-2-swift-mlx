@@ -2252,6 +2252,35 @@ import Testing
   }
 }
 
+// MARK: - Klein 4B int4 Registry Tests (Sortie B1 — OPERATION THIMBLE TYPHOON)
+
+@Suite struct Klein4BInt4RegistryTests {
+
+  @Test func klein4BInt4TransformerVariant() {
+    let variant = ModelRegistry.TransformerVariant.klein4B_4bit
+
+    // OQ-1: verified genuine MLX 4-bit — .scales/.biases per layer,
+    // quantization_level "4", mflux_version 0.15.2, Apache 2.0,
+    // transformer/ subfolder = 2.18 GB. No self-quantization required.
+    #expect(variant.rawValue == "klein4b-4bit")
+    #expect(variant.repoId == "themindstudio/flux2-klein-4b-mlx-4bit")
+    #expect(variant.repoSubfolder == "transformer")
+    #expect(variant.estimatedSizeGB == 2.18)
+    #expect(!variant.isGated)
+    #expect(variant.modelType == .klein4B)
+    #expect(variant.quantization == .int4)
+    #expect(variant.isForInference)
+    #expect(!variant.isForTraining)
+  }
+
+  @Test func klein4BInt4IsProvisionedOnCDN() {
+    // Confirmed .available on the SwiftAcervo CDN during B1 (manifest.json
+    // resolves at $R2_PUBLIC_URL/models/themindstudio_flux2-klein-4b-mlx-4bit/manifest.json,
+    // same mechanism as CDN_PROVISIONING.md / Sortie A7).
+    #expect(ModelRegistry.TransformerVariant.klein4B_4bit.isProvisionedOnCDN)
+  }
+}
+
 // MARK: - TransformerKVCache Tests
 
 @Suite struct TransformerKVCacheTests {
@@ -2368,9 +2397,9 @@ import Testing
   }
 
   @Test func transformerVariantCaseCount() {
-    // bf16, qint8, klein4b-bf16, klein4b-8bit, klein4b-base-bf16,
-    // klein9b-bf16, klein9b-base-bf16, klein9b-kv-bf16 = 8
-    #expect(ModelRegistry.TransformerVariant.allCases.count == 8)
+    // bf16, qint8, klein4b-bf16, klein4b-8bit, klein4b-4bit, klein4b-base-bf16,
+    // klein9b-bf16, klein9b-base-bf16, klein9b-kv-bf16 = 9
+    #expect(ModelRegistry.TransformerVariant.allCases.count == 9)
   }
 
   @Test func klein9BKVMemoryConfigDoesNotCrash() {

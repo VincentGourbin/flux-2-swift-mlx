@@ -18,6 +18,11 @@ public enum ModelRegistry {
     case klein4B_bf16 = "klein4b-bf16"
     case klein4B_8bit = "klein4b-8bit"
 
+    // Flux.2 Klein 4B int4 (community pre-quantized MLX 4-bit; verified genuine
+    // MLX quantization — .scales/.biases per layer, quantization_level "4" —
+    // Apache 2.0, transformer/ subfolder only. See EXECUTION_PLAN.md OQ-1.)
+    case klein4B_4bit = "klein4b-4bit"
+
     // Flux.2 Klein 4B Base (non-distilled - for LoRA training only)
     case klein4B_base_bf16 = "klein4b-base-bf16"
 
@@ -43,6 +48,9 @@ public enum ModelRegistry {
       case .klein4B_8bit:
         // Community 8-bit quantization (contains only transformer weights)
         return "aydin99/FLUX.2-klein-4B-int8"
+      case .klein4B_4bit:
+        // Community pre-quantized MLX 4-bit (OQ-1); transformer/ subfolder only.
+        return "themindstudio/flux2-klein-4b-mlx-4bit"
       case .klein4B_base_bf16:
         // Base model (non-distilled) for LoRA training
         return "black-forest-labs/FLUX.2-klein-base-4B"
@@ -67,6 +75,11 @@ public enum ModelRegistry {
         // Community 8-bit repo (aydin99/FLUX.2-klein-4B-int8) ships only the
         // transformer weights, at the repo root — no diffusers subfolder.
         return nil
+      case .klein4B_4bit:
+        // Community int4 repo (themindstudio/flux2-klein-4b-mlx-4bit) nests
+        // the pre-quantized MLX weights under a `transformer/` subfolder
+        // (2.18 GB), unlike the flat aydin99 int8 repo (OQ-1).
+        return "transformer"
       case .klein4B_bf16, .klein4B_base_bf16, .klein9B_bf16, .klein9B_base_bf16,
         .klein9B_kv_bf16:
         // The black-forest-labs Klein repos ship the full diffusers layout, so
@@ -76,12 +89,13 @@ public enum ModelRegistry {
       }
     }
 
-    public var estimatedSizeGB: Int {
+    public var estimatedSizeGB: Double {
       switch self {
       case .bf16: return 64
       case .qint8: return 32
       case .klein4B_bf16: return 8
       case .klein4B_8bit: return 4
+      case .klein4B_4bit: return 2.18  // themindstudio transformer/ subfolder (OQ-1)
       case .klein4B_base_bf16: return 8  // Same size as distilled
       case .klein9B_bf16: return 18
       case .klein9B_base_bf16: return 18  // Same size as distilled
@@ -103,6 +117,9 @@ public enum ModelRegistry {
         return false
       case .klein4B_8bit:
         // Community 8-bit quantization is NOT gated
+        return false
+      case .klein4B_4bit:
+        // Community int4 quantization (themindstudio) is NOT gated
         return false
       case .klein4B_base_bf16:
         // Klein 4B Base from black-forest-labs is NOT gated
@@ -150,6 +167,7 @@ public enum ModelRegistry {
         .klein9B_kv_bf16:
         return .bf16
       case .qint8, .klein4B_8bit: return .qint8
+      case .klein4B_4bit: return .int4
       }
     }
 
@@ -158,7 +176,7 @@ public enum ModelRegistry {
       switch self {
       case .bf16, .qint8:
         return .dev
-      case .klein4B_bf16, .klein4B_8bit:
+      case .klein4B_bf16, .klein4B_8bit, .klein4B_4bit:
         return .klein4B
       case .klein4B_base_bf16:
         return .klein4BBase
@@ -177,7 +195,7 @@ public enum ModelRegistry {
       switch self {
       case .bf16, .qint8:  // Dev
         return true
-      case .klein4B_bf16, .klein4B_8bit:  // Klein 4B distilled
+      case .klein4B_bf16, .klein4B_8bit, .klein4B_4bit:  // Klein 4B distilled
         return true
       case .klein9B_bf16:  // Klein 9B distilled
         return true
@@ -196,7 +214,7 @@ public enum ModelRegistry {
         return true
       case .qint8:  // Dev int8 - cannot train (quantized)
         return false
-      case .klein4B_bf16, .klein4B_8bit:  // Distilled - cannot train
+      case .klein4B_bf16, .klein4B_8bit, .klein4B_4bit:  // Distilled - cannot train
         return false
       case .klein9B_bf16:  // Distilled - cannot train
         return false
@@ -366,11 +384,11 @@ public enum ModelRegistry {
       }
     }
 
-    public var estimatedSizeGB: Int {
+    public var estimatedSizeGB: Double {
       switch self {
       case .transformer(let variant): return variant.estimatedSizeGB
-      case .textEncoder(let variant): return variant.estimatedSizeGB
-      case .vae(let variant): return variant.estimatedSizeGB
+      case .textEncoder(let variant): return Double(variant.estimatedSizeGB)
+      case .vae(let variant): return Double(variant.estimatedSizeGB)
       }
     }
 
@@ -395,6 +413,7 @@ public enum ModelRegistry {
         case .bf16: return "FLUX.2-dev-bf16"
         case .qint8: return "FLUX.2-dev-qint8"
         case .klein4B_8bit: return "FLUX.2-klein-4B-int8"
+        case .klein4B_4bit: return "FLUX.2-klein-4B-int4"
         case .klein4B_base_bf16: return "FLUX.2-klein-base-4B"
         case .klein9B_base_bf16: return "FLUX.2-klein-base-9B"
         case .klein9B_kv_bf16: return "FLUX.2-klein-9b-kv"
@@ -460,7 +479,7 @@ public enum ModelRegistry {
       switch variant {
       case .bf16, .qint8:
         modelName = "FLUX.2-dev-transformer-\(variant.rawValue)"
-      case .klein4B_bf16, .klein4B_8bit:
+      case .klein4B_bf16, .klein4B_8bit, .klein4B_4bit:
         modelName = "FLUX.2-klein-4B-\(variant.rawValue)"
       case .klein4B_base_bf16:
         modelName = "FLUX.2-klein-base-4B-\(variant.rawValue)"

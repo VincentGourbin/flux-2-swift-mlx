@@ -470,6 +470,9 @@
       case .klein4B_8bit:
         name = "Klein 4B 8-bit"
         modelType = "Flux.2 Klein 4B"
+      case .klein4B_4bit:
+        name = "Klein 4B 4-bit"
+        modelType = "Flux.2 Klein 4B"
       case .klein9B_bf16:
         name = "Klein 9B bf16"
         modelType = "Flux.2 Klein 9B"
