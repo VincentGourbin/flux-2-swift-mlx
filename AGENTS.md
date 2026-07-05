@@ -296,11 +296,11 @@ The primary workflow is **Image Preparation**: barn doors + megapixel budget + p
 
 ## Commits
 
-**Version, commit, and push autonomously (per the user-wide commit rule).** When you
-finish a set of code changes, bump the version, commit, and push to `origin` without
-asking — that user rule is the standing explicit request to commit, and the "confirm
-before non-trivial decisions" posture above does **not** gate it. Stage files by
-explicit path, never `git add .` or `-A`. Bump `Flux2Core.version`
+**Version, commit, and push autonomously.** When you finish a set of code changes,
+bump the version, commit, and push to `origin` without asking — this is the standing
+policy for this repo, and the "confirm before non-trivial decisions" posture above
+does **not** gate it. Stage files by explicit path, never `git add .` or `-A`. Bump
+`Flux2Core.version`
 (`Major.Minor.Revision.Build`; Build = `git rev-list --count HEAD` including the new
 commit) in the same commit.
 
