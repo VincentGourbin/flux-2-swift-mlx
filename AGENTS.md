@@ -13,9 +13,10 @@ developer *prefers* to be consulted — surface choices as questions and wait fo
 an answer rather than picking a direction and running with it. Lots of small
 questions are welcome. Silently making a string of decisions — especially
 mid-task, e.g. pushing through repeated failed attempts — is the thing to avoid.
-When something is ambiguous, has trade-offs, or would commit real time/effort,
+When something is ambiguous, has trade-offs, or would require real time/effort,
 stop and ask. Default to *less* autonomous action here than the usual agent
-default.
+default. (Committing and pushing your own completed changes to `origin` is **not**
+one of those decisions — that is autonomous; see **Commits** below.)
 
 ---
 
@@ -294,5 +295,17 @@ The primary workflow is **Image Preparation**: barn doors + megapixel budget + p
 ---
 
 ## Commits
+
+**Version, commit, and push autonomously (per the user-wide commit rule).** When you
+finish a set of code changes, bump the version, commit, and push to `origin` without
+asking — that user rule is the standing explicit request to commit, and the "confirm
+before non-trivial decisions" posture above does **not** gate it. Stage files by
+explicit path, never `git add .` or `-A`. Bump `Flux2Core.version`
+(`Major.Minor.Revision.Build`; Build = `git rev-list --count HEAD` including the new
+commit) in the same commit.
+
+**`origin` only.** Autonomous pushes go to the private `origin`. The public **`fork`**
+and upstream PRs stay governed by the Upstream policy above — push there only when you
+explicitly say so.
 
 Commits may include `Co-authored-by: Cursor <cursoragent@cursor.com>`. Keep that trailer when amending; do not strip it.
