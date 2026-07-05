@@ -27,7 +27,7 @@ let package = Package(
         // Tokenizer protocol typed-throwing (throws(TokenizerError)) and
         // relabels the encode/decode/tokenize convenience overloads.
         .package(url: "https://github.com/DePasqualeOrg/swift-tokenizers", .upToNextMinor(from: "0.7.1")),
-        .package(url: "https://github.com/intrusive-memory/SwiftTuberia.git", .upToNextMajor(from: "0.7.7")),
+        .package(url: "https://github.com/intrusive-memory/SwiftTuberia.git", .upToNextMajor(from: "0.7.8")),
         .package(url: "https://github.com/intrusive-memory/SwiftAcervo", .upToNextMajor(from: "0.23.0")),
         .package(url: "https://github.com/marcprux/universal", .upToNextMajor(from: "5.3.0")),
     ],
