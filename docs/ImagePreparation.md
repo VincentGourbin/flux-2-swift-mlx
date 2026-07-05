@@ -5,7 +5,7 @@ This fork extends [flux-2-swift-mlx](https://github.com/VincentGourbin/flux-2-sw
 1. **Prompt edit** — **Image Preparation**: format the image for the model, optionally define a **Live Area** (barn doors), generate with I2I conditioning, and composite the result back into the full image.
 2. **Generative fill** — draw a rectangle over a blemish or bad patch; RePaint-style local repair via Flux2Chains (optional Qwen3.5 VLM prompt enrichment).
 
-Upstream already merged two of my earlier contributions ([#94](https://github.com/VincentGourbin/flux-2-swift-mlx/pull/94) I2I layout overflow, [#95](https://github.com/VincentGourbin/flux-2-swift-mlx/pull/95) ResumableAdamW). The feature work lives in [PR #98](https://github.com/VincentGourbin/flux-2-swift-mlx/pull/98).
+Upstream already merged two of my earlier contributions ([#94](https://github.com/VincentGourbin/flux-2-swift-mlx/pull/94) I2I layout overflow, [#95](https://github.com/VincentGourbin/flux-2-swift-mlx/pull/95) ResumableAdamW). The feature work lives in [PR #99](https://github.com/VincentGourbin/flux-2-swift-mlx/pull/99). See [PR99-Update-Since-Review.md](PR99-Update-Since-Review.md) for changes since Vincent's June 2026 review.
 
 ---
 
