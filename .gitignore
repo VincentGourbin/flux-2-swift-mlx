@@ -29,6 +29,7 @@ output/
 *.profraw
 
 Flux2App.app/
+build/
 Assets/AppIcon/AppIcon.iconset/
 Assets/AppIcon/AppIcon.icns
 *.tmp

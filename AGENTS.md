@@ -81,18 +81,18 @@ Full config schema and agent contract: [utility-be-project-builder/Configs/AGENT
 
 **Typical `build` pipeline** (when all four `run_preferences` are enabled):
 
-1. **Compile:** `CONFIG=Release bin/package-flux2app.sh` → `Flux2App.app` in repo root
+1. **Compile:** `CONFIG=Release bin/package-flux2app.sh` → `build/Flux2App.app` (gitignored staging)
 2. **Relocate:** copy to `/Applications/Flux2App.app` (remove destination first when overwrite is on)
 3. **Launch:** `open /Applications/Flux2App.app`
 
-**Two app bundles — do not confuse them:**
+**Staging vs canonical install:**
 
 | Path | Role |
 | --- | --- |
-| `flux-2-swift-mix/Flux2App.app` | Build product / staging copy (gitignored) |
-| `/Applications/Flux2App.app` | Installed copy — **use this one day to day** |
+| `build/Flux2App.app` | Gitignored compile output — exists only between compile and relocate |
+| `/Applications/Flux2App.app` | **Canonical installed app** — the only copy to run day to day |
 
-Project Builder’s **compile** step produces the repo copy; **relocate** installs it to `/Applications`. Seeing two “FLUX.2” icons is normal if both paths are registered; launch from Applications after a `build`.
+The repo keeps the icon source (`Assets/AppIcon/Flux2App-1024.png`), a committed `Supporting/Flux2App/Info.plist` template, and the thin `bin/package-flux2app.sh` wrapper. There is **no** `Flux2App.app` in the repo root.
 
 **Agent notes:**
 
@@ -125,11 +125,10 @@ That `xcodebuild`s mlx-swift’s `Cmlx` scheme and copies `default.metallib` bes
 
 ```bash
 bin/package-flux2app.sh
-# → Flux2App.app in repo root (gitignored build product)
-open Flux2App.app
+# → build/Flux2App.app (gitignored staging; open /Applications/Flux2App.app after relocate)
 ```
 
-`CONFIG=Release bin/package-flux2app.sh` matches Project Builder’s compile command. The package script runs metallib + icon steps automatically.
+`CONFIG=Release bin/package-flux2app.sh` matches Project Builder’s compile command. The package script runs metallib + icon steps automatically and stamps version from `Flux2Core.version`.
 
 Source art: `Assets/AppIcon/Flux2App-1024.png`. `bin/build-app-icon.sh` regenerates `AppIcon.icns`.
 

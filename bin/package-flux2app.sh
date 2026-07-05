@@ -1,11 +1,31 @@
 #!/bin/bash
-# Build Flux2App + mlx.metallib, then wrap as Flux2App.app with icon for Dock/Finder.
+# Build Flux2App, stage as build/Flux2App.app (gitignored). Install via Project Builder relocate.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG="${CONFIG:-debug}"
 BUNDLE_NAME="${BUNDLE_NAME:-Flux2App.app}"
-BUNDLE="$ROOT/$BUNDLE_NAME"
+STAGING_DIR="$ROOT/build"
+BUNDLE="$STAGING_DIR/$BUNDLE_NAME"
+INFO_TEMPLATE="$ROOT/Supporting/Flux2App/Info.plist"
+
+read_version() {
+  local app_info="$ROOT/Sources/Flux2Core/Flux2Core.swift"
+  local full_version build_number short_version
+  full_version="$(sed -n 's/^[[:space:]]*public static let version = "\(.*\)".*/\1/p' "$app_info" | head -1)"
+  if [[ -z "$full_version" ]]; then
+    echo "Could not read Flux2Core.version from $app_info" >&2
+    exit 1
+  fi
+  build_number="${full_version##*.}"
+  short_version="${full_version%.*}"
+  if [[ -z "$build_number" || -z "$short_version" || "$short_version" == "$full_version" ]]; then
+    echo "Flux2Core.version must be Major.Minor.Revision.Build (got: $full_version)" >&2
+    exit 1
+  fi
+  SHORT_VERSION="$short_version"
+  BUILD_NUMBER="$build_number"
+}
 
 case "$CONFIG" in
   [Dd]ebug) CONFIG_LC=debug; BUILD_DIR="$ROOT/.build/arm64-apple-macosx/debug" ;;
@@ -14,6 +34,7 @@ case "$CONFIG" in
 esac
 
 cd "$ROOT"
+read_version
 swift build --product Flux2App -c "$CONFIG_LC"
 "$ROOT/bin/build-mlx-metallib.sh"
 "$ROOT/bin/build-app-icon.sh"
@@ -23,6 +44,10 @@ if [[ ! -f "$ICNS" ]]; then
   echo "App icon missing after build-app-icon.sh" >&2
   exit 1
 fi
+if [[ ! -f "$INFO_TEMPLATE" ]]; then
+  echo "Missing Info.plist template: $INFO_TEMPLATE" >&2
+  exit 1
+fi
 
 rm -rf "$BUNDLE"
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
@@ -30,76 +55,9 @@ mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
 cp "$BUILD_DIR/Flux2App" "$BUNDLE/Contents/MacOS/Flux2App"
 cp "$BUILD_DIR/mlx.metallib" "$BUNDLE/Contents/MacOS/mlx.metallib"
 cp "$ICNS" "$BUNDLE/Contents/Resources/AppIcon.icns"
+cp "$INFO_TEMPLATE" "$BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $SHORT_VERSION" "$BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$BUNDLE/Contents/Info.plist"
 
-cat >"$BUNDLE/Contents/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>CFBundleDevelopmentRegion</key>
-	<string>en</string>
-	<key>CFBundleExecutable</key>
-	<string>Flux2App</string>
-	<key>CFBundleIconFile</key>
-	<string>AppIcon</string>
-	<key>CFBundleIdentifier</key>
-	<string>com.realnotsteve.flux2app</string>
-	<key>CFBundleName</key>
-	<string>FLUX.2</string>
-	<key>CFBundleDisplayName</key>
-	<string>FLUX.2</string>
-	<key>CFBundlePackageType</key>
-	<string>APPL</string>
-	<key>CFBundleShortVersionString</key>
-	<string>2.5.1</string>
-	<key>CFBundleVersion</key>
-	<string>274</string>
-	<key>LSMinimumSystemVersion</key>
-	<string>15.0</string>
-	<key>NSHighResolutionCapable</key>
-	<true/>
-	<key>CFBundleDocumentTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleTypeExtensions</key>
-			<array>
-				<string>flux2project</string>
-			</array>
-			<key>CFBundleTypeName</key>
-			<string>FLUX.2 Project</string>
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>LSHandlerRank</key>
-			<string>Owner</string>
-			<key>LSItemContentTypes</key>
-			<array>
-				<string>com.realnotsteve.flux2-project</string>
-			</array>
-		</dict>
-	</array>
-	<key>UTExportedTypeDeclarations</key>
-	<array>
-		<dict>
-			<key>UTTypeConformsTo</key>
-			<array>
-				<string>com.apple.package</string>
-			</array>
-			<key>UTTypeDescription</key>
-			<string>FLUX.2 Project</string>
-			<key>UTTypeIdentifier</key>
-			<string>com.realnotsteve.flux2-project</string>
-			<key>UTTypeTagSpecification</key>
-			<dict>
-				<key>public.filename-extension</key>
-				<array>
-					<string>flux2project</string>
-				</array>
-			</dict>
-		</dict>
-	</array>
-</dict>
-</plist>
-PLIST
-
-echo "Packaged $BUNDLE"
-echo "Open with: open \"$BUNDLE\""
+echo "Packaged $BUNDLE ($SHORT_VERSION build $BUILD_NUMBER)"
+echo "Canonical install: /Applications/Flux2App.app (Project Builder relocate)"

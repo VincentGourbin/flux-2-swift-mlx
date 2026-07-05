@@ -110,7 +110,7 @@ unzip Flux2CLI-v2.1.0-macOS.zip
 
 # App
 unzip Flux2App-v2.1.0-macOS.zip
-open Flux2App.app
+open /Applications/Flux2App.app
 ```
 
 ### Build from Source
