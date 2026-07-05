@@ -176,10 +176,8 @@ public struct Flux2OutpaintingChain: Flux2Chain {
     ///
     /// - Returns: The extended image plus prompt metadata.
     /// - Throws:
-    ///   - `Flux2ChainError.invalidInput` if any padding is negative, every
-    ///     padding is zero, or the resulting canvas is not a multiple of 32
-    ///     on either axis (the source image itself may need padding by the
-    ///     caller in that case).
+    ///   - `Flux2ChainError.invalidInput` if any padding is negative or every
+    ///     padding is zero.
     ///   - Whatever the underlying pipeline can throw (model not loaded,
     ///     memory, generation cancellation).
     public func run() async throws -> Flux2GenerationResult {
@@ -197,23 +195,22 @@ public struct Flux2OutpaintingChain: Flux2Chain {
         let l = Self.roundUpToMultipleOf32(left)
         let r = Self.roundUpToMultipleOf32(right)
 
-        let canvasW = image.width + l + r
-        let canvasH = image.height + t + b
-        guard canvasW % 32 == 0, canvasH % 32 == 0 else {
-            // Image itself may not be a multiple of 32; that's the caller's
-            // problem on the original side, but our additions are correct.
-            throw Flux2ChainError.invalidInput(
-                "Canvas dimensions \(canvasW)x\(canvasH) are not multiples of 32 — the input image's own dimensions need to be padded by the caller, or supply paddings that compensate."
-            )
-        }
+        let canvas = Self.canvasDimensions(
+            sourceWidth: image.width,
+            sourceHeight: image.height,
+            top: t,
+            bottom: b,
+            left: l,
+            right: r
+        )
 
         // Build the canvas with the source pasted at (l, t) and the rest
         // filled with neutral Gaussian noise. Noise is generated once on
         // the CPU; we don't need anything fancy.
-        guard let canvas = Self.buildOutpaintCanvas(
+        guard let workingCanvas = Self.buildOutpaintCanvas(
             sourceImage: image,
-            canvasWidth: canvasW,
-            canvasHeight: canvasH,
+            canvasWidth: canvas.workingWidth,
+            canvasHeight: canvas.workingHeight,
             offsetX: l,
             offsetY: t,
             noiseSeed: seed ?? 0
@@ -224,8 +221,8 @@ public struct Flux2OutpaintingChain: Flux2Chain {
         // Smart mask: 1.0 in the strips, 0.0 deep in the keep, narrow
         // gradient on the keep side of the boundary.
         guard let mask = Self.buildSmartMask(
-            canvasWidth: canvasW,
-            canvasHeight: canvasH,
+            canvasWidth: canvas.workingWidth,
+            canvasHeight: canvas.workingHeight,
             keepX: l,
             keepY: t,
             keepWidth: image.width,
@@ -248,7 +245,7 @@ public struct Flux2OutpaintingChain: Flux2Chain {
         let inpaint = Flux2MaskedInpaintingChain(
             pipeline: pipeline,
             prompt: resolvedPrompt,
-            image: canvas,
+            image: workingCanvas,
             mask: mask,
             referenceImages: [image],  // I2I conditioning continues the scene
             useImageAsReference: false,  // explicit refs already supplied
@@ -257,10 +254,24 @@ public struct Flux2OutpaintingChain: Flux2Chain {
             seed: seed,
             upsamplePrompt: resolvedUpsample,
             enrichPromptWithVLM: false,  // already handled here, don't double-process
-            maxPixels: max(maxPixels, canvasW * canvasH),
+            maxPixels: max(maxPixels, canvas.workingWidth * canvas.workingHeight),
             onProgress: onProgress
         )
-        return try await inpaint.run()
+        let result = try await inpaint.run()
+        guard let cropped = Self.cropToRequestedCanvas(
+            result.image,
+            width: canvas.requestedWidth,
+            height: canvas.requestedHeight
+        ) else {
+            throw Flux2ChainError.invalidInput("Failed to crop padded outpaint result")
+        }
+        return Flux2GenerationResult(
+            image: cropped,
+            usedPrompt: result.usedPrompt,
+            wasUpsampled: result.wasUpsampled,
+            originalPrompt: result.originalPrompt,
+            notice: result.notice
+        )
     }
 
     // MARK: - VLM enrichment resolution
@@ -323,6 +334,38 @@ public struct Flux2OutpaintingChain: Flux2Chain {
     /// same module can exercise the geometry without spinning up a pipeline.
     internal static func roundUpToMultipleOf32(_ x: Int) -> Int {
         x == 0 ? 0 : ((x + 31) / 32) * 32
+    }
+
+    /// FLUX.2 requires the working dimensions to be divisible by 32. If the
+    /// source image plus requested outpaint strips is not aligned, add hidden
+    /// right/bottom padding for inference and crop it back out afterward.
+    internal static func canvasDimensions(
+        sourceWidth: Int,
+        sourceHeight: Int,
+        top: Int,
+        bottom: Int,
+        left: Int,
+        right: Int
+    ) -> (
+        requestedWidth: Int,
+        requestedHeight: Int,
+        workingWidth: Int,
+        workingHeight: Int
+    ) {
+        let requestedWidth = sourceWidth + left + right
+        let requestedHeight = sourceHeight + top + bottom
+        return (
+            requestedWidth: requestedWidth,
+            requestedHeight: requestedHeight,
+            workingWidth: roundUpToMultipleOf32(requestedWidth),
+            workingHeight: roundUpToMultipleOf32(requestedHeight)
+        )
+    }
+
+    internal static func cropToRequestedCanvas(_ image: CGImage, width: Int, height: Int) -> CGImage? {
+        guard width > 0, height > 0 else { return nil }
+        guard image.width != width || image.height != height else { return image }
+        return image.cropping(to: CGRect(x: 0, y: 0, width: width, height: height))
     }
 
     /// Build an RGB canvas of `canvasWidth × canvasHeight`, paint mid-grey

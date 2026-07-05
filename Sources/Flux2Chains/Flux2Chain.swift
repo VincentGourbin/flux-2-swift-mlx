@@ -31,7 +31,7 @@ public protocol Flux2Chain: Sendable {
 
 /// Error cases shared by built-in chains. Concrete chains can extend this
 /// or throw their own typed errors.
-public enum Flux2ChainError: Error, CustomStringConvertible, Sendable {
+public enum Flux2ChainError: Error, CustomStringConvertible, LocalizedError, Sendable {
     case invalidInput(String)
     case missingArtifact(String)
 
@@ -40,5 +40,9 @@ public enum Flux2ChainError: Error, CustomStringConvertible, Sendable {
         case .invalidInput(let msg): return "Invalid chain input: \(msg)"
         case .missingArtifact(let msg): return "Missing chain artifact: \(msg)"
         }
+    }
+
+    public var errorDescription: String? {
+        description
     }
 }
