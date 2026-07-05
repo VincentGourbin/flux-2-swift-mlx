@@ -1801,7 +1801,10 @@ public class Flux2Pipeline: @unchecked Sendable {
         // the original (see ImageGenerationViewModel.referenceMatchedSize). Floored
         // at the historical 1024² (diffusers pipeline_flux2.py:892-893) so additional
         // reference images keep a sane conditioning budget at small output sizes.
-        let maxImageArea = max(width * height, 1024 * 1024)  // ~4096+ tokens per image
+        // Capped at 2048² so very large outputs do not quadruple VRAM vs. the old
+        // fixed 1 M-pixel budget (PR #99 review).
+        let primaryReferenceMaxPixels = min(max(width * height, 1024 * 1024), 2048 * 2048)
+        let additionalReferenceMaxPixels = 1024 * 1024
         let multipleOf = 32  // vae_scale_factor * 2
 
         var allPackedLatents: [MLXArray] = []
@@ -1815,6 +1818,7 @@ public class Flux2Pipeline: @unchecked Sendable {
             var targetWidth = image.width
             var targetHeight = image.height
             let pixelCount = targetWidth * targetHeight
+            let maxImageArea = index == 0 ? primaryReferenceMaxPixels : additionalReferenceMaxPixels
 
             if pixelCount > maxImageArea {
                 let scale = sqrt(Double(maxImageArea) / Double(pixelCount))

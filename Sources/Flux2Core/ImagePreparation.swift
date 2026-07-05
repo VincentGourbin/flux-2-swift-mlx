@@ -383,7 +383,10 @@ public enum ImagePreparation {
             return cropped
         }
 
-        guard let context = makeImageContext(width: Int(cropRect.width), height: Int(cropRect.height)) else {
+        guard let context = makeImageContext(
+            width: integralDimension(cropRect.width),
+            height: integralDimension(cropRect.height)
+        ) else {
             throw Flux2Error.imageProcessingFailed("Failed to create crop context")
         }
 
@@ -397,7 +400,7 @@ public enum ImagePreparation {
             image,
             in: ImageCoordinateMapper.contextDrawRect(
                 forTopLeftRect: sourceDrawRect,
-                canvasHeight: cropRect.height
+                canvasHeight: CGFloat(integralDimension(cropRect.height))
             )
         )
 
@@ -463,6 +466,10 @@ public enum ImagePreparation {
             width: max(1, min(maxX, CGFloat(imageWidth)) - minX),
             height: max(1, min(maxY, CGFloat(imageHeight)) - minY)
         )
+    }
+
+    private static func integralDimension(_ value: CGFloat) -> Int {
+        max(1, Int(value.rounded()))
     }
 
     private static func makeImageContext(width: Int, height: Int) -> CGContext? {

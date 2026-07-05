@@ -592,6 +592,14 @@ struct ImageToImage: AsyncParsableCommand {
             }
         }
 
+        let maxImages = modelVariant.maxReferenceImages
+        guard !refImages.isEmpty else {
+            throw ValidationError("Please provide 1-\(maxImages) reference images with --images or --project")
+        }
+        guard refImages.count <= maxImages else {
+            throw ValidationError("Maximum \(maxImages) reference images allowed for \(modelVariant.displayName)")
+        }
+
         let prepSettings: ImagePreparationSettings?
         let pipelineImages: [CGImage]
         let outputWidth: Int
@@ -626,15 +634,6 @@ struct ImageToImage: AsyncParsableCommand {
         }
 
         _ = prepSettings
-
-        let maxImages = modelVariant.maxReferenceImages
-        guard !pipelineImages.isEmpty && pipelineImages.count <= maxImages else {
-            if pipelineImages.isEmpty {
-                throw ValidationError("Please provide 1-\(maxImages) reference images with --images or --project")
-            } else {
-                throw ValidationError("Maximum \(maxImages) reference images allowed for \(modelVariant.displayName)")
-            }
-        }
 
         // Validate interpret image paths exist (VLM will load them directly)
         var interpretImagePaths: [String] = []

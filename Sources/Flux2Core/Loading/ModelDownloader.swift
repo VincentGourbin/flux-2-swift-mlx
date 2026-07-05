@@ -215,17 +215,20 @@ public class Flux2ModelDownloader: @unchecked Sendable {
             return lhs.size < rhs.size
         }
 
-        let totalBytes = max(sortedFiles.reduce(Int64(0)) { $0 + max($1.size, 0) }, 1)
+        let knownTotalBytes = sortedFiles.reduce(Int64(0)) { $0 + max($1.size, 0) }
+        let useByteWeightedProgress = knownTotalBytes > 0
+        let totalBytes = max(knownTotalBytes, 1)
+        let fileCount = sortedFiles.count
 
         // Create destination directory
         let destDir = ModelRegistry.localPath(for: component)
         try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
 
-        // Download each file with byte-weighted progress
+        // Download each file with byte-weighted progress (or per-file fallback when sizes are unknown)
         var completedBytes: Int64 = 0
         var downloadedBytes: Int64 = 0
 
-        for entry in sortedFiles {
+        for (fileIndex, entry) in sortedFiles.enumerated() {
             let fileName = entry.fileName
             let destination = destDir.appendingPathComponent(fileName)
 
@@ -235,8 +238,13 @@ public class Flux2ModelDownloader: @unchecked Sendable {
                entry.size > 0, existingSize == entry.size {
                 completedBytes += entry.size
                 downloadedBytes += existingSize
-                let overall = min(Double(completedBytes) / Double(totalBytes), 0.999)
-                progress?(overall, "Skipped \(fileName) (already present)")
+                if useByteWeightedProgress {
+                    let overall = min(Double(completedBytes) / Double(totalBytes), 0.999)
+                    progress?(overall, "Skipped \(fileName) (already present)")
+                } else {
+                    let overall = min(Double(fileIndex + 1) / Double(fileCount), 0.999)
+                    progress?(overall, "Skipped \(fileName) (already present)")
+                }
                 continue
             }
 
@@ -247,12 +255,22 @@ public class Flux2ModelDownloader: @unchecked Sendable {
                 to: destination,
                 expectedSize: entry.size
             ) { received, expected in
-                let expectedFileBytes = expected > 0 ? expected : max(entry.size, 1)
-                let overall = min(Double(bytesBeforeFile + received) / Double(totalBytes), 0.999)
-                progress?(
-                    overall,
-                    "Downloading \(fileName)… \(Self.formatSize(received)) / \(Self.formatSize(expectedFileBytes))"
-                )
+                if useByteWeightedProgress {
+                    let expectedFileBytes = expected > 0 ? expected : max(entry.size, 1)
+                    let overall = min(Double(bytesBeforeFile + received) / Double(totalBytes), 0.999)
+                    progress?(
+                        overall,
+                        "Downloading \(fileName)… \(Self.formatSize(received)) / \(Self.formatSize(expectedFileBytes))"
+                    )
+                } else {
+                    let expectedFileBytes = expected > 0 ? expected : max(received, 1)
+                    let fileFraction = min(Double(received) / Double(expectedFileBytes), 0.99)
+                    let overall = min((Double(fileIndex) + fileFraction) / Double(fileCount), 0.999)
+                    progress?(
+                        overall,
+                        "Downloading \(fileName)… \(Self.formatSize(received)) / \(Self.formatSize(expectedFileBytes))"
+                    )
+                }
             }
 
             if let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
