@@ -7,7 +7,7 @@ import MLXNN
 
 /// Main entry point for Flux.2 image generation
 public enum Flux2Core {
-    public static let version = "2.4.1"
+    public static let version = "2.4.2.272"
 }
 
 /// Errors that can occur during Flux.2 operations

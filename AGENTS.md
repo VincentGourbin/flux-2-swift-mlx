@@ -68,7 +68,44 @@ not in scope. Frozen consumer contract: [docs/CIRCUS-TART-DEV-ENV-API.md](docs/C
 
 ## Verification
 
-### Build (minimum bar)
+### Project Builder / daily build
+
+This repo is registered in **Project Builder** (`utility-be-project-builder`).
+
+| User says | Agent does |
+| --- | --- |
+| **`build`** | Read `~/GitHub/utility-be-project-builder/Configs/flux-2-swift-mix.json`, honor `run_preferences` (clamped by `capabilities`), run enabled `commands` from repo root |
+| **`compile`** | Normal Swift compile only — **do not** read the Project Builder config |
+
+Full config schema and agent contract: [utility-be-project-builder/Configs/AGENTS.md](../utility-be-project-builder/Configs/AGENTS.md).
+
+**Typical `build` pipeline** (when all four `run_preferences` are enabled):
+
+1. **Compile:** `CONFIG=Release bin/package-flux2app.sh` → `Flux2App.app` in repo root
+2. **Relocate:** copy to `/Applications/Flux2App.app` (remove destination first when overwrite is on)
+3. **Launch:** `open /Applications/Flux2App.app`
+
+**Two app bundles — do not confuse them:**
+
+| Path | Role |
+| --- | --- |
+| `flux-2-swift-mix/Flux2App.app` | Build product / staging copy (gitignored) |
+| `/Applications/Flux2App.app` | Installed copy — **use this one day to day** |
+
+Project Builder’s **compile** step produces the repo copy; **relocate** installs it to `/Applications`. Seeing two “FLUX.2” icons is normal if both paths are registered; launch from Applications after a `build`.
+
+**Agent notes:**
+
+- If `run_preferences` is absent → default to **compile only** when `capabilities.compile` is true.
+- If every `run_preferences` flag is `false` → `build` runs nothing; say so and ask whether to fall back to compile-only or have the user re-check Project Builder.
+- Before relocate with overwrite, **quit** a running `Flux2App` (`⌘Q` or `pkill -x Flux2App`) so the new binary loads on launch.
+- `bin/package-flux2app.sh` already runs `bin/build-mlx-metallib.sh` and `bin/build-app-icon.sh` — no separate metallib step needed for a packaged app.
+
+Local Cursor rule (when present): `.cursor/rules/project-builder-build.mdc`.
+
+### Compile (minimum bar)
+
+Use this section when the user says **`compile`**, or when Project Builder compile is the only enabled step.
 
 ```bash
 swift package resolve
@@ -76,7 +113,7 @@ swift build --product Flux2App
 swift build --product Flux2CLI
 ```
 
-**MLX Metal shaders:** `swift build` alone does **not** compile `mlx.metallib` ([mlx-swift README](https://github.com/ml-explore/mlx-swift#swiftpm)). After every clean build (host or VM), run:
+**MLX Metal shaders:** bare `swift build` does **not** compile `mlx.metallib` ([mlx-swift README](https://github.com/ml-explore/mlx-swift#swiftpm)). After every clean build (host or VM), run:
 
 ```bash
 bin/build-mlx-metallib.sh
@@ -91,6 +128,8 @@ bin/package-flux2app.sh
 # → Flux2App.app in repo root (gitignored build product)
 open Flux2App.app
 ```
+
+`CONFIG=Release bin/package-flux2app.sh` matches Project Builder’s compile command. The package script runs metallib + icon steps automatically.
 
 Source art: `Assets/AppIcon/Flux2App-1024.png`. `bin/build-app-icon.sh` regenerates `AppIcon.icns`.
 
