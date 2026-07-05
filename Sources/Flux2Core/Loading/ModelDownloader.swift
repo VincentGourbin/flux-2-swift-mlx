@@ -194,40 +194,89 @@ public class Flux2ModelDownloader: @unchecked Sendable {
         Flux2Debug.log("Downloading \(component.displayName) from \(repoId)")
 
         // Get file list from HuggingFace API
-        let files = try await fetchFileList(repoId: repoId, subfolder: subfolder)
+        let fileEntries = try await fetchFileList(repoId: repoId, subfolder: subfolder)
 
         // Filter to only necessary files
-        let filesToDownload = files.filter { file in
-            file.hasSuffix(".safetensors") ||
-            file.hasSuffix(".json") ||
-            file == "tokenizer.model"
+        let filesToDownload = fileEntries.filter { entry in
+            entry.path.hasSuffix(".safetensors") ||
+            entry.path.hasSuffix(".json") ||
+            entry.path == "tokenizer.model"
         }
 
         guard !filesToDownload.isEmpty else {
             throw Flux2DownloadError.modelNotFound("No model files found in \(repoId)")
         }
 
+        // Small metadata first, then weights — keeps early progress visible.
+        let sortedFiles = filesToDownload.sorted { lhs, rhs in
+            let lhsJSON = lhs.path.hasSuffix(".json")
+            let rhsJSON = rhs.path.hasSuffix(".json")
+            if lhsJSON != rhsJSON { return lhsJSON }
+            return lhs.size < rhs.size
+        }
+
+        let knownTotalBytes = sortedFiles.reduce(Int64(0)) { $0 + max($1.size, 0) }
+        let useByteWeightedProgress = knownTotalBytes > 0
+        let totalBytes = max(knownTotalBytes, 1)
+        let fileCount = sortedFiles.count
+
         // Create destination directory
         let destDir = ModelRegistry.localPath(for: component)
         try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
 
-        // Download each file
+        // Download each file with byte-weighted progress (or per-file fallback when sizes are unknown)
+        var completedBytes: Int64 = 0
         var downloadedBytes: Int64 = 0
-        let totalFiles = filesToDownload.count
 
-        for (index, file) in filesToDownload.enumerated() {
-            let fileName = URL(fileURLWithPath: file).lastPathComponent
-            progress?(Double(index) / Double(totalFiles), "Downloading \(fileName)...")
+        for (fileIndex, entry) in sortedFiles.enumerated() {
+            let fileName = entry.fileName
+            let destination = destDir.appendingPathComponent(fileName)
 
+            if FileManager.default.fileExists(atPath: destination.path),
+               let attrs = try? FileManager.default.attributesOfItem(atPath: destination.path),
+               let existingSize = attrs[.size] as? Int64,
+               entry.size > 0, existingSize == entry.size {
+                completedBytes += entry.size
+                downloadedBytes += existingSize
+                if useByteWeightedProgress {
+                    let overall = min(Double(completedBytes) / Double(totalBytes), 0.999)
+                    progress?(overall, "Skipped \(fileName) (already present)")
+                } else {
+                    let overall = min(Double(fileIndex + 1) / Double(fileCount), 0.999)
+                    progress?(overall, "Skipped \(fileName) (already present)")
+                }
+                continue
+            }
+
+            let bytesBeforeFile = completedBytes
             let fileURL = try await downloadFile(
                 repoId: repoId,
-                filePath: file,
-                to: destDir.appendingPathComponent(fileName)
-            )
+                filePath: entry.path,
+                to: destination,
+                expectedSize: entry.size
+            ) { received, expected in
+                if useByteWeightedProgress {
+                    let expectedFileBytes = expected > 0 ? expected : max(entry.size, 1)
+                    let overall = min(Double(bytesBeforeFile + received) / Double(totalBytes), 0.999)
+                    progress?(
+                        overall,
+                        "Downloading \(fileName)… \(Self.formatSize(received)) / \(Self.formatSize(expectedFileBytes))"
+                    )
+                } else {
+                    let expectedFileBytes = expected > 0 ? expected : max(received, 1)
+                    let fileFraction = min(Double(received) / Double(expectedFileBytes), 0.99)
+                    let overall = min((Double(fileIndex) + fileFraction) / Double(fileCount), 0.999)
+                    progress?(
+                        overall,
+                        "Downloading \(fileName)… \(Self.formatSize(received)) / \(Self.formatSize(expectedFileBytes))"
+                    )
+                }
+            }
 
             if let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
                let size = attrs[.size] as? Int64 {
                 downloadedBytes += size
+                completedBytes += entry.size > 0 ? entry.size : size
             }
 
             Flux2Debug.log("Downloaded \(fileName) (\(Self.formatSize(downloadedBytes)) total)")
@@ -249,8 +298,17 @@ public class Flux2ModelDownloader: @unchecked Sendable {
         }
     }
 
+    private struct HuggingFaceFileEntry: Sendable {
+        let path: String
+        let size: Int64
+
+        var fileName: String {
+            URL(fileURLWithPath: path).lastPathComponent
+        }
+    }
+
     /// Fetch file list from HuggingFace API
-    private func fetchFileList(repoId: String, subfolder: String?) async throws -> [String] {
+    private func fetchFileList(repoId: String, subfolder: String?) async throws -> [HuggingFaceFileEntry] {
         var urlString = "https://huggingface.co/api/models/\(repoId)/tree/main"
         if let subfolder = subfolder {
             urlString += "/\(subfolder)"
@@ -292,19 +350,35 @@ public class Flux2ModelDownloader: @unchecked Sendable {
             throw Flux2DownloadError.downloadFailed("Invalid JSON response")
         }
 
-        var files: [String] = []
+        var files: [HuggingFaceFileEntry] = []
         for item in json {
             if let type = item["type"] as? String, type == "file",
                let path = item["path"] as? String {
-                files.append(path)
+                let size: Int64
+                if let n = item["size"] as? Int64 {
+                    size = n
+                } else if let n = item["size"] as? Int {
+                    size = Int64(n)
+                } else if let n = item["size"] as? NSNumber {
+                    size = n.int64Value
+                } else {
+                    size = 0
+                }
+                files.append(HuggingFaceFileEntry(path: path, size: size))
             }
         }
 
         return files
     }
 
-    /// Download a single file from HuggingFace
-    private func downloadFile(repoId: String, filePath: String, to destination: URL) async throws -> URL {
+    /// Download a single file from HuggingFace with byte-level progress callbacks.
+    private func downloadFile(
+        repoId: String,
+        filePath: String,
+        to destination: URL,
+        expectedSize: Int64,
+        progress: (@Sendable (Int64, Int64) -> Void)? = nil
+    ) async throws -> URL {
         let urlString = "https://huggingface.co/\(repoId)/resolve/main/\(filePath)"
 
         guard let url = URL(string: urlString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? urlString) else {
@@ -316,21 +390,135 @@ public class Flux2ModelDownloader: @unchecked Sendable {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
 
-        let (tempURL, response) = try await session.download(for: request)
+        let delegate = HuggingFaceDownloadDelegate(
+            onProgress: progress,
+            throttleInterval: 0.25
+        )
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForResource = 3_600
+        let downloadSession = URLSession(
+            configuration: config,
+            delegate: delegate,
+            delegateQueue: nil
+        )
+        defer { downloadSession.finishTasksAndInvalidate() }
 
-        guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
-            throw Flux2DownloadError.downloadFailed("Failed to download \(filePath)")
+        let task = downloadSession.downloadTask(with: request)
+        let (tempURL, response) = try await delegate.result(for: task)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw Flux2DownloadError.downloadFailed("Invalid response downloading \(filePath)")
         }
 
-        // Move to destination
+        switch httpResponse.statusCode {
+        case 200:
+            break
+        case 401:
+            throw Flux2DownloadError.downloadFailed(
+                "Authentication required for \(repoId). Add your Hugging Face token in Flux2App → Settings."
+            )
+        case 403:
+            throw Flux2DownloadError.downloadFailed(
+                "Access denied for \(repoId). Accept the model license at https://huggingface.co/\(repoId)"
+            )
+        default:
+            throw Flux2DownloadError.downloadFailed(
+                "Failed to download \(filePath) (HTTP \(httpResponse.statusCode))"
+            )
+        }
+
         if FileManager.default.fileExists(atPath: destination.path) {
             try FileManager.default.removeItem(at: destination)
         }
         try FileManager.default.moveItem(at: tempURL, to: destination)
 
+        if let progress {
+            let finalSize = expectedSize > 0
+                ? expectedSize
+                : ((try? FileManager.default.attributesOfItem(atPath: destination.path))?[.size] as? Int64 ?? 0)
+            progress(finalSize, finalSize)
+        }
+
         return destination
     }
+}
+
+// MARK: - Download delegate (byte progress)
+
+private final class HuggingFaceDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<(URL, URLResponse), Error>?
+    private let onProgress: (@Sendable (Int64, Int64) -> Void)?
+    private let throttleInterval: TimeInterval
+    private var lastProgressReport = Date.distantPast
+
+    init(
+        onProgress: (@Sendable (Int64, Int64) -> Void)?,
+        throttleInterval: TimeInterval
+    ) {
+        self.onProgress = onProgress
+        self.throttleInterval = throttleInterval
+    }
+
+    func result(for task: URLSessionDownloadTask) async throws -> (URL, URLResponse) {
+        try await withCheckedThrowingContinuation { continuation in
+            lock.lock()
+            self.continuation = continuation
+            lock.unlock()
+            task.resume()
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        guard let onProgress else { return }
+        let now = Date()
+        let isComplete = totalBytesExpectedToWrite > 0 && totalBytesWritten >= totalBytesExpectedToWrite
+        guard isComplete || now.timeIntervalSince(lastProgressReport) >= throttleInterval else { return }
+        lastProgressReport = now
+        onProgress(totalBytesWritten, totalBytesExpectedToWrite)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        let response = downloadTask.response ?? URLResponse()
+        let staged = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hf-download-\(UUID().uuidString)")
+        do {
+            if FileManager.default.fileExists(atPath: staged.path) {
+                try FileManager.default.removeItem(at: staged)
+            }
+            try FileManager.default.moveItem(at: location, to: staged)
+            finish(.success((staged, response)))
+        } catch {
+            finish(.failure(error))
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error {
+            finish(.failure(error))
+        }
+    }
+
+    private func finish(_ result: Result<(URL, URLResponse), Error>) {
+        lock.lock()
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(with: result)
+    }
+}
+
+extension Flux2ModelDownloader {
 
     /// Download all models for a quantization configuration
     public func downloadAll(

@@ -63,6 +63,10 @@ public struct Flux2StepContext: Sendable {
 /// pure observer, or return a new tensor to influence subsequent steps.
 public typealias Flux2StepHook = @Sendable (Flux2StepContext, MLXArray) -> MLXArray
 
+/// Callback fired once the prompt has been upsampled/enhanced, before denoising
+/// begins, carrying the enhanced prompt so the UI can show it live.
+public typealias Flux2PromptUpsampleCallback = @Sendable (String) -> Void
+
 /// Result of image generation including the image and metadata
 public struct Flux2GenerationResult: Sendable {
     /// The generated image
@@ -78,11 +82,21 @@ public struct Flux2GenerationResult: Sendable {
     /// The original prompt before any enhancement
     public let originalPrompt: String
 
-    public init(image: CGImage, usedPrompt: String, wasUpsampled: Bool, originalPrompt: String) {
+    /// Optional user-facing notice (e.g. VLM safety refusal → fallback).
+    public let notice: String?
+
+    public init(
+        image: CGImage,
+        usedPrompt: String,
+        wasUpsampled: Bool,
+        originalPrompt: String,
+        notice: String? = nil
+    ) {
         self.image = image
         self.usedPrompt = usedPrompt
         self.wasUpsampled = wasUpsampled
         self.originalPrompt = originalPrompt
+        self.notice = notice
     }
 }
 
@@ -649,8 +663,8 @@ public class Flux2Pipeline: @unchecked Sendable {
         onProgress: Flux2ProgressCallback? = nil,
         onCheckpoint: Flux2CheckpointCallback? = nil
     ) async throws -> CGImage {
-        guard !images.isEmpty && images.count <= 3 else {
-            throw Flux2Error.invalidConfiguration("Provide 1-3 reference images")
+        guard !images.isEmpty && images.count <= 6 else {
+            throw Flux2Error.invalidConfiguration("Provide 1-6 reference images")
         }
 
         // Infer dimensions from first image if not provided
@@ -727,7 +741,9 @@ public class Flux2Pipeline: @unchecked Sendable {
         upsamplePrompt: Bool = false,
         checkpointInterval: Int? = nil,
         onProgress: Flux2ProgressCallback? = nil,
-        onCheckpoint: Flux2CheckpointCallback? = nil
+        onCheckpoint: Flux2CheckpointCallback? = nil,
+        onStep: Flux2StepHook? = nil,
+        onPromptUpsampled: Flux2PromptUpsampleCallback? = nil
     ) async throws -> Flux2GenerationResult {
         try await generateWithResult(
             mode: .textToImage,
@@ -741,7 +757,9 @@ public class Flux2Pipeline: @unchecked Sendable {
             upsamplePrompt: upsamplePrompt,
             checkpointInterval: checkpointInterval,
             onProgress: onProgress,
-            onCheckpoint: onCheckpoint
+            onCheckpoint: onCheckpoint,
+            onStep: onStep,
+            onPromptUpsampled: onPromptUpsampled
         )
     }
 
@@ -759,10 +777,12 @@ public class Flux2Pipeline: @unchecked Sendable {
         upsamplePrompt: Bool = false,
         checkpointInterval: Int? = nil,
         onProgress: Flux2ProgressCallback? = nil,
-        onCheckpoint: Flux2CheckpointCallback? = nil
+        onCheckpoint: Flux2CheckpointCallback? = nil,
+        onStep: Flux2StepHook? = nil,
+        onPromptUpsampled: Flux2PromptUpsampleCallback? = nil
     ) async throws -> Flux2GenerationResult {
-        guard !images.isEmpty && images.count <= 3 else {
-            throw Flux2Error.invalidConfiguration("Provide 1-3 reference images")
+        guard !images.isEmpty && images.count <= 6 else {
+            throw Flux2Error.invalidConfiguration("Provide 1-6 reference images")
         }
 
         // Infer dimensions from first image if not provided
@@ -781,7 +801,9 @@ public class Flux2Pipeline: @unchecked Sendable {
             upsamplePrompt: upsamplePrompt,
             checkpointInterval: checkpointInterval,
             onProgress: onProgress,
-            onCheckpoint: onCheckpoint
+            onCheckpoint: onCheckpoint,
+            onStep: onStep,
+            onPromptUpsampled: onPromptUpsampled
         )
     }
 
@@ -875,7 +897,8 @@ public class Flux2Pipeline: @unchecked Sendable {
         checkpointInterval: Int?,
         onProgress: Flux2ProgressCallback?,
         onCheckpoint: Flux2CheckpointCallback?,
-        onStep: Flux2StepHook? = nil
+        onStep: Flux2StepHook? = nil,
+        onPromptUpsampled: Flux2PromptUpsampleCallback? = nil
     ) async throws -> Flux2GenerationResult {
         // Validate dimensions
         let (validHeight, validWidth) = LatentUtils.validateDimensions(
@@ -1016,6 +1039,7 @@ public class Flux2Pipeline: @unchecked Sendable {
                     let enhancedPrompt = try await textEncoder!.upsamplePromptWithImages(enrichedPrompt, images: images)
                     finalUsedPrompt = enhancedPrompt
                     wasPromptUpsampled = true
+                    onPromptUpsampled?(finalUsedPrompt)
                     textEmbeddings = try textEncoder!.encode(enhancedPrompt, upsample: false)
                 } else {
                     let (embeddings, usedPrompt) = try textEncoder!.encodeWithPrompt(enrichedPrompt, upsample: upsamplePrompt)
@@ -1045,6 +1069,7 @@ public class Flux2Pipeline: @unchecked Sendable {
                     let enhancedPrompt = try await tempMistralEncoder.upsamplePromptWithImages(enrichedPrompt, images: images)
                     finalUsedPrompt = enhancedPrompt
                     wasPromptUpsampled = true
+                    onPromptUpsampled?(finalUsedPrompt)
 
                     // Step 4: Unload Mistral to free memory
                     Flux2Debug.log("Unloading Mistral VLM...")
@@ -1064,6 +1089,11 @@ public class Flux2Pipeline: @unchecked Sendable {
                     finalUsedPrompt = usedPrompt
                     wasPromptUpsampled = upsamplePrompt && (usedPrompt != enrichedPrompt)
                 }
+            }
+            // Surface the enhanced prompt now (before the long denoise) so the UI
+            // can show it live rather than only after the run completes.
+            if wasPromptUpsampled {
+                onPromptUpsampled?(finalUsedPrompt)
             }
             eval(textEmbeddings)
 
@@ -1251,6 +1281,10 @@ public class Flux2Pipeline: @unchecked Sendable {
 
                 // Steps 1+: Cached denoising (no reference tokens in input)
                 for stepIdx in 1..<(scheduler.sigmas.count - 1) {
+                    // Cooperative cancellation: bail out between steps when the
+                    // enclosing Task is cancelled (e.g. the UI Cancel button).
+                    try Task.checkCancellation()
+
                     let stepStart = Date()
                     let sigma = scheduler.sigmas[stepIdx]
                     let t = MLXArray([sigma])
@@ -1338,6 +1372,10 @@ public class Flux2Pipeline: @unchecked Sendable {
             }
 
             for stepIdx in 0..<(scheduler.sigmas.count - 1) {
+                // Cooperative cancellation: bail out between steps when the
+                // enclosing Task is cancelled (e.g. the UI Cancel button).
+                try Task.checkCancellation()
+
                 let stepStart = Date()
 
                 let sigma = scheduler.sigmas[stepIdx]
@@ -1540,6 +1578,10 @@ public class Flux2Pipeline: @unchecked Sendable {
 
         // Denoising loop - use sigmas (in [0, 1] range) for transformer
         for stepIdx in 0..<(scheduler.sigmas.count - 1) {
+            // Cooperative cancellation: bail out between steps when the
+            // enclosing Task is cancelled (e.g. the UI Cancel button).
+            try Task.checkCancellation()
+
             let stepStart = Date()
 
             let sigma = scheduler.sigmas[stepIdx]
@@ -1754,9 +1796,15 @@ public class Flux2Pipeline: @unchecked Sendable {
         Flux2Debug.log("Encoding \(images.count) reference images separately with unique T-coordinates...")
 
         // === STEP 1: Process each image separately ===
-        // Max area per image - matches diffusers pipeline_flux2.py line 892-893
-        // Reference uses 1024² for conditioning images (not 768² which is for upsampling)
-        let maxImageArea = 1024 * 1024  // ~4096 tokens per image
+        // Track the output budget so the first (context) reference encodes at the
+        // output size: output == reference keeps the composited patch aligned with
+        // the original (see ImageGenerationViewModel.referenceMatchedSize). Floored
+        // at the historical 1024² (diffusers pipeline_flux2.py:892-893) so additional
+        // reference images keep a sane conditioning budget at small output sizes.
+        // Capped at 2048² so very large outputs do not quadruple VRAM vs. the old
+        // fixed 1 M-pixel budget (PR #99 review).
+        let primaryReferenceMaxPixels = min(max(width * height, 1024 * 1024), 2048 * 2048)
+        let additionalReferenceMaxPixels = 1024 * 1024
         let multipleOf = 32  // vae_scale_factor * 2
 
         var allPackedLatents: [MLXArray] = []
@@ -1770,6 +1818,7 @@ public class Flux2Pipeline: @unchecked Sendable {
             var targetWidth = image.width
             var targetHeight = image.height
             let pixelCount = targetWidth * targetHeight
+            let maxImageArea = index == 0 ? primaryReferenceMaxPixels : additionalReferenceMaxPixels
 
             if pixelCount > maxImageArea {
                 let scale = sqrt(Double(maxImageArea) / Double(pixelCount))

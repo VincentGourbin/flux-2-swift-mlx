@@ -91,108 +91,142 @@ public class Flux2TextEncoder: @unchecked Sendable {
         return enhanced
     }
 
-    /// Upsample/enhance a prompt using Mistral VLM's vision capability
-    /// Analyzes each reference image and incorporates descriptions into the prompt
+    /// Upsample/enhance a prompt using Mistral VLM's vision capability.
+    /// Uses the FLUX.2 I2I upsampling system prompt (same path as FluxEncodersCLI
+    /// and the FLUX.2 Tools tab) so the model sees the reference and rewrites the
+    /// edit instruction — not a generic describe-then-chat flow.
     /// - Parameters:
     ///   - prompt: Original user prompt
     ///   - images: Reference images to analyze
     /// - Returns: Enhanced prompt with image descriptions
-    @MainActor
     public func upsamplePromptWithImages(_ prompt: String, images: [CGImage]) async throws -> String {
         #if os(macOS)
         guard !images.isEmpty else {
-            // Fall back to text-only upsampling if no images
             return try upsamplePrompt(prompt)
         }
 
         Flux2Debug.log("Upsampling prompt with \(images.count) reference image(s)")
+        try await ensureMistralVLMLoadedForUpsample()
 
-        // Load VLM model if not already loaded
-        if !FluxTextEncoders.shared.isVLMLoaded {
-            Flux2Debug.log("Loading VLM model for image analysis...")
+        let i2iParams = GenerateParameters(
+            maxTokens: 512,
+            temperature: 0.15,
+            topP: 0.95,
+            repetitionPenalty: 1.1
+        )
+        let systemPrompt = FluxConfig.systemMessage(for: .upsamplingI2I)
 
-            // Map our quantization to MistralCore's variant
-            let variant: ModelVariant
-            switch quantization {
-            case .bf16:
-                variant = .bf16
-            case .mlx8bit:
-                variant = .mlx8bit
-            case .mlx6bit:
-                variant = .mlx6bit
-            case .mlx4bit:
-                variant = .mlx4bit
-            }
-
-            try await FluxTextEncoders.shared.loadVLMModel(variant: variant) { progress, message in
-                Flux2Debug.log("VLM Download: \(Int(progress * 100))% - \(message)")
-            }
-            Flux2Debug.log("VLM model loaded successfully")
+        if images.count == 1 {
+            let cgImage = images[0]
+            let nsImage = NSImage(
+                cgImage: cgImage,
+                size: NSSize(width: cgImage.width, height: cgImage.height)
+            )
+            let finalPrompt = try await runMistralVLMAnalyze(
+                image: nsImage,
+                prompt: prompt,
+                systemPrompt: systemPrompt,
+                parameters: i2iParams
+            )
+            Flux2Debug.log("I2I upsampled prompt: \"\(finalPrompt.prefix(100))...\"")
+            return finalPrompt
         }
 
-        // Analyze each image
-        var imageDescriptions: [String] = []
-
+        // Multi-reference: I2I upsample per image, then T2I merge (matches interpret path).
+        var interpretations: [String] = []
         for (index, cgImage) in images.enumerated() {
             let imageNumber = index + 1
-            Flux2Debug.log("Analyzing image \(imageNumber)/\(images.count)...")
-
-            // Convert CGImage to NSImage for VLM
-            let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-
-            // Analyze the image with VLM
-            let analysisPrompt = "Describe this image in detail. Focus on the main subject, colors, style, and any notable elements."
-
-            let result = try FluxTextEncoders.shared.analyzeImage(
-                image: nsImage,
-                prompt: analysisPrompt,
-                parameters: GenerateParameters(
-                    maxTokens: 200,
-                    temperature: 0.3,
-                    topP: 0.9
-                )
+            Flux2Debug.log("I2I upsampling reference \(imageNumber)/\(images.count)...")
+            let nsImage = NSImage(
+                cgImage: cgImage,
+                size: NSSize(width: cgImage.width, height: cgImage.height)
             )
-
-            let description = result.text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-            imageDescriptions.append("Image \(imageNumber): \(description)")
-            print("[VLM-Upsample] Image \(imageNumber) description: \(description)")
-            fflush(stdout)
+            let interpretation = try await runMistralVLMAnalyze(
+                image: nsImage,
+                prompt: prompt,
+                systemPrompt: systemPrompt,
+                parameters: i2iParams
+            )
+            interpretations.append(interpretation)
         }
 
-        // Build enhanced prompt with image context
-        let imageContext = imageDescriptions.joined(separator: "\n")
-        let enhancedPrompt = """
-        Reference images context:
-        \(imageContext)
+        let imageContexts = interpretations.enumerated()
+            .map { "Image \($0.offset + 1): \($0.element)" }
+            .joined(separator: "\n")
+        let combinedContext = """
+        Based on the image analyses:
+        \(imageContexts)
 
         User request: \(prompt)
-
-        Generate an image that combines elements from the reference images according to the user's request.
         """
 
-        print("[VLM-Upsample] Enhanced prompt with image context:\n\(enhancedPrompt)")
-        fflush(stdout)
+        let t2iMessages = FluxConfig.buildMessages(prompt: combinedContext, mode: .upsamplingT2I)
+        let t2iResult = try await Task.detached(priority: .userInitiated) {
+            try FluxTextEncoders.shared.chat(
+                messages: t2iMessages,
+                parameters: GenerateParameters(
+                    maxTokens: 512,
+                    temperature: 0.15,
+                    topP: 0.95,
+                    repetitionPenalty: 1.1
+                ),
+                stream: false
+            )
+        }.value
 
-        // Use T2I upsampling mode (not I2I) because:
-        // - I2I mode is for single-image editing: "convert editing requests into 50-80 word instructions"
-        // - T2I mode expands prompts with visual details, which is what we need for multi-image compositing
-        let messages = FluxConfig.buildMessages(prompt: enhancedPrompt, mode: .upsamplingT2I)
-
-        let chatResult = try FluxTextEncoders.shared.chat(
-            messages: messages,
-            parameters: .balanced,
-            stream: false
-        )
-
-        let finalPrompt = chatResult.text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-        print("[VLM-Upsample] Final enhanced prompt:\n\(finalPrompt)")
-        fflush(stdout)
-
+        let finalPrompt = t2iResult.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        Flux2Debug.log("Multi-image upsampled prompt: \"\(finalPrompt.prefix(100))...\"")
         return finalPrompt
         #else
-        // Fall back to text-only upsampling on non-macOS platforms
         return try upsamplePrompt(prompt)
         #endif
+    }
+
+    /// Unload a text-only Mistral load before switching to the VLM weights.
+    /// Loading VLM on top of the text encoder corrupts FluxTextEncoders state and
+    /// can hang inference (see describeImagePathsForPrompt).
+    private func ensureMistralVLMLoadedForUpsample() async throws {
+        if FluxTextEncoders.shared.isVLMLoaded { return }
+
+        if FluxTextEncoders.shared.isModelLoaded {
+            Flux2Debug.log("Unloading text encoder before Mistral VLM upsample...")
+            await MainActor.run {
+                FluxTextEncoders.shared.unloadModel()
+            }
+            Memory.clearCache()
+            eval([])
+        }
+
+        let variant: ModelVariant
+        switch quantization {
+        case .bf16: variant = .bf16
+        case .mlx8bit: variant = .mlx8bit
+        case .mlx6bit: variant = .mlx6bit
+        case .mlx4bit: variant = .mlx4bit
+        }
+
+        Flux2Debug.log("Loading Mistral VLM for prompt upsampling (\(variant))...")
+        try await FluxTextEncoders.shared.loadVLMModel(variant: variant) { progress, message in
+            Flux2Debug.log("VLM: \(Int(progress * 100))% — \(message)")
+        }
+    }
+
+    /// Run Mistral VLM analyze off the main actor so the UI stays responsive.
+    private func runMistralVLMAnalyze(
+        image: NSImage,
+        prompt: String,
+        systemPrompt: String,
+        parameters: GenerateParameters
+    ) async throws -> String {
+        try await Task.detached(priority: .userInitiated) {
+            let result = try FluxTextEncoders.shared.analyzeImage(
+                image: image,
+                prompt: prompt,
+                systemPrompt: systemPrompt,
+                parameters: parameters
+            )
+            return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.value
     }
 
     /// Describe images semantically using VLM for prompt injection (using file paths)

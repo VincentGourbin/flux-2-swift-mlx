@@ -5,6 +5,7 @@
 
 import SwiftUI
 import Flux2Core
+import Flux2Chains
 import FluxTextEncoders
 import UniformTypeIdentifiers
 
@@ -14,395 +15,603 @@ import AppKit
 
 struct ImageToImageView: View {
     @EnvironmentObject var modelManager: ModelManager
-    @StateObject private var viewModel = ImageGenerationViewModel()
-    @State private var isTargetedForDrop = false
+    @ObservedObject var viewModel: ImageGenerationViewModel
+    @StateObject private var paletteCoordinator = PaletteDetachCoordinator()
+    @AppStorage("imageSaveUpscaleBy") private var imageSaveUpscaleBy = 1.0
+
+    // Kept-but-hidden controls: the megapixel budget + barn doors now own
+    // resolution and dimensions, so these are off by default (not deleted).
+    private static let showScalingControl = false
+    private static let showManualDimensions = false
 
     var body: some View {
-        HSplitView {
-            // Left panel: Controls
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    // Reference Images Section
-                    referenceImagesSection
+        ZStack(alignment: .topLeading) {
+            HSplitView {
+                VStack(spacing: 0) {
+                    ImageToImageCanvasToolsSidebar(viewModel: viewModel)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(Color(nsColor: .windowBackgroundColor).opacity(0.92))
 
                     Divider()
 
-                    // Model Selection Section
-                    modelSelectionSection
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 10) {
+                            PalettePanel(
+                                storageKey: "i2i.images",
+                                title: "Images",
+                                systemImage: "photo.stack",
+                                coordinator: paletteCoordinator,
+                                headerTrailing: { imagesHeaderTrailing },
+                                content: { ImagesPaletteView(viewModel: viewModel) }
+                            )
 
-                    Divider()
+                            PalettePanel(
+                                storageKey: "i2i.workflow",
+                                title: "Workflow",
+                                systemImage: "arrow.triangle.branch",
+                                coordinator: paletteCoordinator,
+                                content: { workflowContextPaletteContent }
+                            )
 
-                    // Prompt Section
-                    promptSection
+                            PalettePanel(
+                                storageKey: "i2i.parameters",
+                                title: "Generation Parameters",
+                                systemImage: "slider.horizontal.3",
+                                coordinator: paletteCoordinator,
+                                content: { parametersPaletteContent }
+                            )
 
-                    Divider()
-
-                    // Standard Parameters Section
-                    parametersSection
-
-                    Divider()
-
-                    // Optional: Interpret Images Section
-                    interpretImagesSection
-
-                    Divider()
-
-                    // Generate Button
-                    generateSection
+                            PalettePanel(
+                                storageKey: "i2i.outputOptions",
+                                title: "Output Options",
+                                systemImage: "slider.horizontal.below.rectangle",
+                                coordinator: paletteCoordinator,
+                                content: { outputOptionsPaletteContent }
+                            )
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(minWidth: 380, idealWidth: 450, maxWidth: 550)
-            .clipped()
+                .frame(minWidth: 380, idealWidth: 450, maxWidth: 550)
+                .clipped()
 
-            // Right panel: Output
-            outputSection
+                outputSection
+            }
+
+            floatingPalettes
         }
         .onAppear {
+            modelManager.refreshDownloadedModels()
             modelManager.refreshDownloadedDiffusionModels()
+            viewModel.enforceAvailableModelDefaults(
+                downloadedTransformers: modelManager.downloadedTransformers,
+                downloadedTextModels: modelManager.downloadedModels
+            )
         }
         .onChange(of: viewModel.selectedModel) { _, newModel in
-            viewModel.applyRecommendedDefaults(for: newModel)
+            if viewModel.shouldApplyDefaultsForModelChange() {
+                viewModel.applyRecommendedDefaults(for: newModel)
+            }
+            viewModel.enforceAvailableModelDefaults(
+                downloadedTransformers: modelManager.downloadedTransformers,
+                downloadedTextModels: modelManager.downloadedModels
+            )
+        }
+        .onChange(of: modelManager.downloadedTransformers) { _, downloaded in
+            viewModel.enforceAvailableModelDefaults(
+                downloadedTransformers: downloaded,
+                downloadedTextModels: modelManager.downloadedModels
+            )
+        }
+        .onChange(of: modelManager.downloadedModels) { _, downloaded in
+            viewModel.enforceAvailableModelDefaults(
+                downloadedTransformers: modelManager.downloadedTransformers,
+                downloadedTextModels: downloaded
+            )
+        }
+        .focusedSceneValue(\.generationProjectCommands, GenerationProjectCommands(
+            newProject: { viewModel.newProject() },
+            openProject: { viewModel.openProject() },
+            saveProject: { viewModel.saveProject() },
+            saveProjectAs: { viewModel.saveProjectAs() }
+        ))
+        .focusedSceneValue(\.generationProjectName, viewModel.projectDisplayName)
+        .focusedSceneValue(\.generationModelConfiguration, viewModel)
+        .focusedSceneValue(\.generationSelectionUndo, GenerationSelectionUndoCommands(
+            undo: { viewModel.undoSelection() },
+            redo: { viewModel.redoSelection() },
+            canUndo: { viewModel.canUndoSelection },
+            canRedo: { viewModel.canRedoSelection }
+        ))
+        .focusedSceneValue(\.generationDocumentHistory, GenerationDocumentHistoryCommands(
+            stepBack: { viewModel.stepHistoryBack() },
+            stepForward: { viewModel.stepHistoryForward() },
+            canStepBack: { viewModel.canStepHistoryBack },
+            canStepForward: { viewModel.canStepHistoryForward }
+        ))
+        .onChange(of: viewModel.generateRoute) { _, route in
+            if route == .localFill {
+                viewModel.upsamplePrompt = false
+            }
+        }
+        .onChange(of: viewModel.enrichInpaintPromptWithVLM) { _, _ in
+            viewModel.clearActiveToolIfDisabled()
+        }
+        .focusedSceneValue(\.generationUnloadModels) {
+            Task { await viewModel.clearPipeline() }
+        }
+        .onDisappear {
+            viewModel.persistSessionState()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .flux2PersistSession)) { _ in
+            viewModel.persistSessionState()
         }
     }
 
-    // MARK: - Reference Images Section
+    // MARK: - Palette titles & floating overlays
+
+    private var imagesHeaderTrailing: some View {
+        Group {
+            if viewModel.assignedImageCount > 0 {
+                Button(action: { viewModel.clearAllImageSlots() }) {
+                    Label("Clear All", systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .labelStyle(.titleOnly)
+            }
+        }
+    }
 
     @ViewBuilder
-    private var referenceImagesSection: some View {
+    private var floatingPalettes: some View {
+        if paletteCoordinator.isDetached("i2i.images") {
+            PaletteFloatingPanel(
+                storageKey: "i2i.images",
+                title: "Images",
+                systemImage: "photo.stack",
+                position: paletteCoordinator.positionBinding(for: "i2i.images"),
+                coordinator: paletteCoordinator,
+                headerTrailing: { imagesHeaderTrailing },
+                content: { ImagesPaletteView(viewModel: viewModel) }
+            )
+        }
+        if paletteCoordinator.isDetached("i2i.workflow") {
+            PaletteFloatingPanel(
+                storageKey: "i2i.workflow",
+                title: "Workflow",
+                systemImage: "arrow.triangle.branch",
+                position: paletteCoordinator.positionBinding(for: "i2i.workflow"),
+                coordinator: paletteCoordinator,
+                content: { workflowContextPaletteContent }
+            )
+        }
+        if paletteCoordinator.isDetached("i2i.parameters") {
+            PaletteFloatingPanel(
+                storageKey: "i2i.parameters",
+                title: "Generation Parameters",
+                systemImage: "slider.horizontal.3",
+                position: paletteCoordinator.positionBinding(for: "i2i.parameters"),
+                coordinator: paletteCoordinator,
+                content: { parametersPaletteContent }
+            )
+        }
+        if paletteCoordinator.isDetached("i2i.outputOptions") {
+            PaletteFloatingPanel(
+                storageKey: "i2i.outputOptions",
+                title: "Output Options",
+                systemImage: "slider.horizontal.below.rectangle",
+                position: paletteCoordinator.positionBinding(for: "i2i.outputOptions"),
+                coordinator: paletteCoordinator,
+                content: { outputOptionsPaletteContent }
+            )
+        }
+    }
+
+    // MARK: - Contextual controls (inferred from tool + selection)
+
+    @ViewBuilder
+    private var workflowContextPaletteContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("Reference Images (1-\(viewModel.selectedModel.maxReferenceImages))", systemImage: "photo.stack")
-                    .font(.headline)
+            if !viewModel.hasPrimaryReference {
+                Text("Add a primary reference image to use workflow tools on the preview.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                if viewModel.assignedImageCount > 0 {
+                    Text(viewModel.imageAssignmentSummary)
+                        .font(.caption.bold())
+                    if viewModel.assignedReferenceCount > viewModel.selectedModel.maxReferenceImages {
+                        Text("Too many reference images for \(viewModel.selectedModel.displayName) (max \(viewModel.selectedModel.maxReferenceImages)).")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                    Divider()
+                }
 
-                Spacer()
+                switch viewModel.generateRoute {
+                case .fullImage:
+                    Text("Barn doors on the preview define the Live Area (context mask for generation). Select the Live Area tool to adjust them. The megapixel budget in Generation Parameters sets output resolution at that aspect ratio.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .localFill:
+                    selectionControls
+                case .outpaint:
+                    Text(viewModel.outpaintCanvasDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("Drag the outer canvas edges on the preview. Padding snaps to 32 px. Megapixel budget in Generation Parameters caps the expanded canvas size.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
 
-                if !viewModel.referenceImages.isEmpty {
-                    Button(action: { viewModel.clearReferenceImages() }) {
-                        Label("Clear All", systemImage: "trash")
+                    Button("Reset Canvas") {
+                        viewModel.resetOutpaintCanvas()
+                    }
+                    .controlSize(.small)
+                    .disabled(!viewModel.outpaintCanvasIsDefined)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var selectionControls: some View {
+        if viewModel.enrichInpaintPromptWithVLM {
+            Text("Selection = where to edit. Context mask = what Qwen sees when writing the prompt.")
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+        }
+
+        Text("Hold ⇧ to add to the selection and ⌥ to subtract. Click the canvas without drawing to clear.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+        Picker("Intent", selection: $viewModel.inpaintIntent) {
+            ForEach(Flux2InpaintIntent.allCases, id: \.self) { intent in
+                Text(intent.displayName).tag(intent)
+            }
+        }
+        .pickerStyle(.segmented)
+
+        Text(viewModel.inpaintIntent.fillHelp)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+        if viewModel.enrichInpaintPromptWithVLM, viewModel.hasFillMask {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Context Mask Size")
+                        .font(.caption)
+                    Spacer()
+                    if viewModel.showsFillContextMaskOverlay {
+                        Text("Custom")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Auto")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Slider(
+                    value: $viewModel.fillContextMaskScale,
+                    in: -1...1,
+                    onEditingChanged: { editing in
+                        if editing {
+                            viewModel.noteFillContextMaskScaleEditBegan()
+                        } else {
+                            viewModel.commitFillContextMaskScaleEditIfChanged()
+                        }
+                    }
+                )
+                HStack {
+                    Text("Tight")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("Auto")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("Full image")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Text("Live Area barn doors are hidden while a selection is active. Move the slider to preview the Qwen context frame (white overlay).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
+        if viewModel.inpaintMaskTool == .polygon {
+            HStack(spacing: 8) {
+                if viewModel.draftPolygonPoints.count >= 3 {
+                    Button("Close polygon") {
+                        viewModel.closeDraftPolygon()
+                    }
+                    .controlSize(.small)
+                }
+                Text(polygonDraftHelp)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+
+        if viewModel.inpaintMaskTool == .visionSubject {
+            Text("Drag a lasso around the subject. Vision turns the hint into a marching-ants selection you can add to, subtract from, or undo.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+
+        if let visionStatus = viewModel.visionSubjectStatusMessage {
+            Text(visionStatus)
+                .font(.caption)
+                .foregroundStyle(visionStatus.contains("No subject") ? .orange : .secondary)
+        }
+
+        if !viewModel.hasFillMask {
+            Text("Draw a selection on the preview before generating.")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        } else {
+            Text(viewModel.processAreaDescription)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Button("Reset Selection") {
+                viewModel.clearProcessSelection()
+            }
+            .controlSize(.small)
+        }
+    }
+
+    // MARK: - Edit Mode Section (removed — kept for reference in git history)
+
+    private var polygonDraftHelp: String {
+        let count = viewModel.draftPolygonPoints.count
+        if count == 0 { return "Click corners on the preview." }
+        if count < 3 { return "\(count) point\(count == 1 ? "" : "s") — need at least 3." }
+        return "\(count) points — Close polygon when ready."
+    }
+
+    private var visionSubjectDraftHelp: String {
+        switch viewModel.inpaintMaskTool {
+        case .visionSubject:
+            if viewModel.draftPolygonPoints.count >= 3 {
+                return "Close polygon to find the subject inside it."
+            }
+            return "Drag a box around the subject, or click polygon corners."
+        default:
+            return ""
+        }
+    }
+
+    // MARK: - Megapixel budget / resolution cap
+
+    private var megapixelBudgetHelp: String {
+        switch viewModel.generateRoute {
+        case .fullImage:
+            return "Maximum total pixels to generate. Barn doors set the aspect ratio; this budget sets resolution."
+        case .localFill:
+            return "Maximum total pixels for the selection fill pass. Larger images are scaled down before denoising."
+        case .outpaint:
+            return "Caps the expanded canvas size for the outpaint pass."
+        }
+    }
+
+    @ViewBuilder
+    private func megapixelBudgetControls(help: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                ResetOnDoubleClickSlider(
+                    value: $viewModel.megapixelBudget,
+                    range: ImageGenerationViewModel.minMegapixelBudget...ImageGenerationViewModel.maxMegapixelBudget,
+                    step: 0.25,
+                    defaultValue: ImageGenerationViewModel.defaultMegapixelBudget
+                )
+
+                TextField(
+                    "MP",
+                    value: $viewModel.megapixelBudget,
+                    format: .number.precision(.fractionLength(2))
+                )
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 64)
+                .multilineTextAlignment(.trailing)
+
+                Text("MP")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text(help)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: - Parameters Section
+
+    @ViewBuilder
+    private var parametersPaletteContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if viewModel.hasPrimaryReference {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Megapixel budget")
+                        .font(.caption.bold())
+
+                    megapixelBudgetControls(help: megapixelBudgetHelp)
+
+                    if viewModel.hasLocalFillSelection, let primaryImage = viewModel.primaryReferenceImage {
+                        FillResolutionInfoRow(
+                            image: primaryImage,
+                            megapixelBudget: viewModel.megapixelBudget
+                        )
+                    }
+                }
+
+                Divider()
+            }
+
+            // Dimensions — hidden: the barn-door aspect ratio + megapixel budget
+            // now determine width/height. Kept behind a flag, not deleted.
+            if Self.showManualDimensions {
+                HStack(spacing: 16) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Width: \(viewModel.width)")
+                            .font(.caption)
+                        Slider(value: Binding(
+                            get: { Double(viewModel.width) },
+                            set: { viewModel.width = Int($0) }
+                        ), in: 256...2048, step: 64)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Height: \(viewModel.height)")
+                            .font(.caption)
+                        Slider(value: Binding(
+                            get: { Double(viewModel.height) },
+                            set: { viewModel.height = Int($0) }
+                        ), in: 256...2048, step: 64)
+                    }
+                }
+
+                // Match reference button
+                if let primaryImage = viewModel.primaryReferenceImage {
+                    Button(action: {
+                        viewModel.width = primaryImage.width
+                        viewModel.height = primaryImage.height
+                    }) {
+                        Label("Match Reference Size", systemImage: "arrow.up.left.and.arrow.down.right")
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                 }
             }
 
-            Text("Drop images here or click to add. The model will use these as reference for generation.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            // Drop zone with image slots (dynamic based on model)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(0..<viewModel.selectedModel.maxReferenceImages, id: \.self) { index in
-                        if index < viewModel.referenceImages.count {
-                            // Show existing image
-                            ReferenceImageSlot(
-                                image: viewModel.referenceImages[index],
-                                onRemove: {
-                                    viewModel.removeReferenceImage(viewModel.referenceImages[index].id)
-                                }
-                            )
-                        } else if index == viewModel.referenceImages.count {
-                            // Show add button for next slot
-                            AddImageSlot(onAdd: { selectImage() })
-                                .onDrop(of: [.image], isTargeted: $isTargetedForDrop) { providers in
-                                    handleImageDrop(providers)
-                                    return true
-                                }
-                        } else {
-                            // Empty placeholder
-                            EmptyImageSlot()
-                        }
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: 120)
-        }
-    }
-
-    // MARK: - Model Selection Section
-
-    @ViewBuilder
-    private var modelSelectionSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Model Configuration", systemImage: "cpu")
-                .font(.headline)
-
-            // Model type picker
-            HStack {
-                Text("Model:")
-                    .frame(width: 100, alignment: .leading)
-                Picker("", selection: $viewModel.selectedModel) {
-                    ForEach(Flux2Model.allCases, id: \.self) { model in
-                        Text(model.displayName).tag(model)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: .infinity)
-            }
-
-            // Text encoder quantization (only for Dev)
-            if viewModel.selectedModel == .dev {
-                HStack {
-                    Text("Text Encoder:")
-                        .frame(width: 100, alignment: .leading)
-                    Picker("", selection: $viewModel.textQuantization) {
-                        ForEach(MistralQuantization.allCases, id: \.self) { quant in
-                            Text(quant.displayName).tag(quant)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .frame(maxWidth: .infinity)
-                }
-            }
-
-            // Transformer quantization
-            HStack {
-                Text("Transformer:")
-                    .frame(width: 100, alignment: .leading)
-                Picker("", selection: $viewModel.transformerQuantization) {
-                    ForEach(TransformerQuantization.allCases, id: \.self) { quant in
-                        if viewModel.selectedModel != .klein9B || quant == .bf16 {
-                            Text(quant.displayName).tag(quant)
-                        }
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: .infinity)
-            }
-
-            // Memory and download status
-            HStack {
-                Image(systemName: "memorychip")
-                    .foregroundStyle(.secondary)
-                Text("~\(viewModel.estimatedPeakMemoryGB)GB")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Spacer()
-
-                let variant = viewModel.selectedTransformerVariant
-                if modelManager.isTransformerDownloaded(variant) && modelManager.isVAEDownloaded {
-                    Label("Ready", systemImage: "checkmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                } else {
-                    VStack(alignment: .trailing, spacing: 4) {
-                        if !modelManager.isTransformerDownloaded(variant) {
-                            Button("Download Transformer") {
-                                Task { await modelManager.downloadTransformer(variant) }
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.mini)
-                        }
-                        if !modelManager.isVAEDownloaded {
-                            Button("Download VAE") {
-                                Task { await modelManager.downloadVAE() }
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.mini)
-                        }
-                    }
-                    .disabled(modelManager.isDownloading)
-                }
-            }
-
-            if modelManager.isDownloading {
-                ProgressView(value: modelManager.downloadProgress)
-                Text(modelManager.downloadMessage)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    // MARK: - Prompt Section
-
-    @ViewBuilder
-    private var promptSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Prompt", systemImage: "text.cursor")
-                .font(.headline)
-
-            TextEditor(text: $viewModel.prompt)
-                .font(.body)
-                .scrollContentBackground(.hidden)
-                .background(Color(nsColor: .textBackgroundColor))
-                .cornerRadius(8)
-                .frame(minHeight: 80, maxHeight: 150)
-
-            Toggle("Upsample prompt", isOn: $viewModel.upsamplePrompt)
-                .font(.caption)
-                .help("Enhance prompt using VLM to analyze reference images")
-        }
-    }
-
-    // MARK: - I2I Parameters Section (removed - strength is not used by Flux.2 conditioning mode)
-
-    // MARK: - Parameters Section
-
-    @ViewBuilder
-    private var parametersSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Generation Parameters", systemImage: "slider.horizontal.3")
-                .font(.headline)
-
-            // Dimensions
-            HStack(spacing: 16) {
+            // Seed, Steps, and Guidance — one row
+            HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Width: \(viewModel.width)")
+                    Text("Seed")
                         .font(.caption)
-                    Slider(value: Binding(
-                        get: { Double(viewModel.width) },
-                        set: { viewModel.width = Int($0) }
-                    ), in: 256...2048, step: 64)
+                    HStack(spacing: 4) {
+                        #if canImport(AppKit)
+                        NonAutofocusTextField(text: $viewModel.seed, placeholder: "Random", width: 60)
+                            .frame(width: 60)
+                        #else
+                        TextField("Random", text: $viewModel.seed)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 60)
+                        #endif
+                        Button(action: {
+                            viewModel.seed = String(UInt64.random(in: 0...UInt64.max))
+                        }) {
+                            Image(systemName: "dice")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                        .help("Generate random seed")
+                    }
                 }
+                .fixedSize(horizontal: true, vertical: false)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Height: \(viewModel.height)")
-                        .font(.caption)
-                    Slider(value: Binding(
-                        get: { Double(viewModel.height) },
-                        set: { viewModel.height = Int($0) }
-                    ), in: 256...2048, step: 64)
-                }
-            }
-
-            // Match reference button
-            if let firstRef = viewModel.referenceImages.first {
-                Button(action: {
-                    viewModel.width = firstRef.image.width
-                    viewModel.height = firstRef.image.height
-                }) {
-                    Label("Match Reference Size", systemImage: "arrow.up.left.and.arrow.down.right")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-
-            // Steps and Guidance
-            HStack(spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Steps: \(viewModel.steps)")
                         .font(.caption)
-                    Slider(value: Binding(
-                        get: { Double(viewModel.steps) },
-                        set: { viewModel.steps = Int($0) }
-                    ), in: 4...100, step: 1)
+                    ResetOnDoubleClickIntSlider(
+                        value: $viewModel.steps,
+                        range: 4...64,
+                        step: 1,
+                        defaultValue: viewModel.recommendedSteps
+                    )
                 }
+                .frame(maxWidth: .infinity)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Guidance: \(String(format: "%.1f", viewModel.guidance))")
-                        .font(.caption)
-                    Slider(value: Binding(
-                        get: { Double(viewModel.guidance) },
-                        set: { viewModel.guidance = Float($0) }
-                    ), in: 1...10, step: 0.5)
-                }
-            }
-
-            // Seed
-            HStack {
-                Text("Seed:")
-                    .font(.caption)
-                TextField("Random", text: $viewModel.seed)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 120)
-                Button(action: {
-                    viewModel.seed = String(UInt64.random(in: 0...UInt64.max))
-                }) {
-                    Image(systemName: "dice")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-        }
-    }
-
-    // MARK: - Interpret Images Section
-
-    @ViewBuilder
-    private var interpretImagesSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label("Interpret Images (Optional)", systemImage: "eye")
-                    .font(.subheadline.bold())
-
-                Spacer()
-
-                Button(action: selectInterpretImage) {
-                    Label("Add", systemImage: "plus")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-
-            Text("VLM will analyze these images and inject descriptions into the prompt. Different from reference images - these provide semantic context only.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-            if !viewModel.interpretImageURLs.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(viewModel.interpretImageURLs, id: \.self) { url in
-                            InterpretImageThumbnail(url: url) {
-                                viewModel.interpretImageURLs.removeAll { $0 == url }
-                            }
+                    HStack(spacing: 4) {
+                        Text("Guidance: \(String(format: "%.1f", viewModel.guidance))")
+                            .font(.caption)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                        Button("Default") {
+                            viewModel.resetGuidanceToModelDefault()
                         }
+                        .controlSize(.mini)
                     }
-                }
-                .frame(height: 60)
-            }
-        }
-    }
-
-    // MARK: - Generate Section
-
-    @ViewBuilder
-    private var generateSection: some View {
-        VStack(spacing: 12) {
-            Button(action: {
-                Task { await viewModel.generate() }
-            }) {
-                HStack {
-                    if viewModel.isGenerating {
-                        ProgressView()
-                            .scaleEffect(0.8)
-                    }
-                    Text(viewModel.isGenerating ? "Generating..." : "Generate Image")
+                    ResetOnDoubleClickSlider(
+                        value: Binding(
+                            get: { Double(viewModel.guidance) },
+                            set: { viewModel.guidance = Float($0) }
+                        ),
+                        range: 1...10,
+                        step: 0.5,
+                        defaultValue: Double(viewModel.selectedModel.defaultGuidance)
+                    )
                 }
                 .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(!canGenerate)
-
-            if viewModel.isGenerating {
-                VStack(spacing: 4) {
-                    ProgressView(value: viewModel.progress)
-                    Text(viewModel.statusMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            if let error = viewModel.errorMessage {
-                HStack {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red)
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-                .padding(8)
-                .background(Color.red.opacity(0.1))
-                .cornerRadius(8)
-            }
         }
+    }
+
+    // MARK: - Output Options
+
+    @ViewBuilder
+    private var outputOptionsPaletteContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            LanczosUpscaleField(factor: $imageSaveUpscaleBy)
+                .disabled(!viewModel.hasPrimaryReference)
+                .opacity(viewModel.hasPrimaryReference ? 1 : 0.45)
+
+            Divider()
+
+            ImageSaveWorkingNamingPreferencesView(
+                previewPrompt: viewModel.prompt.isEmpty ? "sample prompt" : viewModel.prompt
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var previewTrailingActions: some View {
+        HStack(spacing: 8) {
+            Picker("Compare", selection: $viewModel.previewComparisonSide) {
+                Text("A").tag(PreviewComparisonSide.formatted)
+                Text("B").tag(PreviewComparisonSide.processed)
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 140)
+            .disabled(!viewModel.canTogglePreviewComparison)
+            .opacity(viewModel.canTogglePreviewComparison ? 1 : 0.45)
+            .help("A: formatted input aligned to output · B: processed result")
+
+            Button(action: { useAsReference() }) {
+                Label("Use as Reference", systemImage: "arrow.uturn.left")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(viewModel.generatedImage == nil)
+
+            Button(action: { viewModel.saveImage() }) {
+                Label("Save Preview", systemImage: "square.and.arrow.down")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(viewModel.generatedImage == nil)
+
+            clearPreviewButton
+        }
+    }
+
+    private var clearPreviewButton: some View {
+        Button(action: { viewModel.clearPreview() }) {
+            Label("Clear Preview", systemImage: "xmark.circle")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(!viewModel.hasPreviewContent)
+        .help("Clear the generated image from the preview pane")
     }
 
     // MARK: - Output Section
@@ -410,57 +619,100 @@ struct ImageToImageView: View {
     @ViewBuilder
     private var outputSection: some View {
         VStack(spacing: 0) {
-            HStack {
-                Label("Generated Image", systemImage: "photo")
-                    .font(.headline)
-
-                Spacer()
-
-                if viewModel.generatedImage != nil {
-                    Button(action: { viewModel.saveImage() }) {
-                        Label("Save", systemImage: "square.and.arrow.down")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-
-                    Button(action: { useAsReference() }) {
-                        Label("Use as Reference", systemImage: "arrow.uturn.left")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(viewModel.referenceImages.count >= viewModel.selectedModel.maxReferenceImages)
-                }
-
-                Button(action: {
-                    Task { await viewModel.clearPipeline() }
-                }) {
-                    Label("Clear Memory", systemImage: "trash")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-            .padding()
+            ImageGenerationPromptSection(viewModel: viewModel)
 
             Divider()
 
             // Checkpoints row (if available)
-            if viewModel.showCheckpoints && !viewModel.checkpointImages.isEmpty {
+            if viewModel.showCheckpoints && (viewModel.isGenerating || !viewModel.checkpointImages.isEmpty) {
                 checkpointsSection
+                    .layoutPriority(1)
                 Divider()
             }
 
             // Main image display
             GeometryReader { geometry in
-                if let cgImage = viewModel.generatedImage {
-                    ScrollView([.horizontal, .vertical]) {
-                        Image(decorative: cgImage, scale: 1.0)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(
-                                maxWidth: geometry.size.width,
-                                maxHeight: geometry.size.height
+                if let cgImage = viewModel.previewDisplayImage ?? viewModel.generatedImage {
+                    VStack(spacing: 0) {
+                        PreviewZoomableImageView(
+                            image: cgImage,
+                            zoomScale: Binding(
+                                get: { CGFloat(viewModel.previewZoomScale) },
+                                set: { viewModel.previewZoomScale = Double($0) }
                             )
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                        previewMetricsFooter(image: viewModel.previewSourceImage ?? cgImage)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
                     }
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                } else if let previewImage = viewModel.previewSourceImage {
+                    VStack(spacing: 10) {
+                        if viewModel.isSpatialEditingActive {
+                        ImagePreparationPreview(
+                            image: previewImage,
+                            adjustedSize: viewModel.adjustedGenerationSize,
+                            sizingMethod: viewModel.previewSizingMethod,
+                            overlayOpacity: viewModel.preparationOverlayOpacity,
+                            generateRoute: viewModel.generateRoute,
+                            maskTool: viewModel.inpaintMaskTool,
+                            outpaintPadding: Binding(
+                                get: { viewModel.outpaintPadding },
+                                set: { viewModel.updateOutpaintPadding($0) }
+                            ),
+                            megapixelBudget: viewModel.megapixelBudget,
+                            maskLayers: viewModel.inpaintMaskLayers,
+                            visionSubjectMasks: viewModel.visionSubjectMasks,
+                            draftPolygonPoints: viewModel.draftPolygonPoints,
+                            draftLassoPoints: viewModel.draftLassoPoints,
+                            enrichInpaintPromptWithVLM: viewModel.enrichInpaintPromptWithVLM,
+                            fillVLMContextArea: viewModel.fillVLMContextArea,
+                            showsFillContextMaskOverlay: viewModel.showsFillContextMaskOverlay,
+                            isDrawingSelection: Binding(
+                                get: { viewModel.isDrawingSelection },
+                                set: { viewModel.isDrawingSelection = $0 }
+                            ),
+                            contextArea: Binding(
+                                get: { viewModel.contextArea },
+                                set: { viewModel.setContextArea($0) }
+                            ),
+                            processArea: Binding(
+                                get: { viewModel.processArea },
+                                set: { viewModel.setProcessArea($0) }
+                            ),
+                            onCommitFillRectangle: { rect, mode in
+                                viewModel.commitFillRectangle(rect, mode: mode)
+                            },
+                            onPolygonPoint: { viewModel.addDraftPolygonPoint($0) },
+                            onLassoPoint: { viewModel.appendLassoPoint($0) },
+                            onCommitLasso: { mode in
+                                viewModel.commitLassoSelection(mode: mode)
+                            },
+                            onDeselect: { viewModel.deselectSelections() },
+                            onResetBarnDoors: { viewModel.resetBarnDoors() }
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                        previewMetricsFooter(image: previewImage)
+                        } else {
+                            PreviewZoomableImageView(
+                                image: previewImage,
+                                zoomScale: Binding(
+                                    get: { CGFloat(viewModel.previewZoomScale) },
+                                    set: { viewModel.previewZoomScale = Double($0) }
+                                )
+                            )
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                            Text("Canvas tools apply on the Primary reference tab.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding(.bottom, 10)
+                        }
+                    }
+                    .padding()
                     .frame(width: geometry.size.width, height: geometry.size.height)
                     .background(Color(nsColor: .windowBackgroundColor))
                 } else {
@@ -472,8 +724,8 @@ struct ImageToImageView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
-                        if viewModel.referenceImages.isEmpty {
-                            Text("Add at least one reference image to start")
+                        if !viewModel.hasPrimaryReference {
+                            Text("Add a primary reference image to start")
                                 .font(.caption)
                                 .foregroundStyle(.orange)
                                 .padding(.top, 4)
@@ -484,6 +736,29 @@ struct ImageToImageView: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func previewMetricsFooter(image: CGImage) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if viewModel.hasLocalFillSelection {
+                FillResolutionInfoRow(
+                    image: image,
+                    megapixelBudget: viewModel.megapixelBudget
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            PreparationSizeInfoRow(
+                image: image,
+                contextArea: viewModel.contextArea,
+                adjustedSize: viewModel.adjustedGenerationSize,
+                trailingControls: { previewTrailingActions }
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal)
+        .padding(.bottom, 10)
     }
 
     // MARK: - Checkpoints Section
@@ -510,6 +785,21 @@ struct ImageToImageView: View {
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
+                    if viewModel.isGenerating && viewModel.checkpointImages.isEmpty {
+                        VStack(spacing: 4) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text(
+                                viewModel.totalSteps > 0
+                                    ? "Step \(viewModel.currentStep)/\(viewModel.totalSteps)"
+                                    : "Generating…"
+                            )
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        }
+                        .frame(width: 80, height: 80)
+                    }
+
                     ForEach(viewModel.checkpointImages) { checkpoint in
                         VStack(spacing: 2) {
                             Image(decorative: checkpoint.image, scale: 1.0)
@@ -537,55 +827,10 @@ struct ImageToImageView: View {
 
     // MARK: - Helpers
 
-    private var canGenerate: Bool {
-        !viewModel.prompt.isEmpty &&
-        !viewModel.referenceImages.isEmpty &&
-        !viewModel.isGenerating &&
-        modelManager.isTransformerDownloaded(viewModel.selectedTransformerVariant) &&
-        modelManager.isVAEDownloaded
-    }
-
-    private func selectImage() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.image]
-        panel.allowsMultipleSelection = true
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-
-        if panel.runModal() == .OK {
-            for url in panel.urls.prefix(viewModel.selectedModel.maxReferenceImages - viewModel.referenceImages.count) {
-                viewModel.addReferenceImage(from: url)
-            }
-        }
-    }
-
-    private func selectInterpretImage() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.image]
-        panel.allowsMultipleSelection = true
-
-        if panel.runModal() == .OK {
-            viewModel.interpretImageURLs.append(contentsOf: panel.urls)
-        }
-    }
-
-    private func handleImageDrop(_ providers: [NSItemProvider]) {
-        for provider in providers {
-            if provider.canLoadObject(ofClass: NSImage.self) {
-                _ = provider.loadObject(ofClass: NSImage.self) { image, _ in
-                    if let nsImage = image as? NSImage {
-                        DispatchQueue.main.async {
-                            viewModel.addReferenceImage(from: nsImage)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     private func useAsReference() {
         guard let cgImage = viewModel.generatedImage else { return }
-        viewModel.addReferenceImage(cgImage: cgImage)
+        viewModel.replacePrimaryReference(with: cgImage)
+        viewModel.appendEditHistoryAfterAdopt(image: cgImage)
     }
 }
 
@@ -593,46 +838,50 @@ struct ImageToImageView: View {
 
 struct ReferenceImageSlot: View {
     let image: ReferenceImage
+    var edge: CGFloat = 100
     let onRemove: () -> Void
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            Image(nsImage: image.thumbnail)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(width: 100, height: 100)
-                .clipped()
-                .cornerRadius(8)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.accentColor, lineWidth: 2)
-                )
-
-            Button(action: onRemove) {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(.white)
-                    .background(Circle().fill(.red))
+        Image(nsImage: image.thumbnail)
+            .resizable()
+            .aspectRatio(contentMode: .fill)
+            .frame(maxWidth: .infinity)
+            .frame(height: edge)
+            .clipped()
+            .cornerRadius(8)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.accentColor, lineWidth: 2)
+            )
+            .overlay(alignment: .topTrailing) {
+                Button(action: onRemove) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 18))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, .red)
+                }
+                .buttonStyle(.plain)
+                .padding(4)
             }
-            .buttonStyle(.plain)
-            .offset(x: 8, y: -8)
-        }
     }
 }
 
 struct AddImageSlot: View {
+    var edge: CGFloat = 100
     let onAdd: () -> Void
     @State private var isHovering = false
 
     var body: some View {
         Button(action: onAdd) {
-            VStack {
+            VStack(spacing: 8) {
                 Image(systemName: "plus.circle.fill")
-                    .font(.title)
+                    .font(edge > 120 ? .largeTitle : .title)
                 Text("Add")
                     .font(.caption)
             }
             .foregroundStyle(isHovering ? Color.accentColor : .secondary)
-            .frame(width: 100, height: 100)
+            .frame(maxWidth: .infinity)
+            .frame(height: edge)
             .background(
                 RoundedRectangle(cornerRadius: 8)
                     .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [5]))
@@ -658,35 +907,1352 @@ struct InterpretImageThumbnail: View {
     let onRemove: () -> Void
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
+        Group {
             if let nsImage = NSImage(contentsOf: url) {
                 Image(nsImage: nsImage)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .frame(width: 50, height: 50)
-                    .clipped()
-                    .cornerRadius(4)
             } else {
                 Rectangle()
                     .fill(.secondary.opacity(0.2))
-                    .frame(width: 50, height: 50)
-                    .cornerRadius(4)
             }
-
+        }
+        .frame(width: 50, height: 50)
+        .clipped()
+        .cornerRadius(4)
+        .overlay(alignment: .topTrailing) {
             Button(action: onRemove) {
                 Image(systemName: "xmark.circle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.white)
-                    .background(Circle().fill(.red).frame(width: 14, height: 14))
+                    .font(.system(size: 14))
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, .red)
             }
             .buttonStyle(.plain)
-            .offset(x: 4, y: -4)
+            .padding(2)
         }
     }
 }
 
+// MARK: - Image Preparation Preview
+
+struct ImagePreparationOptionButton: View {
+    let title: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: isSelected ? "largecircle.fill.circle" : "circle")
+                .font(.caption)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+        .contentShape(Rectangle())
+    }
+}
+
+struct ImagePreparationPreview: View {
+    let image: CGImage
+    let adjustedSize: (width: Int, height: Int)
+    let sizingMethod: ImageSizingMethod
+    let overlayOpacity: Double
+    let generateRoute: I2IGenerateRoute
+    var maskTool: InpaintMaskTool = .rectangle
+    @Binding var outpaintPadding: OutpaintPadding
+    var megapixelBudget: Double = 1.0
+    var maskLayers: [InpaintMaskLayer] = []
+    var visionSubjectMasks: [UUID: CGImage] = [:]
+    var draftPolygonPoints: [CGPoint] = []
+    var draftLassoPoints: [CGPoint] = []
+    var enrichInpaintPromptWithVLM: Bool = false
+    var fillVLMContextArea: CGRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+    var showsFillContextMaskOverlay: Bool = false
+    @Binding var isDrawingSelection: Bool
+    @Binding var contextArea: CGRect
+    @Binding var processArea: CGRect?
+    var onCommitFillRectangle: ((CGRect, SelectionMode) -> Void)?
+    var onPolygonPoint: ((CGPoint) -> Void)?
+    var onLassoPoint: ((CGPoint) -> Void)?
+    var onCommitLasso: ((SelectionMode) -> Void)?
+    var onDeselect: (() -> Void)?
+    var onResetBarnDoors: (() -> Void)?
+
+    @State private var activeDrag: DragMode?
+    @State private var selectionStart: CGPoint?
+    @State private var contextBeforeDrag: CGRect?
+    @State private var processBeforeDrag: CGRect?
+    @State private var outpaintPaddingBeforeDrag: OutpaintPadding?
+    @State private var lassoSampleDistance: CGFloat = 0.004
+    @State private var heldSelectionModifier: SelectionModifierHint?
+    @State private var previewPointerLocation: CGPoint?
+    @State private var selectionCommitMode: SelectionMode = .replace
+    @State private var cachedComposedOutlinePoints: [CGPoint] = []
+
+    /// Offset from the pointer hotspot to the modifier badge center (lower-right of crosshair).
+    private let selectionModifierBadgeOffset = CGPoint(x: 15, y: 15)
+    private let composedOutlineMaxDimension = 512
+
+    private enum DragMode {
+        case contextLeft
+        case contextRight
+        case contextTop
+        case contextBottom
+        case contextSelection
+        case processSelection
+        case lassoSelection
+        case outpaintLeft
+        case outpaintRight
+        case outpaintTop
+        case outpaintBottom
+    }
+
+    private var isSelectionTool: Bool {
+        maskTool.isSelectionTool
+    }
+
+    private var showsBarnDoorChrome: Bool {
+        generateRoute == .fullImage
+    }
+
+    private var allowsBarnDoorEditing: Bool {
+        showsBarnDoorChrome && maskTool.isBarnDoorTool
+    }
+
+    private var showsSelectionOverlays: Bool {
+        !maskLayers.isEmpty
+            || processArea != nil
+            || !draftPolygonPoints.isEmpty
+            || !draftLassoPoints.isEmpty
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let isOutpaint = generateRoute == .outpaint
+            let canvasRect = isOutpaint
+                ? fittedCanvasRect(in: geometry.size, padding: outpaintPadding)
+                : fittedImageRect(in: geometry.size)
+            let imageRect = isOutpaint
+                ? imageRectInsideCanvas(canvasRect: canvasRect, padding: outpaintPadding)
+                : canvasRect
+            let showsFormattingOverlay = showsBarnDoorChrome && activeDrag == nil && !formattingExcludedRects().isEmpty
+            let showsBarnDoorOverlay = showsBarnDoorChrome && !isContextFullyOpen
+
+            ZStack {
+                Color(nsColor: .textBackgroundColor)
+
+                if isOutpaint {
+                    outpaintExpansionOverlay(canvasRect: canvasRect, imageRect: imageRect)
+                        .allowsHitTesting(false)
+                }
+
+                Image(decorative: image, scale: 1)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: imageRect.width, height: imageRect.height)
+                    .position(x: imageRect.midX, y: imageRect.midY)
+
+                // Crop/pad preview bands — hidden while dragging so barn-door
+                // moves don't spawn shifting rectangles.
+                if showsFormattingOverlay {
+                    formattingExclusionOverlay(in: imageRect)
+                        .fill(
+                            Color.black.opacity(overlayOpacity),
+                            style: FillStyle(eoFill: false, antialiased: false)
+                        )
+                        .allowsHitTesting(false)
+                }
+
+                // Barn doors: darken only when the context is narrower than
+                // the full image. Skip when fully open to avoid eoFill hairlines.
+                if showsBarnDoorOverlay {
+                    contextExclusionOverlay(outer: CGRect(x: 0, y: 0, width: 1, height: 1), inner: contextArea, in: imageRect)
+                        .fill(
+                            Color.black.opacity(0.72),
+                            style: FillStyle(eoFill: false, antialiased: false)
+                        )
+                        .allowsHitTesting(false)
+                }
+
+                if showsFillContextMaskOverlay {
+                    contextExclusionOverlay(
+                        outer: CGRect(x: 0, y: 0, width: 1, height: 1),
+                        inner: fillVLMContextArea,
+                        in: imageRect
+                    )
+                    .fill(
+                        Color.white.opacity(0.32),
+                        style: FillStyle(eoFill: false, antialiased: false)
+                    )
+                    .allowsHitTesting(false)
+                }
+
+                if showsSelectionOverlays {
+                    committedMaskOverlays(in: imageRect)
+                        .allowsHitTesting(false)
+
+                    if maskTool == .rectangle, let processArea {
+                        selectionRectOverlay(for: processArea, in: imageRect, isDraft: true)
+                            .allowsHitTesting(false)
+                    }
+
+                    if maskTool == .polygon, !draftPolygonPoints.isEmpty {
+                        draftPolygonOverlay(in: imageRect)
+                            .allowsHitTesting(false)
+                    }
+
+                    if maskTool == .visionSubject, !draftLassoPoints.isEmpty {
+                        draftLassoOverlay(in: imageRect)
+                            .allowsHitTesting(false)
+                    }
+                }
+
+                if isOutpaint, outpaintPadding.hasExpansion {
+                    Text(outpaintCanvasLabel)
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(.ultraThinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .position(x: canvasRect.midX, y: canvasRect.minY + 20)
+                        .allowsHitTesting(false)
+                } else if isOutpaint {
+                    Text("Drag a canvas edge to expand")
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(.ultraThinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .position(x: canvasRect.midX, y: canvasRect.minY + 20)
+                        .allowsHitTesting(false)
+                }
+
+                selectionModifierBadge(in: imageRect)
+
+            }
+            .compositingGroup()
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+            .gesture(dragGesture(canvasRect: canvasRect, imageRect: imageRect))
+            .onContinuousHover { phase in
+                #if canImport(AppKit)
+                switch phase {
+                case .active(let location):
+                    previewPointerLocation = location
+                    refreshHeldSelectionModifier(at: location, in: imageRect)
+                    cursor(for: location, in: imageRect, canvasRect: canvasRect).set()
+                case .ended:
+                    previewPointerLocation = nil
+                    heldSelectionModifier = nil
+                    NSCursor.arrow.set()
+                }
+                #endif
+            }
+            #if canImport(AppKit)
+            .background {
+                ModifierFlagsChangeMonitor {
+                    refreshHeldSelectionModifier(at: previewPointerLocation, in: imageRect)
+                }
+            }
+            #endif
+            .task(id: composedOutlineCacheKey) {
+                await refreshComposedOutlineCache()
+            }
+        }
+    }
+
+    private struct ComposedOutlineCacheKey: Equatable {
+        var layers: [InpaintMaskLayer]
+        var visionMaskSignatures: [VisionMaskSignature]
+
+        struct VisionMaskSignature: Equatable {
+            var layerID: UUID
+            var width: Int
+            var height: Int
+        }
+
+        init(layers: [InpaintMaskLayer], visionMasks: [UUID: CGImage]) {
+            self.layers = layers
+            visionMaskSignatures = visionMasks.map {
+                VisionMaskSignature(layerID: $0.key, width: $0.value.width, height: $0.value.height)
+            }
+            .sorted { $0.layerID.uuidString < $1.layerID.uuidString }
+        }
+    }
+
+    private var composedOutlineCacheKey: ComposedOutlineCacheKey {
+        ComposedOutlineCacheKey(layers: maskLayers, visionMasks: visionSubjectMasks)
+    }
+
+    private var usesComposedSelectionOverlay: Bool {
+        maskLayers.count > 1 || maskLayers.contains(where: { $0.combineMode == .clip })
+    }
+
+    private var usesFastSelectionOverlayPath: Bool {
+        isDrawingSelection
+            || processArea != nil
+            || !draftPolygonPoints.isEmpty
+            || !draftLassoPoints.isEmpty
+    }
+
+    @MainActor
+    private func refreshComposedOutlineCache() async {
+        guard usesComposedSelectionOverlay, !usesFastSelectionOverlayPath else {
+            cachedComposedOutlinePoints = []
+            return
+        }
+
+        let layers = maskLayers
+        let visionMasks = visionSubjectMasks
+        let source = image
+        let maxDimension = composedOutlineMaxDimension
+        let points = await Task.detached(priority: .utility) {
+            let longer = max(source.width, source.height)
+            let scale = min(1, CGFloat(maxDimension) / CGFloat(max(longer, 1)))
+            let width = max(1, Int((CGFloat(source.width) * scale).rounded()))
+            let height = max(1, Int((CGFloat(source.height) * scale).rounded()))
+            guard let mask = try? ImageMaskBuilder.buildHardInpaintMask(
+                definition: InpaintMaskDefinition(layers: layers),
+                width: width,
+                height: height,
+                visionMasks: visionMasks
+            ) else {
+                return [CGPoint]()
+            }
+            return InpaintMaskOutline.normalizedBoundaryPoints(from: mask)
+        }.value
+        cachedComposedOutlinePoints = points
+    }
+
+    #if canImport(AppKit)
+    @ViewBuilder
+    private func selectionModifierBadge(in imageRect: CGRect) -> some View {
+        if let hint = heldSelectionModifier,
+           let location = previewPointerLocation,
+           isSelectionTool,
+           imageRect.contains(location) {
+            SelectionModifierCornerBadge(hint: hint)
+                .position(
+                    x: location.x + selectionModifierBadgeOffset.x,
+                    y: location.y + selectionModifierBadgeOffset.y
+                )
+        }
+    }
+
+    private func refreshHeldSelectionModifier(at location: CGPoint?, in imageRect: CGRect) {
+        guard let location, isSelectionTool, imageRect.contains(location) else {
+            heldSelectionModifier = nil
+            return
+        }
+        heldSelectionModifier = SelectionModifierHint.from(flags: NSEvent.modifierFlags)
+    }
+
+    private func captureSelectionCommitModeFromCurrentModifiers() {
+        selectionCommitMode = ImageGenerationViewModel.selectionModeFromModifierFlags(NSEvent.modifierFlags)
+    }
+
+    #endif
+
+    private var outpaintCanvasLabel: String {
+        let size = outpaintPadding.canvasSize(sourceWidth: image.width, sourceHeight: image.height)
+        return "Canvas \(size.width)×\(size.height)"
+    }
+
+    @ViewBuilder
+    private func outpaintExpansionOverlay(canvasRect: CGRect, imageRect: CGRect) -> some View {
+        ZStack {
+            Path { path in
+                path.addRect(canvasRect)
+                path.addRect(imageRect)
+            }
+            .fill(Color.gray.opacity(0.4), style: FillStyle(eoFill: true, antialiased: false))
+
+            Path { path in
+                path.addRect(canvasRect)
+            }
+            .stroke(
+                Color.accentColor,
+                style: StrokeStyle(lineWidth: 2, dash: [8, 6])
+            )
+        }
+    }
+
+    /// Pure coordinate math for this preview (normalized <-> view, aspect-fit,
+    /// pixel snapping). The helpers below delegate here; see PreparationGeometry.
+    private var geo: PreparationGeometry {
+        PreparationGeometry(
+            imageWidth: image.width,
+            imageHeight: image.height,
+            backingScale: NSScreen.main?.backingScaleFactor ?? 2
+        )
+    }
+
+    private func fittedCanvasRect(in size: CGSize, padding: OutpaintPadding) -> CGRect {
+        geo.fittedCanvasRect(in: size, padding: padding)
+    }
+
+    private func imageRectInsideCanvas(canvasRect: CGRect, padding: OutpaintPadding) -> CGRect {
+        geo.imageRectInsideCanvas(canvasRect: canvasRect, padding: padding)
+    }
+
+    private var isContextFullyOpen: Bool {
+        let epsilon: CGFloat = 0.0001
+        return abs(contextArea.minX) < epsilon
+            && abs(contextArea.minY) < epsilon
+            && abs(contextArea.width - 1) < epsilon
+            && abs(contextArea.height - 1) < epsilon
+    }
+
+    private func fittedImageRect(in size: CGSize) -> CGRect {
+        geo.fittedImageRect(in: size)
+    }
+
+    /// Regions dimmed to preview Image Formatting (crop discard or pad bands).
+    private func formattingExclusionOverlay(in imageRect: CGRect) -> Path {
+        guard adjustedSize.width > 0, adjustedSize.height > 0 else {
+            return Path()
+        }
+
+        let excluded = formattingExcludedRects()
+        guard !excluded.isEmpty else { return Path() }
+
+        var path = Path()
+        for rect in excluded {
+            let clipped = rect.intersection(contextArea)
+            guard clipped.width > 0, clipped.height > 0 else { continue }
+            path.addRect(displayRect(for: clipped, in: imageRect))
+        }
+        return path
+    }
+
+    private var contextPixelAspect: CGFloat {
+        let ctx = contextArea
+        let pixelWidth = ctx.width * CGFloat(image.width)
+        let pixelHeight = ctx.height * CGFloat(image.height)
+        guard pixelHeight > 0 else { return 1 }
+        return pixelWidth / pixelHeight
+    }
+
+    private var targetPixelAspect: CGFloat {
+        guard adjustedSize.height > 0 else { return 1 }
+        return CGFloat(adjustedSize.width) / CGFloat(adjustedSize.height)
+    }
+
+    private func formattingExcludedRects() -> [CGRect] {
+        let ctx = contextArea
+        let ctxAspect = contextPixelAspect
+        let targetAspect = targetPixelAspect
+
+        guard abs(ctxAspect - targetAspect) > 0.0001 else { return [] }
+
+        switch sizingMethod {
+        case .crop:
+            let visible = cropVisibleRect(in: ctx, ctxAspect: ctxAspect, targetAspect: targetAspect)
+            return exclusionBands(outer: ctx, inner: visible)
+        case .pad:
+            return padExcludedRects(in: ctx, ctxAspect: ctxAspect, targetAspect: targetAspect)
+        }
+    }
+
+    /// Crop: the kept region inside the barn-door context (matches
+    /// `preparationTransform` with `.crop`).
+    private func cropVisibleRect(in ctx: CGRect, ctxAspect: CGFloat, targetAspect: CGFloat) -> CGRect {
+        if ctxAspect > targetAspect {
+            let visibleWidth = targetAspect / ctxAspect * ctx.width
+            return CGRect(
+                x: ctx.minX + (ctx.width - visibleWidth) / 2,
+                y: ctx.minY,
+                width: visibleWidth,
+                height: ctx.height
+            )
+        }
+
+        let visibleHeight = ctxAspect / targetAspect * ctx.height
+        return CGRect(
+            x: ctx.minX,
+            y: ctx.minY + (ctx.height - visibleHeight) / 2,
+            width: ctx.width,
+            height: visibleHeight
+        )
+    }
+
+    /// Pad: letterbox/pillarbox bands around the context (matches
+    /// `preparationTransform` with `.pad`).
+    private func padExcludedRects(in ctx: CGRect, ctxAspect: CGFloat, targetAspect: CGFloat) -> [CGRect] {
+        let frame: CGRect
+        if ctxAspect > targetAspect {
+            // Fits width; pads top and bottom in the output canvas.
+            let frameHeight = ctx.width / targetAspect
+            frame = CGRect(
+                x: ctx.minX,
+                y: ctx.minY - (frameHeight - ctx.height) / 2,
+                width: ctx.width,
+                height: frameHeight
+            )
+        } else {
+            // Fits height; pads left and right.
+            let frameWidth = ctx.height * targetAspect
+            frame = CGRect(
+                x: ctx.minX - (frameWidth - ctx.width) / 2,
+                y: ctx.minY,
+                width: frameWidth,
+                height: ctx.height
+            )
+        }
+        return exclusionBands(outer: frame, inner: ctx)
+    }
+
+    /// `outer` minus `inner` as up to four rectangular bands (eoFill is not
+    /// used here — each band is filled individually).
+    private func exclusionBands(outer: CGRect, inner: CGRect) -> [CGRect] {
+        let clip = outer.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        let hole = inner.intersection(clip)
+        guard clip.width > 0, clip.height > 0, hole.width > 0, hole.height > 0 else {
+            return []
+        }
+
+        var bands: [CGRect] = []
+        if hole.minY > clip.minY {
+            bands.append(CGRect(x: clip.minX, y: clip.minY, width: clip.width, height: hole.minY - clip.minY))
+        }
+        if hole.maxY < clip.maxY {
+            bands.append(CGRect(x: clip.minX, y: hole.maxY, width: clip.width, height: clip.maxY - hole.maxY))
+        }
+        if hole.minX > clip.minX {
+            bands.append(CGRect(x: clip.minX, y: hole.minY, width: hole.minX - clip.minX, height: hole.height))
+        }
+        if hole.maxX < clip.maxX {
+            bands.append(CGRect(x: hole.maxX, y: hole.minY, width: clip.maxX - hole.maxX, height: hole.height))
+        }
+        return bands
+    }
+
+    private func contextExclusionOverlay(outer: CGRect, inner: CGRect, in imageRect: CGRect) -> Path {
+        let bands = exclusionBands(outer: outer, inner: inner)
+        let contextRect = pixelAligned(displayRect(for: inner, in: imageRect))
+        var path = Path()
+        for band in bands {
+            var rect = pixelAligned(displayRect(for: band, in: imageRect))
+            rect = bleedBandRectTowardContext(rect, contextRect: contextRect)
+            guard rect.width > 0, rect.height > 0 else { continue }
+            path.addRect(rect)
+        }
+        return path
+    }
+
+    /// Expand a barn-door band 1px into the lit context so antialiased edges
+    /// don't leave a grey hairline on the live region.
+    private func bleedBandRectTowardContext(_ band: CGRect, contextRect: CGRect) -> CGRect {
+        let bleed: CGFloat = 1
+        var rect = band
+        if abs(rect.maxX - contextRect.minX) <= bleed {
+            rect.size.width += bleed
+        }
+        if abs(rect.minX - contextRect.maxX) <= bleed {
+            rect.origin.x -= bleed
+            rect.size.width += bleed
+        }
+        if abs(rect.maxY - contextRect.minY) <= bleed {
+            rect.size.height += bleed
+        }
+        if abs(rect.minY - contextRect.maxY) <= bleed {
+            rect.origin.y -= bleed
+            rect.size.height += bleed
+        }
+        return rect
+    }
+
+    private func dragGesture(canvasRect: CGRect, imageRect: CGRect) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .local)
+            .onChanged { value in
+                previewPointerLocation = value.location
+                #if canImport(AppKit)
+                refreshHeldSelectionModifier(at: value.location, in: imageRect)
+                #endif
+
+                if activeDrag == nil {
+                    activeDrag = dragMode(for: value.startLocation, canvasRect: canvasRect, imageRect: imageRect)
+                    selectionStart = normalizedPoint(for: value.startLocation, in: imageRect)
+                    if generateRoute == .outpaint {
+                        outpaintPaddingBeforeDrag = outpaintPadding
+                    }
+                    #if canImport(AppKit)
+                    switch activeDrag {
+                    case .processSelection, .lassoSelection:
+                        captureSelectionCommitModeFromCurrentModifiers()
+                    default:
+                        break
+                    }
+                    #endif
+                }
+
+                let point = normalizedPoint(for: value.location, in: imageRect)
+
+                switch activeDrag {
+                case .contextLeft:
+                    updateContextLeft(to: snapX(point.x), in: imageRect)
+                case .contextRight:
+                    updateContextRight(to: snapX(point.x), in: imageRect)
+                case .contextTop:
+                    updateContextTop(to: snapY(point.y), in: imageRect)
+                case .contextBottom:
+                    updateContextBottom(to: snapY(point.y), in: imageRect)
+                case .contextSelection:
+                    updateContextSelection(to: point, in: imageRect)
+                case .processSelection:
+                    isDrawingSelection = true
+                    updateProcessSelection(to: point, in: imageRect)
+                case .lassoSelection:
+                    isDrawingSelection = true
+                    appendLassoPointIfNeeded(point)
+                case .outpaintLeft:
+                    updateOutpaintLeft(to: value.location.x, canvasRect: canvasRect, imageRect: imageRect)
+                case .outpaintRight:
+                    updateOutpaintRight(to: value.location.x, canvasRect: canvasRect, imageRect: imageRect)
+                case .outpaintTop:
+                    updateOutpaintTop(to: value.location.y, canvasRect: canvasRect, imageRect: imageRect)
+                case .outpaintBottom:
+                    updateOutpaintBottom(to: value.location.y, canvasRect: canvasRect, imageRect: imageRect)
+                case nil:
+                    break
+                }
+            }
+            .onEnded { value in
+                defer {
+                    isDrawingSelection = false
+                    activeDrag = nil
+                    selectionStart = nil
+                    contextBeforeDrag = nil
+                    processBeforeDrag = nil
+                    outpaintPaddingBeforeDrag = nil
+                    #if canImport(AppKit)
+                    refreshHeldSelectionModifier(at: previewPointerLocation, in: imageRect)
+                    NSCursor.arrow.set()
+                    #endif
+                }
+
+                let endPoint = normalizedPoint(for: value.location, in: imageRect)
+                let dragDistance = hypot(value.translation.width, value.translation.height)
+
+                if generateRoute == .outpaint {
+                    if dragDistance < 4, !canvasRect.contains(value.location) {
+                        onDeselect?()
+                    }
+                    return
+                }
+
+                if maskTool == .polygon, isSelectionTool, generateRoute != .outpaint {
+                    if dragDistance < 4, draftPolygonPoints.isEmpty, !maskLayers.isEmpty {
+                        onDeselect?()
+                        return
+                    }
+                    if draftPolygonPoints.isEmpty {
+                        #if canImport(AppKit)
+                        captureSelectionCommitModeFromCurrentModifiers()
+                        #endif
+                    }
+                    onPolygonPoint?(endPoint)
+                    return
+                }
+
+                if maskTool == .visionSubject, activeDrag == .lassoSelection {
+                    if draftLassoPoints.count >= 3 {
+                        onCommitLasso?(selectionCommitMode)
+                    } else {
+                        onDeselect?()
+                    }
+                    return
+                }
+
+                if maskTool == .rectangle, activeDrag == .processSelection, let rect = processArea {
+                    let minWidthNorm = 12 / max(imageRect.width, 1)
+                    let minHeightNorm = 12 / max(imageRect.height, 1)
+                    if rect.width >= minWidthNorm, rect.height >= minHeightNorm {
+                        onCommitFillRectangle?(rect, selectionCommitMode)
+                    } else {
+                        onDeselect?()
+                    }
+                    return
+                }
+
+                if dragDistance < 4, imageRect.contains(value.location) {
+                    if maskTool.isBarnDoorTool {
+                        onResetBarnDoors?()
+                    } else if maskTool == .pointer
+                        || (maskTool.isSelectionTool && !maskLayers.isEmpty && draftPolygonPoints.isEmpty) {
+                        onDeselect?()
+                    }
+                }
+            }
+    }
+
+    private func appendLassoPointIfNeeded(_ point: CGPoint) {
+        guard let last = draftLassoPoints.last else {
+            onLassoPoint?(point)
+            return
+        }
+        let dx = point.x - last.x
+        let dy = point.y - last.y
+        if hypot(dx, dy) >= lassoSampleDistance {
+            onLassoPoint?(point)
+        }
+    }
+
+    private func dragMode(for location: CGPoint, canvasRect: CGRect, imageRect: CGRect) -> DragMode? {
+        if generateRoute == .outpaint {
+            if let edge = outpaintCanvasEdge(at: location, in: canvasRect) {
+                return edge
+            }
+            return nil
+        }
+
+        guard imageRect.contains(location) else { return nil }
+
+        if isSelectionTool {
+            switch maskTool {
+            case .rectangle:
+                return .processSelection
+            case .polygon:
+                return nil
+            case .visionSubject:
+                return .lassoSelection
+            case .pointer, .liveArea, .cropCanvas:
+                return nil
+            }
+        }
+
+        if allowsBarnDoorEditing {
+            if let edge = contextEdge(at: location, in: imageRect) {
+                return edge
+            }
+            return .contextSelection
+        }
+
+        return nil
+    }
+
+    private func outpaintCanvasEdge(at location: CGPoint, in canvasRect: CGRect) -> DragMode? {
+        let threshold: CGFloat = 20
+        let distances: [(DragMode, CGFloat)] = [
+            (.outpaintLeft, abs(location.x - canvasRect.minX)),
+            (.outpaintRight, abs(location.x - canvasRect.maxX)),
+            (.outpaintTop, abs(location.y - canvasRect.minY)),
+            (.outpaintBottom, abs(location.y - canvasRect.maxY)),
+        ]
+
+        return distances
+            .filter { $0.1 <= threshold }
+            .min { $0.1 < $1.1 }?
+            .0
+    }
+
+    private func updateOutpaintLeft(to x: CGFloat, canvasRect: CGRect, imageRect: CGRect) {
+        var padding = outpaintPaddingBeforeDrag ?? outpaintPadding
+        let scale = imagePixelScale(imageRect: imageRect)
+        let leftDisplay = max(0, imageRect.minX - x)
+        padding.left = Int((leftDisplay / scale).rounded())
+        outpaintPadding = padding
+    }
+
+    private func updateOutpaintRight(to x: CGFloat, canvasRect: CGRect, imageRect: CGRect) {
+        var padding = outpaintPaddingBeforeDrag ?? outpaintPadding
+        let scale = imagePixelScale(imageRect: imageRect)
+        let rightDisplay = max(0, x - imageRect.maxX)
+        padding.right = Int((rightDisplay / scale).rounded())
+        outpaintPadding = padding
+    }
+
+    private func updateOutpaintTop(to y: CGFloat, canvasRect: CGRect, imageRect: CGRect) {
+        var padding = outpaintPaddingBeforeDrag ?? outpaintPadding
+        let scale = imagePixelScale(imageRect: imageRect)
+        let topDisplay = max(0, imageRect.minY - y)
+        padding.top = Int((topDisplay / scale).rounded())
+        outpaintPadding = padding
+    }
+
+    private func updateOutpaintBottom(to y: CGFloat, canvasRect: CGRect, imageRect: CGRect) {
+        var padding = outpaintPaddingBeforeDrag ?? outpaintPadding
+        let scale = imagePixelScale(imageRect: imageRect)
+        let bottomDisplay = max(0, y - imageRect.maxY)
+        padding.bottom = Int((bottomDisplay / scale).rounded())
+        outpaintPadding = padding
+    }
+
+    private func imagePixelScale(imageRect: CGRect) -> CGFloat {
+        geo.imagePixelScale(imageRect: imageRect)
+    }
+
+    private func selectionRectOverlay(for normalizedRect: CGRect, in imageRect: CGRect, isDraft: Bool) -> some View {
+        let rect = pixelAligned(displayRect(for: normalizedRect, in: imageRect))
+        return ZStack {
+            if isDraft {
+                Path { path in
+                    path.addRect(imageRect)
+                    path.addRect(rect)
+                }
+                .fill(Color.black.opacity(0.4), style: FillStyle(eoFill: true, antialiased: false))
+            }
+            MarchingAntsRect(rect: rect)
+        }
+    }
+
+    @ViewBuilder
+    private func committedMaskOverlays(in imageRect: CGRect) -> some View {
+        if usesFastSelectionOverlayPath || !usesComposedSelectionOverlay {
+            perLayerCommittedMaskOverlays(in: imageRect)
+        } else if cachedComposedOutlinePoints.count >= 3 {
+            MarchingAntsPath(
+                path: polygonPath(points: cachedComposedOutlinePoints, in: imageRect, closed: true)
+            )
+        } else {
+            perLayerCommittedMaskOverlays(in: imageRect)
+        }
+    }
+
+    @ViewBuilder
+    private func perLayerCommittedMaskOverlays(in imageRect: CGRect) -> some View {
+        ForEach(maskLayers) { layer in
+            switch layer.primitive {
+            case .rectangle(let rect):
+                selectionRectOverlay(for: rect.cgRect, in: imageRect, isDraft: false)
+            case .polygon(let points):
+                selectionPolygonOverlay(points: points.map(\.cgPoint), in: imageRect)
+            case .visionSubject(let selection):
+                if let mask = visionSubjectMasks[layer.id] {
+                    visionSubjectSelectionOverlay(mask: mask, selection: selection, in: imageRect)
+                } else {
+                    visionSubjectPendingOverlay(in: imageRect)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func visionSubjectSelectionOverlay(
+        mask: CGImage,
+        selection: VisionSubjectSelection,
+        in imageRect: CGRect
+    ) -> some View {
+        let points = InpaintMaskOutline.normalizedBoundaryPoints(from: mask)
+        if points.count >= 3 {
+            MarchingAntsPath(path: polygonPath(points: points, in: imageRect, closed: true))
+        } else {
+            switch selection {
+            case .rectangle(let rect):
+                selectionRectOverlay(for: rect.cgRect, in: imageRect, isDraft: false)
+            case .polygon(let points):
+                selectionPolygonOverlay(points: points.map(\.cgPoint), in: imageRect)
+            }
+        }
+    }
+
+    private func visionSubjectPendingOverlay(in imageRect: CGRect) -> some View {
+        ProgressView()
+            .controlSize(.small)
+            .position(x: imageRect.midX, y: imageRect.midY)
+            .help("Detecting subject from selection")
+            .accessibilityLabel("Detecting subject from selection")
+    }
+
+    private func selectionPolygonOverlay(points: [CGPoint], in imageRect: CGRect) -> some View {
+        let path = polygonPath(points: points, in: imageRect, closed: true)
+        return MarchingAntsPath(path: path)
+    }
+
+    private func draftLassoOverlay(in imageRect: CGRect) -> some View {
+        MarchingAntsPath(
+            path: polygonPath(points: draftLassoPoints, in: imageRect, closed: draftLassoPoints.count >= 3)
+        )
+    }
+
+    private func draftPolygonOverlay(in imageRect: CGRect) -> some View {
+        ZStack {
+            MarchingAntsPath(
+                path: polygonPath(points: draftPolygonPoints, in: imageRect, closed: draftPolygonPoints.count >= 3)
+            )
+            ForEach(Array(draftPolygonPoints.enumerated()), id: \.offset) { _, point in
+                Circle()
+                    .fill(Color.white)
+                    .overlay(Circle().stroke(Color.black, lineWidth: 1))
+                    .frame(width: 7, height: 7)
+                    .position(displayPoint(point, in: imageRect))
+            }
+        }
+    }
+
+    private func polygonPath(points: [CGPoint], in imageRect: CGRect, closed: Bool) -> Path {
+        Path { path in
+            guard let first = points.first else { return }
+            path.move(to: displayPoint(first, in: imageRect))
+            for point in points.dropFirst() {
+                path.addLine(to: displayPoint(point, in: imageRect))
+            }
+            if closed, points.count >= 3 {
+                path.closeSubpath()
+            }
+        }
+    }
+
+    private func displayPoint(_ normalized: CGPoint, in imageRect: CGRect) -> CGPoint {
+        geo.displayPoint(normalized, in: imageRect)
+    }
+
+    private func contextEdge(at location: CGPoint, in imageRect: CGRect) -> DragMode? {
+        let rect = displayRect(for: contextArea, in: imageRect)
+        let threshold: CGFloat = 20
+
+        guard rect.insetBy(dx: -threshold, dy: -threshold).contains(location) else {
+            return nil
+        }
+
+        let distances: [(DragMode, CGFloat)] = [
+            (.contextLeft, abs(location.x - rect.minX)),
+            (.contextRight, abs(location.x - rect.maxX)),
+            (.contextTop, abs(location.y - rect.minY)),
+            (.contextBottom, abs(location.y - rect.maxY)),
+        ]
+
+        return distances
+            .filter { $0.1 <= threshold }
+            .min { $0.1 < $1.1 }?
+            .0
+    }
+
+    #if canImport(AppKit)
+    private func cursor(for location: CGPoint, in imageRect: CGRect, canvasRect: CGRect) -> NSCursor {
+        if generateRoute == .outpaint {
+            switch outpaintCanvasEdge(at: location, in: canvasRect) {
+            case .outpaintLeft, .outpaintRight:
+                return .resizeLeftRight
+            case .outpaintTop, .outpaintBottom:
+                return .resizeUpDown
+            default:
+                return canvasRect.contains(location) ? .crosshair : .arrow
+            }
+        }
+
+        if isSelectionTool {
+            return imageRect.contains(location) ? .crosshair : .arrow
+        }
+
+        if allowsBarnDoorEditing, let edge = contextEdge(at: location, in: imageRect) {
+            switch edge {
+            case .contextLeft, .contextRight:
+                return .resizeLeftRight
+            case .contextTop, .contextBottom:
+                return .resizeUpDown
+            default:
+                break
+            }
+        }
+
+        if maskTool.isBarnDoorTool {
+            return imageRect.contains(location) ? .crosshair : .arrow
+        }
+
+        return .arrow
+    }
+    #endif
+
+    /// Draw a brand-new barn-door region from a press-drag. Tiny drags (a stray
+    /// click) restore the region captured at drag start instead of collapsing it.
+    private func updateContextSelection(to point: CGPoint, in imageRect: CGRect) {
+        guard let selectionStart else { return }
+        if contextBeforeDrag == nil { contextBeforeDrag = contextArea }
+
+        let start = CGPoint(x: snapX(selectionStart.x), y: snapY(selectionStart.y))
+        let end = CGPoint(x: snapX(point.x), y: snapY(point.y))
+        let rect = CGRect(
+            x: min(start.x, end.x),
+            y: min(start.y, end.y),
+            width: abs(end.x - start.x),
+            height: abs(end.y - start.y)
+        )
+
+        let minWidthNorm = 12 / max(imageRect.width, 1)
+        let minHeightNorm = 12 / max(imageRect.height, 1)
+        if rect.width >= minWidthNorm, rect.height >= minHeightNorm {
+            contextArea = rect
+        } else if let snapshot = contextBeforeDrag {
+            contextArea = snapshot
+        }
+    }
+
+    private func updateProcessSelection(to point: CGPoint, in imageRect: CGRect) {
+        guard let selectionStart else { return }
+        if processBeforeDrag == nil { processBeforeDrag = processArea }
+
+        let start = CGPoint(x: snapX(selectionStart.x), y: snapY(selectionStart.y))
+        let end = CGPoint(x: snapX(point.x), y: snapY(point.y))
+        let rect = CGRect(
+            x: min(start.x, end.x),
+            y: min(start.y, end.y),
+            width: abs(end.x - start.x),
+            height: abs(end.y - start.y)
+        )
+
+        let minWidthNorm = 12 / max(imageRect.width, 1)
+        let minHeightNorm = 12 / max(imageRect.height, 1)
+        if rect.width >= minWidthNorm, rect.height >= minHeightNorm {
+            processArea = rect
+        } else if let snapshot = processBeforeDrag {
+            processArea = snapshot
+        }
+    }
+
+    private func updateContextLeft(to x: CGFloat, in imageRect: CGRect) {
+        let limit = min(barnDoorLimitLeft(in: imageRect), contextArea.maxX - minimumContextWidth)
+        let newLeft = min(max(x, 0), max(limit, 0))
+        contextArea = CGRect(
+            x: newLeft,
+            y: contextArea.minY,
+            width: contextArea.maxX - newLeft,
+            height: contextArea.height
+        )
+    }
+
+    private func updateContextRight(to x: CGFloat, in imageRect: CGRect) {
+        let limit = max(barnDoorLimitRight(in: imageRect), contextArea.minX + minimumContextWidth)
+        let newRight = max(min(x, 1), min(limit, 1))
+        contextArea = CGRect(
+            x: contextArea.minX,
+            y: contextArea.minY,
+            width: newRight - contextArea.minX,
+            height: contextArea.height
+        )
+    }
+
+    private func updateContextTop(to y: CGFloat, in imageRect: CGRect) {
+        let limit = min(barnDoorLimitTop(in: imageRect), contextArea.maxY - minimumContextHeight)
+        let newTop = min(max(y, 0), max(limit, 0))
+        contextArea = CGRect(
+            x: contextArea.minX,
+            y: newTop,
+            width: contextArea.width,
+            height: contextArea.maxY - newTop
+        )
+    }
+
+    private func updateContextBottom(to y: CGFloat, in imageRect: CGRect) {
+        let limit = max(barnDoorLimitBottom(in: imageRect), contextArea.minY + minimumContextHeight)
+        let newBottom = max(min(y, 1), min(limit, 1))
+        contextArea = CGRect(
+            x: contextArea.minX,
+            y: contextArea.minY,
+            width: contextArea.width,
+            height: newBottom - contextArea.minY
+        )
+    }
+
+    // Each barn door can close until the context reaches its minimum size.
+    private func barnDoorLimitLeft(in imageRect: CGRect) -> CGFloat {
+        contextArea.maxX - minimumContextWidth
+    }
+
+    private func barnDoorLimitRight(in imageRect: CGRect) -> CGFloat {
+        contextArea.minX + minimumContextWidth
+    }
+
+    private func barnDoorLimitTop(in imageRect: CGRect) -> CGFloat {
+        contextArea.maxY - minimumContextHeight
+    }
+
+    private func barnDoorLimitBottom(in imageRect: CGRect) -> CGFloat {
+        contextArea.minY + minimumContextHeight
+    }
+
+    private var minimumContextWidth: CGFloat { geo.minimumContextWidth }
+
+    private var minimumContextHeight: CGFloat { geo.minimumContextHeight }
+
+    private func displayRect(for normalized: CGRect, in imageRect: CGRect) -> CGRect {
+        geo.displayRect(for: normalized, in: imageRect)
+    }
+
+    private func pixelAligned(_ rect: CGRect) -> CGRect {
+        geo.pixelAligned(rect)
+    }
+
+    private func normalizedPoint(for location: CGPoint, in imageRect: CGRect) -> CGPoint {
+        geo.normalizedPoint(for: location, in: imageRect)
+    }
+
+    private func snapX(_ x: CGFloat) -> CGFloat { geo.snapX(x) }
+
+    private func snapY(_ y: CGFloat) -> CGFloat { geo.snapY(y) }
+
+    private func snap(_ value: CGFloat, pixels: Int) -> CGFloat {
+        geo.snap(value, pixels: pixels)
+    }
+}
+
+/// Aspect-ratio guidance for the generation target. Diffusion models are
+/// trained on a distribution of shapes, so extreme ratios — at any megapixel
+/// count — tend to stretch or duplicate content. The preview surfaces this as a
+/// graduated caution (yellow) → warning (red) so the barn doors can be eased
+/// back before generating.
+enum AspectRatioAdvisory {
+    case ok
+    case caution(String)
+    case severe(String)
+
+    /// Longer-side ÷ shorter-side. Beyond `cautionRatio` quality starts to
+    /// soften; beyond `severeRatio` distortion/duplication is likely.
+    static let cautionRatio = 2.0
+    static let severeRatio = 3.0
+
+    init(width: Int, height: Int) {
+        guard width > 0, height > 0 else {
+            self = .ok
+            return
+        }
+
+        let landscape = width >= height
+        let ratio = landscape
+            ? Double(width) / Double(height)
+            : Double(height) / Double(width)
+        let shape = landscape ? "wide" : "tall"
+        let ratioText = landscape
+            ? String(format: "%.1f:1", ratio)
+            : String(format: "1:%.1f", ratio)
+
+        switch ratio {
+        case Self.severeRatio...:
+            self = .severe("Extreme \(shape) ratio (\(ratioText)) — FLUX will likely stretch or duplicate content. Ease the barn doors toward a more even shape.")
+        case Self.cautionRatio...:
+            self = .caution("Unusual \(shape) ratio (\(ratioText)) — may soften quality. Consider easing the barn doors toward a more even shape.")
+        default:
+            self = .ok
+        }
+    }
+}
+
+struct PreparationSizeInfoRow<Trailing: View>: View {
+    let image: CGImage
+    let contextArea: CGRect?
+    let adjustedSize: (width: Int, height: Int)
+    @ViewBuilder let trailingControls: () -> Trailing
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 12) {
+                sizeItem(label: "Original", value: "\(image.width)x\(image.height)")
+
+                verticalSeparator
+
+                sizeItem(label: "Context", value: contextValue)
+
+                verticalSeparator
+
+                sizeItem(label: "Adjusted", value: "\(adjustedSize.width)x\(adjustedSize.height)")
+
+                verticalSeparator
+
+                sizeItem(label: "Pixels", value: megapixelValue)
+
+                Spacer(minLength: 8)
+
+                trailingControls()
+            }
+            .foregroundStyle(.secondary)
+
+            aspectRatioAdvisory
+            upscaleAdvisory
+        }
+        .font(.caption)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.75))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder
+    private var aspectRatioAdvisory: some View {
+        switch AspectRatioAdvisory(width: adjustedSize.width, height: adjustedSize.height) {
+        case .ok:
+            EmptyView()
+        case .caution(let message):
+            advisoryBanner(color: .yellow, icon: "exclamationmark.triangle.fill", message: message)
+        case .severe(let message):
+            advisoryBanner(color: .red, icon: "exclamationmark.octagon.fill", message: message)
+        }
+    }
+
+    private func advisoryBanner(color: Color, icon: String, message: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: icon)
+                .foregroundStyle(color)
+            Text(message)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .font(.caption.weight(.medium))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(color.opacity(0.14))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    /// Warns when the megapixel budget asks for more pixels than the source
+    /// region holds — the model then synthesizes the extra detail.
+    @ViewBuilder
+    private var upscaleAdvisory: some View {
+        let factor = upscaleFactor
+        if factor >= 2.5 {
+            advisoryBanner(
+                color: .red,
+                icon: "arrow.up.forward.square.fill",
+                message: String(format: "Heavy upscale (%.1f×): the model will invent most of the detail in the processing area.", factor)
+            )
+        } else if factor >= 1.5 {
+            advisoryBanner(
+                color: .yellow,
+                icon: "arrow.up.forward.square",
+                message: String(format: "Upscaling %.1f×: fine detail in the processing area will be softened or synthesized.", factor)
+            )
+        }
+    }
+
+    private var megapixelValue: String {
+        let mp = Double(adjustedSize.width * adjustedSize.height) / 1_000_000
+        return String(format: "%.2f MP", mp)
+    }
+
+    private var sourcePixelDimensions: (width: Int, height: Int) {
+        if let contextArea {
+            let width = max(1, Int((contextArea.width * CGFloat(image.width)).rounded()))
+            let height = max(1, Int((contextArea.height * CGFloat(image.height)).rounded()))
+            return (width, height)
+        }
+        return (image.width, image.height)
+    }
+
+    private var upscaleFactor: Double {
+        let source = sourcePixelDimensions
+        let sourceArea = Double(source.width * source.height)
+        guard sourceArea > 0 else { return 1 }
+        let outputArea = Double(adjustedSize.width * adjustedSize.height)
+        return (outputArea / sourceArea).squareRoot()
+    }
+
+    private var contextValue: String {
+        guard let contextArea else {
+            return "None"
+        }
+
+        let width = max(1, Int((contextArea.width * CGFloat(image.width)).rounded()))
+        let height = max(1, Int((contextArea.height * CGFloat(image.height)).rounded()))
+        return "\(width)x\(height)"
+    }
+
+    private var verticalSeparator: some View {
+        Rectangle()
+            .fill(Color.secondary.opacity(0.35))
+            .frame(width: 1, height: 18)
+    }
+
+    private func sizeItem(label: String, value: String) -> some View {
+        HStack(spacing: 4) {
+            Text(label)
+                .fontWeight(.semibold)
+            Text(value)
+                .monospacedDigit()
+        }
+    }
+}
+
+/// Warns when generative fill must downscale the source to fit the resolution cap.
+struct FillResolutionInfoRow: View {
+    let image: CGImage
+    let megapixelBudget: Double
+
+    var body: some View {
+        let factor = downscaleFactor
+        if factor < 0.99 {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "arrow.down.forward.square")
+                    .foregroundStyle(.yellow)
+                Text(
+                    String(
+                        format: "Resolution cap downscales the image to %.0f%% before fill — very fine detail may soften.",
+                        factor * 100
+                    )
+                )
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .font(.caption.weight(.medium))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.yellow.opacity(0.14))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+    }
+
+    private var downscaleFactor: Double {
+        let area = Double(image.width * image.height)
+        let cap = megapixelBudget * 1_000_000
+        guard area > cap, area > 0 else { return 1 }
+        return (cap / area).squareRoot()
+    }
+}
+
+
+#if canImport(AppKit)
+/// Fires when ⇧ / ⌥ / other modifier keys change so the preview badge can update mid-drag.
+private struct ModifierFlagsChangeMonitor: NSViewRepresentable {
+    let onFlagsChange: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.install(onFlagsChange: onFlagsChange)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onFlagsChange = onFlagsChange
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.remove()
+    }
+
+    final class Coordinator {
+        var monitor: Any?
+        var onFlagsChange: (() -> Void)?
+
+        func install(onFlagsChange: @escaping () -> Void) {
+            self.onFlagsChange = onFlagsChange
+            remove()
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+                self?.onFlagsChange?()
+                return event
+            }
+        }
+
+        func remove() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+    }
+}
+#endif
+
 #Preview {
-    ImageToImageView()
+    ImageToImageView(viewModel: ImageGenerationViewModel(workflow: .imageToImage))
         .environmentObject(ModelManager())
         .frame(width: 1200, height: 900)
 }

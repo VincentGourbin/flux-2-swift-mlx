@@ -1,0 +1,19 @@
+---
+description: Treat build as the Project Builder workflow for this repo
+alwaysApply: true
+---
+
+# Project Builder Build Shortcut
+
+When the user says `build` while working in `flux-2-swift-mix`, read:
+
+`~/GitHub/utility-be-project-builder/Configs/flux-2-swift-mix.json`
+
+Then run the Project Builder workflow from that config:
+
+- Honor `run_preferences` when present, clamped by `capabilities`.
+- If `run_preferences` is absent, default to compile only.
+- Execute `commands.compile`, `commands.relocate`, and `commands.launch` from the repo root only when enabled.
+- For relocate, skip and report if `overwrite` is false and `relocate.destination` already exists.
+
+If the user says `compile`, do a normal compile only and do not use Project Builder.

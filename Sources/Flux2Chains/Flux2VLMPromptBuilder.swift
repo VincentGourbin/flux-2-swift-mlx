@@ -20,6 +20,7 @@
 
 import Foundation
 import CoreGraphics
+import Flux2Core
 import FluxTextEncoders
 
 /// Build FLUX.2-style prompts from a source image using the bundled
@@ -86,11 +87,40 @@ public enum Flux2VLMPromptBuilder {
     - Output ONLY the final prompt, on a single line. No preamble, no quotes, no explanation.
     """
 
+    /// System prompt used for `Flux2InpaintIntent.fill`. Instructs the
+    /// VLM to complete a missing, empty, or damaged region by describing
+    /// what should continue from the surrounding pixels — no new subject
+    /// unless the user's hint requests one.
+    public static let fillSystemPrompt: String = """
+    You are a prompt engineer for FLUX.2 by Black Forest Labs. The user wants to FILL a missing, empty, or damaged region in an image — the masked area should be completed from the surrounding context, like generative fill. Your job is to produce a single FLUX.2 image-generation prompt that describes what belongs in that region.
+
+    Look at the provided image, focusing on the materials and features that border the masked region:
+    - the exact surface or texture that should continue through the gap (brick, skin, fabric weave, asphalt grain, sky gradient…)
+    - continuity features that should flow through (cracks, seams, shadow patterns, folds, grain direction…)
+    - lighting direction, softness, and colour temperature; time of day
+    - camera angle and apparent height, focal length feel, depth of field
+    - dominant colour palette and overall style
+
+    Assemble a single FLUX.2 prompt of 30–80 words following the structure Subject + Action + Style + Context:
+    - Subject = the material or surface completing the region (e.g., "weathered red brick wall", "smooth olive skin").
+    - Action = how it continues through the masked area ("with mortar lines aligned to the courses on either side…").
+    - Style + Context = the source's photographic identity, verbatim.
+
+    Rules:
+    - Describe continuation from context — do not invent a new unrelated subject unless the user's hint explicitly requests one.
+    - NEVER use generic suffixes like "seamlessly extend", "high quality", "8k".
+    - NEVER use negative phrases ("without the X", "no people", "empty of").
+    - Use specific photographic vocabulary.
+    - Output ONLY the final prompt, on a single line. No preamble, no quotes, no explanation.
+    """
+
     /// System prompt used for `Flux2InpaintIntent.modify`. Instructs the
     /// VLM to keep the existing subject recognisable and apply the user's
     /// modification while preserving the scene's photographic identity.
     public static let modifySystemPrompt: String = """
     You are a prompt engineer for FLUX.2 by Black Forest Labs. The user wants to MODIFY an existing subject in an image (change its colour, outfit, expression, accessory, etc.) while keeping it recognisable and integrated in the same scene. Your job is to produce a single FLUX.2 image-generation prompt.
+
+    This is a technical description of an EXISTING photograph for an image-editing pipeline — you are not creating new imagery. Describe only what is visible in the source pixels: surfaces, lighting, materials, and the subject being adjusted.
 
     Look at the provided image and capture:
     - the existing subject's identity (species, breed, age, gender, pose…)
@@ -182,7 +212,8 @@ public enum Flux2VLMPromptBuilder {
     public static func buildInpaintPrompt(
         source: CGImage,
         userInstruction: String,
-        intent: Flux2InpaintIntent
+        intent: Flux2InpaintIntent,
+        vlmContextArea: CGRect? = nil
     ) async throws -> String? {
         guard FluxTextEncoders.shared.isQwen35VLMLoaded else { return nil }
 
@@ -190,16 +221,18 @@ public enum Flux2VLMPromptBuilder {
         switch intent {
         case .replace:     systemPrompt = replaceSystemPrompt
         case .remove:      systemPrompt = removeSystemPrompt
+        case .fill:        systemPrompt = fillSystemPrompt
         case .modify:      systemPrompt = modifySystemPrompt
         case .changeScene: systemPrompt = changeSceneSystemPrompt
         }
         let userMessage = userMessage(forInpaint: intent, instruction: userInstruction)
+        let vlmImage = try imageForVLM(source: source, contextArea: vlmContextArea)
 
         // The VLM forward is synchronous and takes ~3 s on M-series. Run
         // it on a detached task so other work on the cooperative pool
         // (UI updates, concurrent chains) isn't starved while we wait.
-        let raw = try await runVLM(image: source, prompt: userMessage, systemPrompt: systemPrompt)
-        return cleanFinalPrompt(raw)
+        let raw = try await runVLM(image: vlmImage, prompt: userMessage, systemPrompt: systemPrompt)
+        return validatedPrompt(from: raw)
     }
 
     /// Build a FLUX.2 outpainting prompt. The VLM looks at the source and
@@ -226,7 +259,7 @@ public enum Flux2VLMPromptBuilder {
         let userMessage = userMessage(forOutpaintSides: sides, instruction: userInstruction)
 
         let raw = try await runVLM(image: source, prompt: userMessage, systemPrompt: outpaintSystemPrompt)
-        return cleanFinalPrompt(raw)
+        return validatedPrompt(from: raw)
     }
 
     /// Run the Qwen3.5 VLM forward on a detached, user-initiated task
@@ -247,6 +280,22 @@ public enum Flux2VLMPromptBuilder {
                 temperature: 0
             ).text
         }.value
+    }
+
+    private static func imageForVLM(source: CGImage, contextArea: CGRect?) throws -> CGImage {
+        guard let contextArea else { return source }
+        if isApproximatelyFullFrame(contextArea) || isApproximatelyFullFrame(ImagePreparation.clampUnitRect(contextArea)) {
+            return source
+        }
+        return try ImagePreparation.cropReferenceImage(source, normalizedRect: contextArea)
+    }
+
+    private static func isApproximatelyFullFrame(_ rect: CGRect) -> Bool {
+        let epsilon: CGFloat = 0.0001
+        return abs(rect.minX) < epsilon
+            && abs(rect.minY) < epsilon
+            && abs(rect.width - 1) < epsilon
+            && abs(rect.height - 1) < epsilon
     }
 
     // MARK: - User message assembly (exposed for tests)
@@ -270,6 +319,11 @@ public enum Flux2VLMPromptBuilder {
                 return "Describe the surface that should continue under the masked region, with no subject in it. Produce the FLUX.2 prompt now."
             }
             return "The user wants to remove this from the masked region: \(trimmed). Do NOT name it in your output. Describe the surface that should continue in its place. Produce the FLUX.2 prompt now."
+        case .fill:
+            if trimmed.isEmpty {
+                return "Describe what should continue into this missing or empty masked region from the surrounding context. Produce the FLUX.2 prompt now."
+            }
+            return "User guidance for the fill: \(trimmed). Complete the masked region from surrounding context. Produce the FLUX.2 prompt now."
         case .modify:
             if trimmed.isEmpty {
                 return "Keep the existing subject and adjust it slightly to better match the scene. Produce the FLUX.2 prompt now."
@@ -297,6 +351,55 @@ public enum Flux2VLMPromptBuilder {
     }
 
     // MARK: - Output cleanup
+
+    /// Strip whitespace and quotes, then reject empty output and model
+    /// safety refusals (e.g. "I cannot generate content related to…").
+    /// Returns `nil` so callers fall back to the user's prompt.
+    internal static func validatedPrompt(from raw: String) -> String? {
+        let cleaned = cleanFinalPrompt(raw)
+        guard !cleaned.isEmpty else { return nil }
+        guard !looksLikeVLMRefusal(cleaned) else { return nil }
+        return cleaned
+    }
+
+    /// Qwen3.5 occasionally answers with a policy refusal instead of a
+    /// FLUX.2 prompt when the source image triggers its safety filter.
+    internal static func looksLikeVLMRefusal(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        let blockedPhrases = [
+            "i cannot generate",
+            "i can't generate",
+            "i cannot create",
+            "i can't create",
+            "i cannot provide",
+            "i can't provide",
+            "i cannot help",
+            "i can't help",
+            "i'm unable to",
+            "i am unable to",
+            "unable to generate",
+            "unable to create",
+            "not able to generate",
+            "cannot generate content",
+            "can't generate content",
+            "against my guidelines",
+            "against my policy",
+            "violates my",
+            "as an ai language model",
+            "as a language model",
+        ]
+        if blockedPhrases.contains(where: { lower.contains($0) }) {
+            return true
+        }
+        let blockedPrefixes = [
+            "i cannot",
+            "i can't",
+            "sorry,",
+            "i'm sorry",
+            "i am sorry",
+        ]
+        return blockedPrefixes.contains { lower.hasPrefix($0) }
+    }
 
     /// Strip whitespace and one surrounding pair of quotes if present.
     /// Small models occasionally wrap the prompt in quotes despite the

@@ -13,193 +13,118 @@ import AppKit
 
 struct TextToImageView: View {
     @EnvironmentObject var modelManager: ModelManager
-    @StateObject private var viewModel = ImageGenerationViewModel()
+    @StateObject private var viewModel = ImageGenerationViewModel(workflow: .textToImage)
+    @StateObject private var paletteCoordinator = PaletteDetachCoordinator()
+    @AppStorage("imageSaveUpscaleBy") private var imageSaveUpscaleBy = 1.0
 
     var body: some View {
-        HSplitView {
-            // Left panel: Controls
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    // Model Selection Section
-                    modelSelectionSection
+        ZStack(alignment: .topLeading) {
+            HSplitView {
+                PaletteColumn {
+                    PalettePanel(
+                        storageKey: "t2i.parameters",
+                        title: "Generation Parameters",
+                        systemImage: "slider.horizontal.3",
+                        coordinator: paletteCoordinator,
+                        content: { parametersPaletteContent }
+                    )
 
-                    Divider()
-
-                    // Prompt Section
-                    promptSection
-
-                    Divider()
-
-                    // Parameters Section
-                    parametersSection
-
-                    Divider()
-
-                    // Generate Button
-                    generateSection
+                    PalettePanel(
+                        storageKey: "t2i.outputOptions",
+                        title: "Output Options",
+                        systemImage: "slider.horizontal.below.rectangle",
+                        coordinator: paletteCoordinator,
+                        content: { outputOptionsPaletteContent }
+                    )
                 }
-                .padding()
-            }
-            .frame(minWidth: 350, idealWidth: 400, maxWidth: 500)
+                .frame(minWidth: 350, idealWidth: 400, maxWidth: 500)
 
-            // Right panel: Output
-            outputSection
+                outputSection
+            }
+
+            floatingPalettes
         }
         .onAppear {
             // Refresh diffusion model status
+            modelManager.refreshDownloadedModels()
             modelManager.refreshDownloadedDiffusionModels()
+            viewModel.enforceAvailableModelDefaults(
+                downloadedTransformers: modelManager.downloadedTransformers,
+                downloadedTextModels: modelManager.downloadedModels
+            )
         }
         .onChange(of: viewModel.selectedModel) { _, newModel in
             // Apply recommended defaults when model changes
-            viewModel.applyRecommendedDefaults(for: newModel)
+            if viewModel.shouldApplyDefaultsForModelChange() {
+                viewModel.applyRecommendedDefaults(for: newModel)
+            }
+            viewModel.enforceAvailableModelDefaults(
+                downloadedTransformers: modelManager.downloadedTransformers,
+                downloadedTextModels: modelManager.downloadedModels
+            )
+        }
+        .onChange(of: modelManager.downloadedTransformers) { _, downloaded in
+            viewModel.enforceAvailableModelDefaults(
+                downloadedTransformers: downloaded,
+                downloadedTextModels: modelManager.downloadedModels
+            )
+        }
+        .onChange(of: modelManager.downloadedModels) { _, downloaded in
+            viewModel.enforceAvailableModelDefaults(
+                downloadedTransformers: modelManager.downloadedTransformers,
+                downloadedTextModels: downloaded
+            )
+        }
+        .focusedSceneValue(\.generationProjectCommands, GenerationProjectCommands(
+            newProject: { viewModel.newProject() },
+            openProject: { viewModel.openProject() },
+            saveProject: { viewModel.saveProject() },
+            saveProjectAs: { viewModel.saveProjectAs() }
+        ))
+        .focusedSceneValue(\.generationProjectName, viewModel.projectDisplayName)
+        .focusedSceneValue(\.generationModelConfiguration, viewModel)
+        .focusedSceneValue(\.generationUnloadModels) {
+            Task { await viewModel.clearPipeline() }
+        }
+        .onDisappear {
+            viewModel.persistSessionState()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .flux2PersistSession)) { _ in
+            viewModel.persistSessionState()
         }
     }
 
-    // MARK: - Model Selection Section
+    // MARK: - Floating palettes
 
     @ViewBuilder
-    private var modelSelectionSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Model Configuration", systemImage: "cpu")
-                .font(.headline)
-
-            // Model type picker
-            HStack {
-                Text("Model:")
-                    .frame(width: 100, alignment: .leading)
-                Picker("", selection: $viewModel.selectedModel) {
-                    ForEach(Flux2Model.allCases, id: \.self) { model in
-                        Text(model.displayName).tag(model)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: .infinity)
-            }
-
-            // Text encoder quantization (only for Dev model)
-            if viewModel.selectedModel == .dev {
-                HStack {
-                    Text("Text Encoder:")
-                        .frame(width: 100, alignment: .leading)
-                    Picker("", selection: $viewModel.textQuantization) {
-                        ForEach(MistralQuantization.allCases, id: \.self) { quant in
-                            Text(quant.displayName).tag(quant)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .frame(maxWidth: .infinity)
-                }
-            }
-
-            // Transformer quantization
-            HStack {
-                Text("Transformer:")
-                    .frame(width: 100, alignment: .leading)
-                Picker("", selection: $viewModel.transformerQuantization) {
-                    ForEach(TransformerQuantization.allCases, id: \.self) { quant in
-                        // Klein 9B only supports bf16
-                        if viewModel.selectedModel != .klein9B || quant == .bf16 {
-                            Text(quant.displayName).tag(quant)
-                        }
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: .infinity)
-            }
-
-            // Memory estimate
-            HStack {
-                Image(systemName: "memorychip")
-                    .foregroundStyle(.secondary)
-                Text("Estimated peak: ~\(viewModel.estimatedPeakMemoryGB)GB")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Spacer()
-
-                // Model download status
-                let variant = viewModel.selectedTransformerVariant
-                if modelManager.isTransformerDownloaded(variant) {
-                    Label("Ready", systemImage: "checkmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                } else {
-                    Button(action: {
-                        Task { await modelManager.downloadTransformer(variant) }
-                    }) {
-                        Label("Download", systemImage: "arrow.down.circle")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(modelManager.isDownloading)
-                }
-            }
-
-            // VAE status
-            HStack {
-                Text("VAE:")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if modelManager.isVAEDownloaded {
-                    Label("Ready", systemImage: "checkmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                } else {
-                    Button(action: {
-                        Task { await modelManager.downloadVAE() }
-                    }) {
-                        Label("Download VAE", systemImage: "arrow.down.circle")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(modelManager.isDownloading)
-                }
-                Spacer()
-            }
-
-            // Download progress
-            if modelManager.isDownloading {
-                VStack(spacing: 4) {
-                    ProgressView(value: modelManager.downloadProgress)
-                    Text(modelManager.downloadMessage)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
+    private var floatingPalettes: some View {
+        if paletteCoordinator.isDetached("t2i.parameters") {
+            PaletteFloatingPanel(
+                storageKey: "t2i.parameters",
+                title: "Generation Parameters",
+                systemImage: "slider.horizontal.3",
+                position: paletteCoordinator.positionBinding(for: "t2i.parameters"),
+                coordinator: paletteCoordinator,
+                content: { parametersPaletteContent }
+            )
         }
-    }
-
-    // MARK: - Prompt Section
-
-    @ViewBuilder
-    private var promptSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Prompt", systemImage: "text.cursor")
-                .font(.headline)
-
-            TextEditor(text: $viewModel.prompt)
-                .font(.body)
-                .scrollContentBackground(.hidden)
-                .background(Color(nsColor: .textBackgroundColor))
-                .cornerRadius(8)
-                .frame(minHeight: 100, maxHeight: 200)
-
-            Toggle("Upsample prompt", isOn: $viewModel.upsamplePrompt)
-                .font(.caption)
-                .help("Enhance prompt with visual details using Mistral")
+        if paletteCoordinator.isDetached("t2i.outputOptions") {
+            PaletteFloatingPanel(
+                storageKey: "t2i.outputOptions",
+                title: "Output Options",
+                systemImage: "slider.horizontal.below.rectangle",
+                position: paletteCoordinator.positionBinding(for: "t2i.outputOptions"),
+                coordinator: paletteCoordinator,
+                content: { outputOptionsPaletteContent }
+            )
         }
     }
 
     // MARK: - Parameters Section
 
     @ViewBuilder
-    private var parametersSection: some View {
+    private var parametersPaletteContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Generation Parameters", systemImage: "slider.horizontal.3")
-                .font(.headline)
-
             // Dimensions
             HStack(spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -264,14 +189,23 @@ struct TextToImageView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Guidance: \(String(format: "%.1f", viewModel.guidance))")
-                        .font(.caption)
+                    HStack {
+                        Text("Guidance: \(String(format: "%.1f", viewModel.guidance))")
+                            .font(.caption)
+                        Spacer()
+                        Button("Default") {
+                            viewModel.resetGuidanceToModelDefault()
+                        }
+                        .controlSize(.mini)
+                    }
                     Slider(value: Binding(
                         get: { Double(viewModel.guidance) },
                         set: { viewModel.guidance = Float($0) }
                     ), in: 1...10, step: 0.5)
                 }
             }
+
+            Divider()
 
             // Seed
             HStack {
@@ -292,51 +226,25 @@ struct TextToImageView: View {
         }
     }
 
-    // MARK: - Generate Section
+    // MARK: - Output Options
 
     @ViewBuilder
-    private var generateSection: some View {
-        VStack(spacing: 12) {
-            // Generate button
-            Button(action: {
-                Task { await viewModel.generate() }
-            }) {
-                HStack {
-                    if viewModel.isGenerating {
-                        ProgressView()
-                            .scaleEffect(0.8)
-                    }
-                    Text(viewModel.isGenerating ? "Generating..." : "Generate Image")
-                }
-                .frame(maxWidth: .infinity)
+    private var outputOptionsPaletteContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button(action: { viewModel.saveImage() }) {
+                Label("Save", systemImage: "square.and.arrow.down")
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(!viewModel.canGenerate || !modelManager.isTransformerDownloaded(viewModel.selectedTransformerVariant) || !modelManager.isVAEDownloaded)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(viewModel.generatedImage == nil)
 
-            // Progress
-            if viewModel.isGenerating {
-                VStack(spacing: 4) {
-                    ProgressView(value: viewModel.progress)
-                    Text(viewModel.statusMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            LanczosUpscaleField(factor: $imageSaveUpscaleBy)
 
-            // Error message
-            if let error = viewModel.errorMessage {
-                HStack {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red)
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-                .padding(8)
-                .background(Color.red.opacity(0.1))
-                .cornerRadius(8)
-            }
+            Divider()
+
+            ImageSaveWorkingNamingPreferencesView(
+                previewPrompt: viewModel.prompt.isEmpty ? "sample prompt" : viewModel.prompt
+            )
         }
     }
 
@@ -345,31 +253,7 @@ struct TextToImageView: View {
     @ViewBuilder
     private var outputSection: some View {
         VStack(spacing: 0) {
-            // Header
-            HStack {
-                Label("Generated Image", systemImage: "photo")
-                    .font(.headline)
-
-                Spacer()
-
-                if viewModel.generatedImage != nil {
-                    Button(action: { viewModel.saveImage() }) {
-                        Label("Save", systemImage: "square.and.arrow.down")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-
-                Button(action: {
-                    Task { await viewModel.clearPipeline() }
-                }) {
-                    Label("Clear Memory", systemImage: "trash")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("Clear pipeline to free GPU memory")
-            }
-            .padding()
+            ImageGenerationPromptSection(viewModel: viewModel)
 
             Divider()
 
@@ -382,17 +266,14 @@ struct TextToImageView: View {
             // Main image display
             GeometryReader { geometry in
                 if let cgImage = viewModel.generatedImage {
-                    ScrollView([.horizontal, .vertical]) {
-                        Image(decorative: cgImage, scale: 1.0)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(
-                                maxWidth: geometry.size.width,
-                                maxHeight: geometry.size.height
-                            )
-                    }
+                    PreviewZoomableImageView(
+                        image: cgImage,
+                        zoomScale: Binding(
+                            get: { CGFloat(viewModel.previewZoomScale) },
+                            set: { viewModel.previewZoomScale = Double($0) }
+                        )
+                    )
                     .frame(width: geometry.size.width, height: geometry.size.height)
-                    .background(Color(nsColor: .windowBackgroundColor))
                 } else {
                     VStack {
                         Image(systemName: "photo.on.rectangle.angled")

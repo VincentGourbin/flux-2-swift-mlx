@@ -6,6 +6,18 @@ A native Swift implementation of [Flux.2](https://blackforestlabs.ai/) image gen
 
 <a href="https://www.buymeacoffee.com/fluxforgestudio"><img src="https://img.buymeacoffee.com/button-api/?text=Buy me a coffee&emoji=&slug=fluxforgestudio&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff" /></a>
 
+## Fork additions (`mix/v2.4.0`)
+
+**Private working repo** (`flux-2-swift-mix`). Image Preparation was offered upstream in [PR #98](https://github.com/VincentGourbin/flux-2-swift-mlx/pull/98). Further upstream contributions are selective — not everything leaves this repo.
+
+This repository is focused on **single-image, prompt-based image editing** in Flux2App.
+
+The headline feature is **Image Preparation** (formatting, Live Area barn doors, megapixel budget, composited paste-back). Full documentation:
+
+**[Image Preparation guide](docs/ImagePreparation.md)**
+
+Upstream framework: [flux-2-swift-mlx](https://github.com/VincentGourbin/flux-2-swift-mlx) (MIT). Selective contributions back when explicitly chosen.
+
 ## Downloads
 
 **[📦 Latest Release (v2.1.0)](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/tag/v2.1.0)** — Universal binaries for Apple Silicon
@@ -98,7 +110,7 @@ unzip Flux2CLI-v2.1.0-macOS.zip
 
 # App
 unzip Flux2App-v2.1.0-macOS.zip
-open Flux2App.app
+open /Applications/Flux2App.app
 ```
 
 ### Build from Source

@@ -33,6 +33,21 @@ final class Flux2OutpaintingChainTests: XCTestCase {
         XCTAssertEqual(Flux2OutpaintingChain.roundUpToMultipleOf32(479), 480)
     }
 
+    func testCanvasDimensionsPadsWorkingSizeToMultipleOf32() {
+        let dimensions = Flux2OutpaintingChain.canvasDimensions(
+            sourceWidth: 65,
+            sourceHeight: 33,
+            top: 0,
+            bottom: 32,
+            left: 32,
+            right: 0
+        )
+        XCTAssertEqual(dimensions.requestedWidth, 97)
+        XCTAssertEqual(dimensions.requestedHeight, 65)
+        XCTAssertEqual(dimensions.workingWidth, 128)
+        XCTAssertEqual(dimensions.workingHeight, 96)
+    }
+
     // MARK: - buildOutpaintCanvas
 
     func testCanvasMatchesRequestedDimensions() {
@@ -96,6 +111,17 @@ final class Flux2OutpaintingChainTests: XCTestCase {
             if sampleR(a, x: x, y: y) != sampleR(b, x: x, y: y) { anyDiff = true; break }
         }
         XCTAssertTrue(anyDiff, "Different seeds must produce different strip noise")
+    }
+
+    func testCropToRequestedCanvasRemovesTemporaryRightBottomPadding() throws {
+        let padded = makeSolidImage(width: 128, height: 96, value: 180)
+        let cropped = try XCTUnwrap(Flux2OutpaintingChain.cropToRequestedCanvas(
+            padded,
+            width: 97,
+            height: 65
+        ))
+        XCTAssertEqual(cropped.width, 97)
+        XCTAssertEqual(cropped.height, 65)
     }
 
     // MARK: - buildSmartMask

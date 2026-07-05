@@ -13,6 +13,12 @@ struct Flux2App: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var modelManager = ModelManager()
 
+    init() {
+        ModelsDirectoryBootstrap.apply()
+        ImageSavePreferenceKeys.bootstrapStoredDefaultsIfNeeded()
+        ImageSaveOutputRootPresetStore.bootstrapIfNeeded()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -21,7 +27,10 @@ struct Flux2App: App {
         }
         .defaultSize(width: 1200, height: 800)
         .commands {
-            CommandGroup(replacing: .newItem) {}
+            ProjectFileCommands()
+            SelectionUndoCommands()
+            DocumentHistoryCommands()
+            DefaultsCommands()
             CommandGroup(replacing: .appInfo) {
                 Button("About FLUX.2") {
                     NSApplication.shared.orderFrontStandardAboutPanel(
@@ -39,6 +48,11 @@ struct Flux2App: App {
             SettingsView()
                 .environmentObject(modelManager)
         }
+
+        Window("Defaults", id: "image-save-defaults") {
+            ImageSaveDefaultsView()
+        }
+        .defaultSize(width: 520, height: 260)
     }
 }
 
@@ -58,5 +72,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return true
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        NotificationCenter.default.post(name: .flux2PersistSession, object: nil)
     }
 }

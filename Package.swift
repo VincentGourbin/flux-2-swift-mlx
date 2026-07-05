@@ -14,6 +14,7 @@ let package = Package(
         .executable(name: "Flux2CLI", targets: ["Flux2CLI"]),
         // Main Application
         .executable(name: "Flux2App", targets: ["Flux2App"]),
+        .executable(name: "Flux2SmokeFixture", targets: ["Flux2SmokeFixture"]),
     ],
     dependencies: [
         // Pinned exactly: mlx-swift introduces breaking API changes even in patch
@@ -48,6 +49,10 @@ let package = Package(
                 .product(name: "MLXOptimizers", package: "mlx-swift"),
                 .product(name: "Transformers", package: "swift-transformers"),
                 .product(name: "MLXProfiler", package: "swift-mlx-profiler"),
+            ],
+            resources: [
+                // SCUNet (image cleanup) weights, bundled so ImageCleanup is always available.
+                .copy("Resources/scunet_color_real_psnr_mlx.safetensors"),
             ]
         ),
         .target(
@@ -79,7 +84,11 @@ let package = Package(
         // MARK: - Main Application
         .executableTarget(
             name: "Flux2App",
-            dependencies: ["FluxTextEncoders", "Flux2Core"]
+            dependencies: ["FluxTextEncoders", "Flux2Core", "Flux2Chains"]
+        ),
+        .executableTarget(
+            name: "Flux2SmokeFixture",
+            dependencies: ["Flux2Core"]
         ),
         // MARK: - Tests
         .testTarget(
@@ -93,6 +102,10 @@ let package = Package(
         .testTarget(
             name: "Flux2ChainsTests",
             dependencies: ["Flux2Chains", "Flux2Core"]
+        ),
+        .testTarget(
+            name: "Flux2AppTests",
+            dependencies: ["Flux2App"]
         ),
     ]
 )

@@ -22,11 +22,16 @@ output/
 !docs/examples/**/*.png
 !docs/screenshots/**/*.png
 !examples/tarot-style/**/*.png
+!Tests/Fixtures/VMSmoke/*.png
+!Assets/AppIcon/*.png
 
 # Profiling
 *.profraw
 
-# Temporary files
+Flux2App.app/
+build/
+Assets/AppIcon/AppIcon.iconset/
+Assets/AppIcon/AppIcon.icns
 *.tmp
 *.swp
 *~
@@ -47,6 +52,14 @@ groot_training*.yaml
 scripts/train_all_models.sh
 scripts/*.py
 *.safetensors
+# ...but the bundled SCUNet cleanup weights are a tracked Flux2Core resource
+!Sources/Flux2Core/Resources/*.safetensors
 
 # Obsolete plans directory
 docs/plans/
+
+# Cursor local session artifacts
+.cursor/*.log
+
+# Local validation inputs (personal photos — not for the repo)
+Tests/SampleJPEGs/
