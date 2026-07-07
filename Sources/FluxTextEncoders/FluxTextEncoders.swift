@@ -90,7 +90,6 @@ public final class FluxTextEncoders: @unchecked Sendable {
     }
 
     /// Load model from path or download if needed
-    @MainActor
     public func loadModel(
         variant: ModelVariant = .mlx8bit,
         hfToken: String? = nil,
@@ -103,7 +102,6 @@ public final class FluxTextEncoders: @unchecked Sendable {
     }
 
     /// Load model from local path
-    @MainActor
     public func loadModel(from path: String) throws {
         FluxDebug.log("Loading model from \(path)")
 
@@ -123,7 +121,6 @@ public final class FluxTextEncoders: @unchecked Sendable {
     }
 
     /// Load VLM (vision-language) model from path
-    @MainActor
     public func loadVLMModel(from path: String) throws {
         let debug = ProcessInfo.processInfo.environment["VLM_DEBUG"] != nil
 
@@ -149,7 +146,6 @@ public final class FluxTextEncoders: @unchecked Sendable {
     }
 
     /// Load VLM from path or download if needed
-    @MainActor
     public func loadVLMModel(
         variant: ModelVariant = .mlx4bit,
         hfToken: String? = nil,
@@ -162,7 +158,6 @@ public final class FluxTextEncoders: @unchecked Sendable {
     }
 
     /// Unload model to free memory
-    @MainActor
     public func unloadModel() {
         model = nil
         vlmModel = nil
@@ -184,7 +179,6 @@ public final class FluxTextEncoders: @unchecked Sendable {
     /// - Parameters:
     ///   - variant: Klein variant (klein4B or klein9B)
     ///   - modelPath: Local path to Qwen3 model
-    @MainActor
     public func loadKleinModel(variant: KleinVariant, from modelPath: String) async throws {
         FluxDebug.info("[Klein] Loading Qwen3 model for \(variant.displayName)")
         FluxDebug.info("[Klein] Model path: \(modelPath)")
@@ -242,7 +236,6 @@ public final class FluxTextEncoders: @unchecked Sendable {
     ///   - qwen3Variant: Specific Qwen3 model variant (default: recommended 8-bit)
     ///   - hfToken: HuggingFace token for downloads
     ///   - progress: Download progress callback
-    @MainActor
     public func loadKleinModel(
         variant: KleinVariant,
         qwen3Variant: Qwen3Variant? = nil,
@@ -258,7 +251,7 @@ public final class FluxTextEncoders: @unchecked Sendable {
             modelVariant = variant == .klein4B ? .qwen3_4B_8bit : .qwen3_8B_8bit
         }
         
-        guard let modelInfo = TextEncoderModelRegistry.shared.qwen3Model(withVariant: modelVariant) else {
+        guard let modelInfo = await TextEncoderModelRegistry.shared.qwen3Model(withVariant: modelVariant) else {
             throw FluxEncoderError.invalidInput("Qwen3 model variant not found: \(modelVariant)")
         }
 
@@ -275,7 +268,6 @@ public final class FluxTextEncoders: @unchecked Sendable {
     }
     
     /// Unload Klein model to free memory
-    @MainActor
     public func unloadKleinModel() {
         qwen3Model = nil
         kleinExtractor = nil
@@ -296,7 +288,6 @@ public final class FluxTextEncoders: @unchecked Sendable {
 
     /// Load Qwen3-VL model for Klein VL embeddings (experimental)
     /// This replaces the standard Qwen3 text encoder with Qwen3-VL (language component only)
-    @MainActor
     public func loadKleinVLModel(variant: KleinVariant, from modelPath: String) async throws {
         FluxDebug.info("[Klein-VL] Loading Qwen3-VL model for \(variant.displayName)")
         FluxDebug.info("[Klein-VL] Model path: \(modelPath)")
@@ -334,7 +325,6 @@ public final class FluxTextEncoders: @unchecked Sendable {
     }
 
     /// Load Qwen3-VL model for Klein VL embeddings with automatic download
-    @MainActor
     public func loadKleinVLModel(
         variant: KleinVariant,
         qwen3VLVariant: Qwen3VLVariant? = nil,
@@ -357,7 +347,7 @@ public final class FluxTextEncoders: @unchecked Sendable {
             }
         }
 
-        guard let modelInfo = TextEncoderModelRegistry.shared.qwen3VLModel(withVariant: modelVariant) else {
+        guard let modelInfo = await TextEncoderModelRegistry.shared.qwen3VLModel(withVariant: modelVariant) else {
             throw FluxEncoderError.invalidInput("Qwen3-VL model variant not found: \(modelVariant)")
         }
 
@@ -404,7 +394,6 @@ public final class FluxTextEncoders: @unchecked Sendable {
     }
 
     /// Load Qwen3.5 VLM from local path
-    @MainActor
     public func loadQwen35VLM(from modelPath: String) async throws {
         FluxDebug.info("[Qwen3.5] Loading VLM from \(modelPath)...")
 
@@ -415,7 +404,6 @@ public final class FluxTextEncoders: @unchecked Sendable {
     }
 
     /// Unload Qwen3.5 VLM
-    @MainActor
     public func unloadQwen35VLM() {
         qwen35VLM = nil
         Memory.clearCache()
