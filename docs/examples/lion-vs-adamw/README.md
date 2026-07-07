@@ -113,7 +113,8 @@ Both produce high-quality results. The figurine is clearly recognizable with cor
 
 ```bash
 # Build CLI first
-xcodebuild -scheme Flux2CLI -configuration Release -destination 'platform=macOS' build
+# -skipPackagePluginValidation is required since mlx-swift 0.31.5+ ships a CudaBuild plugin
+xcodebuild -scheme Flux2CLI -configuration Release -destination 'platform=macOS' -skipPackagePluginValidation build
 
 # Run both trainings
 flux2 train-lora --config docs/examples/lion-vs-adamw/cat_toy_adamw.yaml

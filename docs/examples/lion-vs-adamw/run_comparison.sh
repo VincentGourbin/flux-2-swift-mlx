@@ -6,7 +6,7 @@ set -e
 
 CLI="$(find ~/Library/Developer/Xcode/DerivedData/flux-2-swift-mlx-*/Build/Products/Release/Flux2CLI -type f 2>/dev/null | head -1)"
 if [ -z "$CLI" ]; then
-    echo "Error: Flux2CLI not found. Build with: xcodebuild -scheme Flux2CLI -configuration Release -destination 'platform=macOS' build"
+    echo "Error: Flux2CLI not found. Build with: xcodebuild -scheme Flux2CLI -configuration Release -destination 'platform=macOS' -skipPackagePluginValidation build"
     exit 1
 fi
 echo "Using CLI: $CLI"
