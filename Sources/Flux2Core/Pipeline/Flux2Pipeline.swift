@@ -646,6 +646,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         seed: UInt64? = nil,
         upsamplePrompt: Bool = false,
         checkpointInterval: Int? = nil,
+        maxReferencePixels: Int = 1024 * 1024,
         onProgress: Flux2ProgressCallback? = nil,
         onCheckpoint: Flux2CheckpointCallback? = nil
     ) async throws -> CGImage {
@@ -668,6 +669,7 @@ public class Flux2Pipeline: @unchecked Sendable {
             seed: seed,
             upsamplePrompt: upsamplePrompt,
             checkpointInterval: checkpointInterval,
+            maxReferencePixels: maxReferencePixels,
             onProgress: onProgress,
             onCheckpoint: onCheckpoint
         )
@@ -687,6 +689,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         seed: UInt64? = nil,
         upsamplePrompt: Bool = false,
         checkpointInterval: Int? = nil,
+        maxReferencePixels: Int = 1024 * 1024,
         onProgress: Flux2ProgressCallback? = nil,
         onCheckpoint: Flux2CheckpointCallback? = nil
     ) async throws -> CGImage {
@@ -707,6 +710,7 @@ public class Flux2Pipeline: @unchecked Sendable {
             seed: seed,
             upsamplePrompt: upsamplePrompt,
             checkpointInterval: checkpointInterval,
+            maxReferencePixels: maxReferencePixels,
             onProgress: onProgress,
             onCheckpoint: onCheckpoint
         )
@@ -758,6 +762,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         seed: UInt64? = nil,
         upsamplePrompt: Bool = false,
         checkpointInterval: Int? = nil,
+        maxReferencePixels: Int = 1024 * 1024,
         onProgress: Flux2ProgressCallback? = nil,
         onCheckpoint: Flux2CheckpointCallback? = nil
     ) async throws -> Flux2GenerationResult {
@@ -780,6 +785,7 @@ public class Flux2Pipeline: @unchecked Sendable {
             seed: seed,
             upsamplePrompt: upsamplePrompt,
             checkpointInterval: checkpointInterval,
+            maxReferencePixels: maxReferencePixels,
             onProgress: onProgress,
             onCheckpoint: onCheckpoint
         )
@@ -799,6 +805,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         seed: UInt64? = nil,
         upsamplePrompt: Bool = false,
         checkpointInterval: Int? = nil,
+        maxReferencePixels: Int = 1024 * 1024,
         onProgress: Flux2ProgressCallback? = nil,
         onCheckpoint: Flux2CheckpointCallback? = nil
     ) async throws -> Flux2GenerationResult {
@@ -819,6 +826,7 @@ public class Flux2Pipeline: @unchecked Sendable {
             seed: seed,
             upsamplePrompt: upsamplePrompt,
             checkpointInterval: checkpointInterval,
+            maxReferencePixels: maxReferencePixels,
             onProgress: onProgress,
             onCheckpoint: onCheckpoint
         )
@@ -837,6 +845,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         upsamplePrompt: Bool,
         precomputedEmbeddings: MLXArray? = nil,
         checkpointInterval: Int?,
+        maxReferencePixels: Int = 1024 * 1024,
         onProgress: Flux2ProgressCallback?,
         onCheckpoint: Flux2CheckpointCallback?,
         onStep: Flux2StepHook? = nil
@@ -853,6 +862,7 @@ public class Flux2Pipeline: @unchecked Sendable {
             upsamplePrompt: upsamplePrompt,
             precomputedEmbeddings: precomputedEmbeddings,
             checkpointInterval: checkpointInterval,
+            maxReferencePixels: maxReferencePixels,
             onProgress: onProgress,
             onCheckpoint: onCheckpoint,
             onStep: onStep
@@ -861,6 +871,10 @@ public class Flux2Pipeline: @unchecked Sendable {
     }
 
     /// Unified generation method with full result including used prompt
+    ///
+    /// - Parameter maxReferencePixels: I2I only — per-reference-image VAE encode
+    ///   budget in pixels (see ``encodeReferenceImages``). Ignored for text-to-image.
+    ///   Defaults to the historical 1024² budget.
     public func generateWithResult(
         mode: Flux2GenerationMode,
         prompt: String,
@@ -873,6 +887,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         upsamplePrompt: Bool,
         precomputedEmbeddings: MLXArray? = nil,
         checkpointInterval: Int?,
+        maxReferencePixels: Int = 1024 * 1024,
         onProgress: Flux2ProgressCallback?,
         onCheckpoint: Flux2CheckpointCallback?,
         onStep: Flux2StepHook? = nil
@@ -1145,7 +1160,8 @@ public class Flux2Pipeline: @unchecked Sendable {
             let (referenceLatents, referencePositionIds) = try await encodeReferenceImages(
                 images,
                 height: validHeight,
-                width: validWidth
+                width: validWidth,
+                maxReferencePixels: maxReferencePixels
             )
             eval(referenceLatents)
             Flux2Debug.log("Encoded \(images.count) reference images: latents \(referenceLatents.shape), posIds \(referencePositionIds.shape)")
@@ -1737,11 +1753,17 @@ public class Flux2Pipeline: @unchecked Sendable {
     ///   - images: Reference images (1-10 supported)
     ///   - height: Target output height
     ///   - width: Target output width
+    ///   - maxReferencePixels: Per-image ceiling, in pixels, for the VAE
+    ///     conditioning encode. Any reference larger than this is downscaled
+    ///     (preserving aspect ratio) before encoding, which bounds token count
+    ///     and VRAM. Policy owned by the caller; defaults to the historical
+    ///     1024² budget (diffusers `pipeline_flux2.py:892-893`).
     /// - Returns: Tuple of (latents [1, seq_len, 128], position IDs [seq_len, 4])
     private func encodeReferenceImages(
         _ images: [CGImage],
         height: Int,
-        width: Int
+        width: Int,
+        maxReferencePixels: Int = 1024 * 1024
     ) async throws -> (latents: MLXArray, positionIds: MLXArray) {
         guard let vae = vae else {
             throw Flux2Error.modelNotLoaded("VAE")
@@ -1754,10 +1776,12 @@ public class Flux2Pipeline: @unchecked Sendable {
         Flux2Debug.log("Encoding \(images.count) reference images separately with unique T-coordinates...")
 
         // === STEP 1: Process each image separately ===
-        // Max area per image - matches diffusers pipeline_flux2.py line 892-893
-        // Reference uses 1024² for conditioning images (not 768² which is for upsampling)
-        let maxImageArea = 1024 * 1024  // ~4096 tokens per image
+        // Max area per image — caller-supplied policy (see `maxReferencePixels`).
+        // Historical default is 1024² (matches diffusers pipeline_flux2.py line
+        // 892-893; conditioning images, not the 768² upsampling budget). Floored
+        // at one 32px tile so a pathological value can never zero out the encode.
         let multipleOf = 32  // vae_scale_factor * 2
+        let maxImageArea = max(maxReferencePixels, multipleOf * multipleOf)  // ~4096 tokens/image at 1024²
 
         var allPackedLatents: [MLXArray] = []
         var latentHeights: [Int] = []

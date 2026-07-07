@@ -404,6 +404,9 @@ struct ImageToImage: AsyncParsableCommand {
     @Option(name: .shortAndLong, help: "Output image height (default: from first reference image)")
     var height: Int?
 
+    @Option(name: .long, help: "Max VAE encode budget per reference image, in megapixels (1 MP = 1024×1024; default 1.0). Raise for higher-fidelity conditioning at the cost of memory; e.g. 4.0 ≈ 2048².")
+    var maxReferenceMegapixels: Double?
+
     @Flag(name: .long, help: "Enhance prompt with visual details using Mistral before encoding")
     var upsamplePrompt: Bool = false
 
@@ -653,6 +656,12 @@ struct ImageToImage: AsyncParsableCommand {
             checkpointDir = nil
         }
 
+        // Reference-encode budget policy: framework owns the mechanism (a per-image
+        // pixel ceiling); the CLI just maps the user-facing megapixel flag to pixels.
+        // 1 MP == 1024×1024, so the default resolves to the historical 1024² budget.
+        let maxReferencePixels = maxReferenceMegapixels
+            .map { max(32 * 32, Int(($0 * 1024 * 1024).rounded())) } ?? (1024 * 1024)
+
         let image = try await pipeline.generateImageToImage(
             prompt: prompt,
             images: refImages,
@@ -664,6 +673,7 @@ struct ImageToImage: AsyncParsableCommand {
             seed: seed,
             upsamplePrompt: upsamplePrompt,
             checkpointInterval: checkpoint,
+            maxReferencePixels: maxReferencePixels,
             onProgress: { current, total in
                 let progress = Float(current) / Float(total) * 100
                 print("\rStep \(current)/\(total) [\(String(format: "%.0f", progress))%]", terminator: "")
