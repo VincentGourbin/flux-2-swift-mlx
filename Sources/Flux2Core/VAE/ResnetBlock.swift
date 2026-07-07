@@ -190,29 +190,26 @@ public class ResnetBlock2D: Module, @unchecked Sendable {
 public class Downsample2D: Module, @unchecked Sendable {
     let conv: Conv2d
 
-    public init(channels: Int, useConv: Bool = true, padding: Int = 1) {
-        if useConv {
-            self.conv = Conv2d(
-                inputChannels: channels,
-                outputChannels: channels,
-                kernelSize: 3,
-                stride: 2,
-                padding: .init(padding)
-            )
-        } else {
-            // Average pooling fallback (not typical for VAE)
-            self.conv = Conv2d(
-                inputChannels: channels,
-                outputChannels: channels,
-                kernelSize: 3,
-                stride: 2,
-                padding: .init(padding)
-            )
-        }
+    public init(channels: Int) {
+        self.conv = Conv2d(
+            inputChannels: channels,
+            outputChannels: channels,
+            kernelSize: 3,
+            stride: 2,
+            padding: 0
+        )
     }
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
-        conv(x)
+        // The pretrained weights (diffusers Encoder, downsample_padding=0) expect
+        // asymmetric zero-padding on the bottom/right only — symmetric padding
+        // shifts the sampling grid and corrupts the top/left latent border.
+        // x shape: [B, H, W, C] (NHWC format for MLX)
+        let padded = MLX.padded(
+            x,
+            widths: [IntOrPair(0), IntOrPair((0, 1)), IntOrPair((0, 1)), IntOrPair(0)]
+        )
+        return conv(padded)
     }
 }
 
