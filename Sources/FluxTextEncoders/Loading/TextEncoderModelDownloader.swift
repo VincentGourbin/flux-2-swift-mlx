@@ -6,7 +6,11 @@
 import Foundation
 import Hub
 
-/// Progress callback for download updates
+/// Progress callback for download updates.
+///
+/// - Important: May be invoked on **any thread** (loaders run off the main
+///   actor). If the callback updates UI/observable state, hop to the main
+///   actor yourself (e.g. `Task { @MainActor in … }`).
 public typealias TextEncoderDownloadProgressCallback = @Sendable (Double, String) -> Void
 
 /// Model downloader with HuggingFace Hub integration

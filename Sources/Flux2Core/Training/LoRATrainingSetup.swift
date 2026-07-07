@@ -131,7 +131,7 @@ public class LoRATrainingSetup_API {
         onProgress?("Validation prompt: \"\(validationPrompt.prefix(80))...\"")
 
         // Unload VLM
-        await MainActor.run { FluxTextEncoders.shared.unloadQwen35VLM() }
+        FluxTextEncoders.shared.unloadQwen35VLM()
 
         return LoRATrainingSetup(
             referenceImage: refImage,
