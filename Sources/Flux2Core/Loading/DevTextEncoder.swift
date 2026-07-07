@@ -34,7 +34,6 @@ public class DevTextEncoder: @unchecked Sendable {
 
     /// Load the Mistral model for Dev text encoding
     /// - Parameter modelPath: Path to model directory (or nil to auto-download)
-    @MainActor
     public func load(from modelPath: URL? = nil) async throws {
         Flux2Debug.log("Loading Dev text encoder (Mistral, \(quantization.displayName))...")
 
@@ -109,7 +108,6 @@ public class DevTextEncoder: @unchecked Sendable {
     // MARK: - Memory Management
 
     /// Unload the model to free memory
-    @MainActor
     public func unload() {
         FluxTextEncoders.shared.unloadModel()
 

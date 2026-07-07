@@ -40,7 +40,6 @@ public class KleinTextEncoder: @unchecked Sendable {
 
     /// Load the Qwen3 model for Klein text encoding
     /// - Parameter modelPath: Path to model directory (or nil to auto-download)
-    @MainActor
     public func load(from modelPath: URL? = nil) async throws {
         Flux2Debug.log("Loading Klein text encoder (\(variant.displayName), \(quantization.displayName))...")
 
@@ -186,7 +185,6 @@ public class KleinTextEncoder: @unchecked Sendable {
     // MARK: - Memory Management
 
     /// Unload the model to free memory
-    @MainActor
     public func unload() {
         FluxTextEncoders.shared.unloadKleinModel()
 

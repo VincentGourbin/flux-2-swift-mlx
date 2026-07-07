@@ -22,7 +22,14 @@ import AppKit
 // MARK: - Public API
 
 /// Main interface for FLUX.2 text encoder operations
-/// Thread-safe: load/unload on main thread, inference can run on any thread
+///
+/// Concurrency: `load*`/`unload*` and inference are all `nonisolated` and may
+/// run on any thread (loaders were moved off `@MainActor` so heavy weight
+/// loading no longer blocks the UI). Callers are responsible for **not**
+/// invoking `load`/`unload` concurrently (the class is `@unchecked Sendable`
+/// with no internal lock; the safe pattern is load → use → unload in sequence),
+/// and for hopping back to the main actor themselves if a `progress:` callback
+/// touches UI state — those callbacks are now delivered off-main.
 public final class FluxTextEncoders: @unchecked Sendable {
     /// Shared singleton instance
     public static let shared = FluxTextEncoders()

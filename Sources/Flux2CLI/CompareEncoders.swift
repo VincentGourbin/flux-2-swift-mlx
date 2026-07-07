@@ -105,7 +105,7 @@ struct CompareEncoders: AsyncParsableCommand {
         print("  Encoding time: \(String(format: "%.1f", standardElapsed))s")
 
         // Unload standard
-        await MainActor.run { FluxTextEncoders.shared.unloadKleinModel() }
+        FluxTextEncoders.shared.unloadKleinModel()
         Memory.clearCache()
 
         // ── Step 2: Qwen3-VL embeddings ──
@@ -135,7 +135,7 @@ struct CompareEncoders: AsyncParsableCommand {
         print("  Encoding time: \(String(format: "%.1f", vlElapsed))s")
 
         // Unload VL
-        await MainActor.run { FluxTextEncoders.shared.unloadKleinModel() }
+        FluxTextEncoders.shared.unloadKleinModel()
         Memory.clearCache()
 
         // ── Step 3: Compare embeddings ──

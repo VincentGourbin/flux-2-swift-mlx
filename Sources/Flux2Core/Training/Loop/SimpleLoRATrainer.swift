@@ -2172,7 +2172,7 @@ public final class SimpleLoRATrainer {
             }
 
             // Unload VLM and clear memory
-            await MainActor.run { FluxTextEncoders.shared.unloadQwen35VLM() }
+            FluxTextEncoders.shared.unloadQwen35VLM()
             eval([])
             try await Task.sleep(nanoseconds: 500_000_000)
             MLX.Memory.clearCache()
@@ -2208,7 +2208,7 @@ public final class SimpleLoRATrainer {
         } catch {
             print("    Warning: VLM scoring failed: \(error.localizedDescription)")
             // Ensure VLM is unloaded even on error
-            await MainActor.run { FluxTextEncoders.shared.unloadQwen35VLM() }
+            FluxTextEncoders.shared.unloadQwen35VLM()
             MLX.Memory.clearCache()
             return nil
         }

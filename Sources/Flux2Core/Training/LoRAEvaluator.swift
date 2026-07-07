@@ -176,7 +176,7 @@ public class LoRAEvaluator {
         onProgress?("  DOP: \(analysisResult.dopRecommended ? "yes (\(analysisResult.dopClass ?? "object"))" : "no")")
 
         // Unload VLM to free memory for generation
-        await MainActor.run { FluxTextEncoders.shared.unloadQwen35VLM() }
+        FluxTextEncoders.shared.unloadQwen35VLM()
         Memory.clearCache()
 
         // === Step 3: Generate baseline image with base model ===
@@ -263,7 +263,7 @@ public class LoRAEvaluator {
         onProgress?("  Style: \(comparison.styleScore)/100 — \(comparison.styleReason)")
 
         // Unload VLM
-        await MainActor.run { FluxTextEncoders.shared.unloadQwen35VLM() }
+        FluxTextEncoders.shared.unloadQwen35VLM()
 
         // === Step 5: Generate recommendation ===
         onProgress?("[5/5] Generating training recommendation...")

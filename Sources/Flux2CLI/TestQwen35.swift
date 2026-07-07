@@ -119,7 +119,7 @@ struct TestQwen35: AsyncParsableCommand {
             let totalElapsed = Date().timeIntervalSince(startTime)
             print("\nTotal time: \(String(format: "%.1f", totalElapsed))s")
 
-            await MainActor.run { FluxTextEncoders.shared.unloadQwen35VLM() }
+            FluxTextEncoders.shared.unloadQwen35VLM()
             return
         }
 
@@ -174,6 +174,6 @@ struct TestQwen35: AsyncParsableCommand {
         print("Total time: \(String(format: "%.1f", totalElapsed))s")
 
         // Cleanup
-        await MainActor.run { FluxTextEncoders.shared.unloadQwen35VLM() }
+        FluxTextEncoders.shared.unloadQwen35VLM()
     }
 }

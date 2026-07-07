@@ -980,7 +980,7 @@ public class Flux2Pipeline: @unchecked Sendable {
 
                     // Step 1: Unload Qwen3 to free memory for Mistral
                     Flux2Debug.log("Unloading Qwen3 to make room for Mistral VLM...")
-                    await MainActor.run { kleinEncoder?.unload() }
+                    kleinEncoder?.unload()
                     memoryManager.fullCleanup()
 
                     // Step 2: Load Mistral VLM
@@ -1008,7 +1008,7 @@ public class Flux2Pipeline: @unchecked Sendable {
 
                     // Step 4: Unload Mistral
                     Flux2Debug.log("Unloading Mistral VLM...")
-                    await MainActor.run { tempMistralForInterpret.unload() }
+                    tempMistralForInterpret.unload()
                     memoryManager.fullCleanup()
 
                     // Step 5: Reload Qwen3 for text encoding
@@ -1047,7 +1047,7 @@ public class Flux2Pipeline: @unchecked Sendable {
 
                     // Step 1: Unload Qwen3 (already loaded by loadTextEncoder) to free memory for Mistral
                     Flux2Debug.log("Unloading Qwen3 to make room for Mistral VLM...")
-                    await MainActor.run { kleinEncoder?.unload() }
+                    kleinEncoder?.unload()
                     memoryManager.fullCleanup()
 
                     // Step 2: Load Mistral VLM for vision-aware upsampling
@@ -1063,7 +1063,7 @@ public class Flux2Pipeline: @unchecked Sendable {
 
                     // Step 4: Unload Mistral to free memory
                     Flux2Debug.log("Unloading Mistral VLM...")
-                    await MainActor.run { tempMistralEncoder.unload() }
+                    tempMistralEncoder.unload()
                     memoryManager.fullCleanup()
 
                     // Step 5: Reload Qwen3 for text encoding

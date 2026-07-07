@@ -83,6 +83,6 @@ struct TestVLGeneration: AsyncParsableCommand {
         print("Speed: \(String(format: "%.1f", result.tokensPerSecond)) tok/s")
 
         // Cleanup
-        await MainActor.run { FluxTextEncoders.shared.unloadKleinModel() }
+        FluxTextEncoders.shared.unloadKleinModel()
     }
 }
