@@ -37,7 +37,7 @@ struct CompareEncoders: AsyncParsableCommand {
     @Option(name: .long, help: "Output directory for comparison results")
     var outputDir: String = "./comparison"
 
-    @Option(name: .long, help: "Transformer quantization: bf16, qint8, int4")
+    @Option(name: .long, help: "Transformer quantization: bf16, qint8, int4, mxfp8, mxfp4, nvfp4")
     var transformerQuant: String = "qint8"
 
     @Option(name: .long, help: "Local path to Qwen3-VL model (if not set, auto-downloads)")

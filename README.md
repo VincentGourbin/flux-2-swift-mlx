@@ -24,7 +24,7 @@ A native Swift implementation of [Flux.2](https://blackforestlabs.ai/) image gen
 - **Native Swift**: Pure Swift implementation, no Python dependencies at runtime
 - **MLX Acceleration**: Optimized for Apple Silicon (M1/M2/M3/M4) using MLX
 - **Multiple Models**: Dev (32B), Klein 4B, and Klein 9B variants
-- **Quantized Models**: On-the-fly quantization (qint8/int4) for all models — Dev fits in ~17GB at int4
+- **Quantized Models**: On-the-fly quantization for all models — affine (qint8/int4) and microscaling FP (mxfp8/mxfp4/nvfp4) — Dev fits in ~17GB at 4-bit
 - **Small Decoder VAE**: Optional distilled decoder (~13% faster decode, Apache 2.0) — drop-in `--vae-variant small-decoder`
 - **Text-to-Image**: Generate images from text prompts
 - **Image-to-Image**: Transform images with text prompts and configurable strength

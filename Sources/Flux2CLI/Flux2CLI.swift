@@ -79,7 +79,7 @@ struct TextToImage: AsyncParsableCommand {
     @Option(name: .long, help: "Text encoder quantization: bf16, 8bit, 6bit, 4bit")
     var textQuant: String = "8bit"
 
-    @Option(name: .long, help: "Transformer quantization: bf16, qint8, int4")
+    @Option(name: .long, help: "Transformer quantization: bf16, qint8, int4, mxfp8, mxfp4, nvfp4")
     var transformerQuant: String = "qint8"
 
     @Flag(name: .long, help: "Show detailed logs (model loading, config, VLM interpretation)")
@@ -193,7 +193,7 @@ struct TextToImage: AsyncParsableCommand {
         }
 
         guard let transformerQuantization = TransformerQuantization(rawValue: transformerQuant) else {
-            throw ValidationError("Invalid transformer quantization: \(transformerQuant). Use bf16, qint8, or int4")
+            throw ValidationError("Invalid transformer quantization: \(transformerQuant). Use bf16, qint8, int4, mxfp8, mxfp4, or nvfp4")
         }
 
         let quantConfig = Flux2QuantizationConfig(
@@ -425,7 +425,7 @@ struct ImageToImage: AsyncParsableCommand {
     @Option(name: .long, help: "Text encoder quantization: bf16, 8bit, 6bit, 4bit")
     var textQuant: String = "8bit"
 
-    @Option(name: .long, help: "Transformer quantization: bf16, qint8, int4")
+    @Option(name: .long, help: "Transformer quantization: bf16, qint8, int4, mxfp8, mxfp4, nvfp4")
     var transformerQuant: String = "qint8"
 
     @Option(name: .long, help: "LoRA adapter file (.safetensors) for style or capability adaptation")
@@ -571,7 +571,7 @@ struct ImageToImage: AsyncParsableCommand {
         }
 
         guard let transformerQuantization = TransformerQuantization(rawValue: transformerQuant) else {
-            throw ValidationError("Invalid transformer quantization: \(transformerQuant). Use: bf16, qint8, or int4")
+            throw ValidationError("Invalid transformer quantization: \(transformerQuant). Use: bf16, qint8, int4, mxfp8, mxfp4, or nvfp4")
         }
 
         let quantConfig = Flux2QuantizationConfig(
@@ -723,7 +723,7 @@ struct Download: AsyncParsableCommand {
     @Option(name: .long, help: "Model to download: dev, klein-4b, klein-9b")
     var model: String = "dev"
 
-    @Option(name: .long, help: "Transformer quantization: bf16, qint8, int4")
+    @Option(name: .long, help: "Transformer quantization: bf16, qint8, int4, mxfp8, mxfp4, nvfp4")
     var transformerQuant: String = "qint8"
 
     @Flag(name: .long, help: "Download all model variants")
@@ -788,11 +788,13 @@ struct Download: AsyncParsableCommand {
             // Parse quantization and get the right variant for this model type
             let quant: TransformerQuantization
             switch transformerQuant {
-            case "bf16": quant = .bf16
-            case "qint8", "8bit": quant = .qint8
-            case "int4", "4bit": quant = .int4
+            case "8bit": quant = .qint8
+            case "4bit": quant = .int4
             default:
-                throw ValidationError("Invalid transformer quantization: \(transformerQuant). Use bf16, qint8, or int4")
+                guard let parsed = TransformerQuantization(rawValue: transformerQuant) else {
+                    throw ValidationError("Invalid transformer quantization: \(transformerQuant). Use bf16, qint8, int4, mxfp8, mxfp4, or nvfp4")
+                }
+                quant = parsed
             }
 
             let variant = ModelRegistry.TransformerVariant.variant(for: modelVariant, quantization: quant)
