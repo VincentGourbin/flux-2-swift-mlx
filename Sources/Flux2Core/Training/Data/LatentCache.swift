@@ -72,27 +72,27 @@ public final class LatentCache: @unchecked Sendable {
     }
     
     // MARK: - Cache Management
-    
+
+    /// Version tag baked into cache filenames. Bump whenever the VAE encoder's
+    /// numeric output changes (e.g. the asymmetric downsample padding fix), so
+    /// latents cached by an older encoder are re-encoded instead of silently
+    /// reused. Files with older (or no) version tags are simply never resolved.
+    private static let encoderVersion = 2
+
     /// Check if latent is cached
     public func isCached(filename: String) -> Bool {
         if useMemoryCache && memoryCache[filename] != nil {
             return true
         }
-        
-        let cacheFile = cacheFilePath(for: filename)
+
+        let cacheFile = cacheFilePath(for: filename, width: config.imageSize, height: config.imageSize)
         return FileManager.default.fileExists(atPath: cacheFile.path)
-    }
-    
-    /// Get cache file path for a filename (without resolution suffix)
-    private func cacheFilePath(for filename: String) -> URL {
-        let baseName = (filename as NSString).deletingPathExtension
-        return cacheDirectory.appendingPathComponent("\(baseName)_latent.safetensors")
     }
 
     /// Get cache file path including resolution for bucketed caching
     private func cacheFilePath(for filename: String, width: Int, height: Int) -> URL {
         let baseName = (filename as NSString).deletingPathExtension
-        return cacheDirectory.appendingPathComponent("\(baseName)_\(width)x\(height)_latent.safetensors")
+        return cacheDirectory.appendingPathComponent("\(baseName)_\(width)x\(height)_latent_v\(Self.encoderVersion).safetensors")
     }
 
     /// Memory cache key including resolution
@@ -117,14 +117,11 @@ public final class LatentCache: @unchecked Sendable {
             return latent
         }
 
-        // Load from disk (try resolution-specific first, then fallback to generic)
-        var cacheFile = cacheFilePath(for: filename, width: width, height: height)
-        if !FileManager.default.fileExists(atPath: cacheFile.path) {
-            // Fallback to non-resolution-specific cache (for backwards compatibility)
-            cacheFile = cacheFilePath(for: filename)
-            guard FileManager.default.fileExists(atPath: cacheFile.path) else {
-                return nil
-            }
+        // Load from disk. No fallback to legacy un-versioned/un-sized filenames:
+        // those latents predate the current encoder and must be re-encoded.
+        let cacheFile = cacheFilePath(for: filename, width: width, height: height)
+        guard FileManager.default.fileExists(atPath: cacheFile.path) else {
+            return nil
         }
 
         let weights = try loadArrays(url: cacheFile)
@@ -202,23 +199,20 @@ public final class LatentCache: @unchecked Sendable {
 
         Flux2Debug.log("[LatentCache] Pre-encoding \(total) images...")
 
-        // OPTIMIZATION 1: Pre-load list of cached files for O(1) lookup
-        let cachedFilenames = loadCachedFilenameSet()
-
-        // OPTIMIZATION 2: Collect uncached samples grouped by resolution for batch encoding
+        // Collect uncached samples grouped by resolution for batch encoding
         // Key: "widthxheight", Value: [(index, sample)]
         var uncachedByResolution: [String: [(index: Int, sample: TrainingSample)]] = [:]
         var cachedCount = 0
 
         for (index, sample) in dataset.enumerated() {
-            let baseName = (sample.filename as NSString).deletingPathExtension
             let width = sample.originalSize.width
             let height = sample.originalSize.height
             let resKey = "\(width)x\(height)"
 
-            // Check if already cached (with resolution suffix for bucketed caching)
+            // Check if already cached (versioned, resolution-specific filename only —
+            // legacy files from an older encoder must not count as cached)
             let cacheFile = cacheFilePath(for: sample.filename, width: width, height: height)
-            if FileManager.default.fileExists(atPath: cacheFile.path) || cachedFilenames.contains(baseName) {
+            if FileManager.default.fileExists(atPath: cacheFile.path) {
                 cachedCount += 1
                 progressCallback?(index + 1, total)
             } else {
@@ -288,29 +282,6 @@ public final class LatentCache: @unchecked Sendable {
         Flux2Debug.log("[LatentCache] Pre-encoded \(totalEncoded) latents (batched \(uncachedCount) new)")
 
         return totalEncoded
-    }
-    
-    /// Load set of cached filenames for O(1) lookup
-    private func loadCachedFilenameSet() -> Set<String> {
-        var cached = Set<String>()
-        
-        guard let files = try? FileManager.default.contentsOfDirectory(
-            at: cacheDirectory,
-            includingPropertiesForKeys: nil
-        ) else {
-            return cached
-        }
-        
-        for file in files where file.pathExtension == "safetensors" {
-            // Extract original filename from cache filename (e.g., "image_latent.safetensors" -> "image")
-            let cacheName = file.deletingPathExtension().lastPathComponent
-            if cacheName.hasSuffix("_latent") {
-                let originalName = String(cacheName.dropLast(7)) // Remove "_latent"
-                cached.insert(originalName)
-            }
-        }
-        
-        return cached
     }
     
     /// Get latent for a batch (loading from cache or encoding)
@@ -413,8 +384,9 @@ public final class LatentCache: @unchecked Sendable {
             }
             matched += 1
 
-            // Check cache first
-            let cacheFile = controlCacheDir.appendingPathComponent("\(baseName)_\(targetDims.width)x\(targetDims.height)_control.safetensors")
+            // Check cache first (versioned like the target latent cache — control
+            // latents come from the same VAE encoder)
+            let cacheFile = controlCacheDir.appendingPathComponent("\(baseName)_\(targetDims.width)x\(targetDims.height)_control_v\(Self.encoderVersion).safetensors")
             if fm.fileExists(atPath: cacheFile.path) {
                 let weights = try loadArrays(url: cacheFile)
                 if let latent = weights["latent"] {
