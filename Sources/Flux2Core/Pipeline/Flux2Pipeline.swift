@@ -410,13 +410,14 @@ public class Flux2Pipeline: @unchecked Sendable {
         if quantization.transformer != .bf16 {
             let bits = quantization.transformer.bits
             let groupSize = quantization.transformer.groupSize
-            Flux2Debug.log("Quantizing transformer on-the-fly to \(bits)-bit (groupSize=\(groupSize))...")
+            let mode = quantization.transformer.mode
+            Flux2Debug.log("Quantizing transformer on-the-fly to \(bits)-bit (groupSize=\(groupSize), mode=\(mode.rawValue))...")
             memoryManager.logMemoryState()
-            quantize(model: transformer!, groupSize: groupSize, bits: bits)
+            quantize(model: transformer!, groupSize: groupSize, bits: bits, mode: mode)
             eval(transformer!.parameters())
             memoryManager.fullCleanup()
             memoryManager.logMemoryState()
-            Flux2Debug.log("Transformer quantized to QuantizedLinear (\(bits)-bit)")
+            Flux2Debug.log("Transformer quantized to QuantizedLinear (\(bits)-bit, \(mode.rawValue))")
         }
 
         // Merge LoRA weights if any are loaded

@@ -780,10 +780,10 @@ public class Flux2WeightLoader {
                 // Check if this layer is a QuantizedLinear
                 if let ql = quantizedModules[layerPath] {
                     // === QuantizedLinear path: dequant → merge → requant ===
-                    // 1. Dequantize MLX qint8 → float16
+                    // 1. Dequantize (affine or fp mode; biases is nil for fp modes) → float16
                     var mergedWeight = dequantized(
                         ql.weight, scales: ql.scales, biases: ql.biases,
-                        groupSize: ql.groupSize, bits: ql.bits
+                        groupSize: ql.groupSize, bits: ql.bits, mode: ql.mode
                     ).asType(.float16)
 
                     // 2. Apply all LoRA pairs
@@ -798,9 +798,9 @@ public class Flux2WeightLoader {
                         mergedWeight = mergedWeight + loraDelta
                     }
 
-                    // 3. Requantize → MLX qint8
+                    // 3. Requantize with the layer's original quantization mode
                     let (newWeight, newScales, newBiases) = quantized(
-                        mergedWeight, groupSize: ql.groupSize, bits: ql.bits
+                        mergedWeight, groupSize: ql.groupSize, bits: ql.bits, mode: ql.mode
                     )
 
                     // 4. Update weight, scales, and biases

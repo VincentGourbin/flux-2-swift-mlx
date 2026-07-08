@@ -213,10 +213,10 @@ public enum ModelRegistry {
             switch (model, quantization) {
             case (.dev, .bf16): return .bf16
             case (.dev, .qint8): return .qint8
-            case (.dev, .int4): return .bf16  // Load bf16, quantize on-the-fly
+            case (.dev, _): return .bf16  // int4/mxfp8/mxfp4/nvfp4: load bf16, quantize on-the-fly
             case (.klein4B, .bf16): return .klein4B_bf16
             case (.klein4B, .qint8): return .klein4B_8bit
-            case (.klein4B, .int4): return .klein4B_bf16  // Load bf16, quantize on-the-fly
+            case (.klein4B, _): return .klein4B_bf16  // int4/mxfp8/mxfp4/nvfp4: load bf16, quantize on-the-fly
             // Base models only available in bf16
             case (.klein4BBase, _): return .klein4B_base_bf16
             case (.klein9BBase, _): return .klein9B_base_bf16

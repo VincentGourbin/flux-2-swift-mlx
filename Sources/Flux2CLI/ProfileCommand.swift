@@ -47,7 +47,7 @@ struct ProfileModelOptions: ParsableArguments {
     @Option(name: .long, help: "Text encoder quantization: bf16, 8bit, 6bit, 4bit")
     var textQuant: String = "8bit"
 
-    @Option(name: .long, help: "Transformer quantization: bf16, qint8, int4")
+    @Option(name: .long, help: "Transformer quantization: bf16, qint8, int4, mxfp8, mxfp4, nvfp4")
     var transformerQuant: String = "qint8"
 
     @Option(name: .long, help: "HuggingFace token for gated models")

@@ -39,7 +39,7 @@ flux2 t2i <prompt> [options]
 | `--guidance` | `-g` | varies* | Guidance scale (CFG) |
 | `--seed` | | random | Random seed for reproducibility |
 | `--text-quant` | | `8bit` | Text encoder quantization: `bf16`, `8bit`, `6bit`, `4bit` |
-| `--transformer-quant` | | `qint8` | Transformer quantization: `bf16`, `qint8` |
+| `--transformer-quant` | | `qint8` | Transformer quantization: `bf16`, `qint8`, `int4`, `mxfp8`, `mxfp4`, `nvfp4` |
 | `--upsample-prompt` | | | Enhance prompt with visual details before encoding |
 | `--interpret` | | | Image to analyze with VLM and inject into prompt (all models) |
 | `--checkpoint` | | | Save intermediate images every N steps |
@@ -172,7 +172,7 @@ flux2 t2i "a beaver building a dam" --model klein-9b
 | **Klein 9B** | **~60s** | **~9.2GB** | **Better** |
 | Dev | ~30min | ~32.7GB | Best |
 
-> **Note:** Klein 9B supports on-the-fly quantization to qint8 and int4 (no pre-quantized variant needed). The text encoder uses Qwen3-8B (8bit).
+> **Note:** All models support on-the-fly quantization (no pre-quantized variant needed): affine `qint8`/`int4`, and microscaling FP `mxfp8`/`mxfp4` (OCP MX, group size 32) / `nvfp4` (group size 16). FP modes load the bf16 checkpoint and quantize after loading. The Klein 9B text encoder uses Qwen3-8B (8bit).
 
 ---
 

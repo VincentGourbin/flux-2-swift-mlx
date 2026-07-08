@@ -4,6 +4,8 @@
 import XCTest
 @testable import Flux2Core
 import MLX
+import MLXNN
+import MLXRandom
 import ImageIO
 import CoreGraphics
 
@@ -59,6 +61,26 @@ final class Flux2CoreTests: XCTestCase {
         XCTAssertEqual(TransformerQuantization.int4.rawValue, "int4")
     }
 
+    func testTransformerQuantizationFPModes() {
+        // Group size and bits are fixed by the MX/NVFP formats — MLX rejects other values
+        XCTAssertEqual(TransformerQuantization.mxfp8.bits, 8)
+        XCTAssertEqual(TransformerQuantization.mxfp8.groupSize, 32)
+        XCTAssertEqual(TransformerQuantization.mxfp8.mode, .mxfp8)
+
+        XCTAssertEqual(TransformerQuantization.mxfp4.bits, 4)
+        XCTAssertEqual(TransformerQuantization.mxfp4.groupSize, 32)
+        XCTAssertEqual(TransformerQuantization.mxfp4.mode, .mxfp4)
+
+        XCTAssertEqual(TransformerQuantization.nvfp4.bits, 4)
+        XCTAssertEqual(TransformerQuantization.nvfp4.groupSize, 16)
+        XCTAssertEqual(TransformerQuantization.nvfp4.mode, .nvfp4)
+
+        // Affine modes keep their historical parameters
+        XCTAssertEqual(TransformerQuantization.qint8.mode, .affine)
+        XCTAssertEqual(TransformerQuantization.int4.mode, .affine)
+        XCTAssertEqual(TransformerQuantization.qint8.groupSize, 64)
+    }
+
     func testModelRegistryVariantOnTheFlyQuantization() {
         // Klein 9B should always return bf16 variant (quantize on-the-fly)
         XCTAssertEqual(
@@ -81,6 +103,22 @@ final class Flux2CoreTests: XCTestCase {
             ModelRegistry.TransformerVariant.variant(for: .klein4B, quantization: .int4),
             .klein4B_bf16
         )
+
+        // FP modes have no pre-quantized checkpoints: always bf16 + on-the-fly
+        for quant in [TransformerQuantization.mxfp8, .mxfp4, .nvfp4] {
+            XCTAssertEqual(
+                ModelRegistry.TransformerVariant.variant(for: .dev, quantization: quant),
+                .bf16
+            )
+            XCTAssertEqual(
+                ModelRegistry.TransformerVariant.variant(for: .klein4B, quantization: quant),
+                .klein4B_bf16
+            )
+            XCTAssertEqual(
+                ModelRegistry.TransformerVariant.variant(for: .klein9B, quantization: quant),
+                .klein9B_bf16
+            )
+        }
     }
 
     // MARK: - Latent Utils Tests
@@ -930,10 +968,13 @@ final class QuantizationConfigTests: XCTestCase {
 
     func testTransformerQuantizationAllCases() {
         let allCases = TransformerQuantization.allCases
-        XCTAssertEqual(allCases.count, 3)
+        XCTAssertEqual(allCases.count, 6)
         XCTAssertTrue(allCases.contains(.bf16))
         XCTAssertTrue(allCases.contains(.qint8))
         XCTAssertTrue(allCases.contains(.int4))
+        XCTAssertTrue(allCases.contains(.mxfp8))
+        XCTAssertTrue(allCases.contains(.mxfp4))
+        XCTAssertTrue(allCases.contains(.nvfp4))
     }
 
     func testTransformerQuantizationBitsOrdering() {
@@ -942,9 +983,9 @@ final class QuantizationConfigTests: XCTestCase {
     }
 
     func testTransformerQuantizationDisplayNames() {
-        XCTAssertFalse(TransformerQuantization.bf16.displayName.isEmpty)
-        XCTAssertFalse(TransformerQuantization.qint8.displayName.isEmpty)
-        XCTAssertFalse(TransformerQuantization.int4.displayName.isEmpty)
+        for quant in TransformerQuantization.allCases {
+            XCTAssertFalse(quant.displayName.isEmpty)
+        }
     }
 
     func testMemoryEfficientPreset() {
@@ -1054,10 +1095,57 @@ final class OnTheFlyQuantizationTests: XCTestCase {
     }
 
     func testInt4QuantizationGroupSize() {
-        // All quantization levels use the same group size
+        // Affine levels use group size 64; fp formats impose their own (32 / 16)
         XCTAssertEqual(TransformerQuantization.bf16.groupSize, 64)
         XCTAssertEqual(TransformerQuantization.qint8.groupSize, 64)
         XCTAssertEqual(TransformerQuantization.int4.groupSize, 64)
+        XCTAssertEqual(TransformerQuantization.mxfp8.groupSize, 32)
+        XCTAssertEqual(TransformerQuantization.mxfp4.groupSize, 32)
+        XCTAssertEqual(TransformerQuantization.nvfp4.groupSize, 16)
+    }
+
+    func testOnTheFlyQuantizationModesRuntime() {
+        // Exercise the real MLX quantization kernels for every on-the-fly level,
+        // mirroring what the pipeline does (quantizeSingle with groupSize/bits/mode)
+        // and what the LoRA merge does (dequant → requant with the layer's mode).
+        let x = MLXRandom.normal([2, 64])
+
+        for quant in TransformerQuantization.allCases where quant != .bf16 {
+            let linear = Linear(64, 32)
+            let reference = linear(x)
+
+            guard let ql = quantizeSingle(
+                layer: linear, groupSize: quant.groupSize, bits: quant.bits, mode: quant.mode
+            ) as? QuantizedLinear else {
+                XCTFail("quantizeSingle produced no QuantizedLinear for \(quant)")
+                continue
+            }
+            XCTAssertEqual(ql.mode, quant.mode)
+            XCTAssertEqual(ql.groupSize, quant.groupSize)
+            XCTAssertEqual(ql.bits, quant.bits)
+            // fp modes carry no biases; affine does
+            if quant.mode == .affine {
+                XCTAssertNotNil(ql.biases, "\(quant) should have biases")
+            } else {
+                XCTAssertNil(ql.biases, "\(quant) should not have biases")
+            }
+
+            let out = ql(x)
+            eval(out)
+            XCTAssertEqual(out.shape, reference.shape)
+
+            // Dequant → requant round-trip (LoRA merge path) must be stable
+            let dequant = dequantized(
+                ql.weight, scales: ql.scales, biases: ql.biases,
+                groupSize: ql.groupSize, bits: ql.bits, mode: ql.mode
+            ).asType(.float16)
+            let (wq, scales, _) = quantized(
+                dequant, groupSize: ql.groupSize, bits: ql.bits, mode: ql.mode
+            )
+            eval(wq, scales)
+            XCTAssertEqual(wq.shape, ql.weight.shape, "requantized shape mismatch for \(quant)")
+            XCTAssertEqual(scales.shape, ql.scales.shape, "requantized scales mismatch for \(quant)")
+        }
     }
 
     func testQuantizationCodable() throws {

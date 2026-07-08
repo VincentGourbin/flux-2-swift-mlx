@@ -2,6 +2,7 @@
 // Copyright 2025 Vincent Gourbin
 
 import Foundation
+import MLX
 
 /// Quantization level for the Mistral text encoder
 public enum MistralQuantization: String, CaseIterable, Codable, Sendable {
@@ -30,16 +31,25 @@ public enum MistralQuantization: String, CaseIterable, Codable, Sendable {
 }
 
 /// Quantization level for the Flux.2 diffusion transformer
+///
+/// Affine modes (`qint8`, `int4`) use per-group scale+bias integer quantization.
+/// Microscaling modes (`mxfp8`, `mxfp4`, `nvfp4`) store FP4/FP8 elements with a shared
+/// per-group scale (OCP MX / NVIDIA formats); their group size and bit width are fixed
+/// by the format. All non-bf16 levels are applied on-the-fly after loading bf16 weights
+/// (except qint8 where a pre-quantized checkpoint exists).
 public enum TransformerQuantization: String, CaseIterable, Codable, Sendable {
     case bf16 = "bf16"      // Full precision ~64GB
-    case qint8 = "qint8"    // 8-bit ~32GB
-    case int4 = "int4"      // 4-bit ~16GB (on-the-fly quantization)
+    case qint8 = "qint8"    // 8-bit affine ~32GB
+    case int4 = "int4"      // 4-bit affine ~16GB (on-the-fly quantization)
+    case mxfp8 = "mxfp8"    // 8-bit MXFP8 microscaling ~32GB (on-the-fly)
+    case mxfp4 = "mxfp4"    // 4-bit MXFP4 microscaling ~16GB (on-the-fly)
+    case nvfp4 = "nvfp4"    // 4-bit NVFP4 ~16GB (on-the-fly)
 
     public var estimatedMemoryGB: Int {
         switch self {
         case .bf16: return 64
-        case .qint8: return 32
-        case .int4: return 16
+        case .qint8, .mxfp8: return 32
+        case .int4, .mxfp4, .nvfp4: return 16
         }
     }
 
@@ -48,18 +58,39 @@ public enum TransformerQuantization: String, CaseIterable, Codable, Sendable {
         case .bf16: return "Full Precision (bf16)"
         case .qint8: return "8-bit (qint8)"
         case .int4: return "4-bit (int4)"
+        case .mxfp8: return "8-bit FP (mxfp8)"
+        case .mxfp4: return "4-bit FP (mxfp4)"
+        case .nvfp4: return "4-bit FP (nvfp4)"
         }
     }
 
     public var bits: Int {
         switch self {
         case .bf16: return 16
-        case .qint8: return 8
-        case .int4: return 4
+        case .qint8, .mxfp8: return 8
+        case .int4, .mxfp4, .nvfp4: return 4
         }
     }
 
-    public var groupSize: Int { 64 }
+    /// Quantization group size. Fixed by the format for microscaling modes
+    /// (MLX rejects any other value): mxfp4/mxfp8 require 32, nvfp4 requires 16.
+    public var groupSize: Int {
+        switch self {
+        case .bf16, .qint8, .int4: return 64
+        case .mxfp8, .mxfp4: return 32
+        case .nvfp4: return 16
+        }
+    }
+
+    /// The MLX quantization mode used for on-the-fly quantization
+    public var mode: QuantizationMode {
+        switch self {
+        case .bf16, .qint8, .int4: return .affine
+        case .mxfp8: return .mxfp8
+        case .mxfp4: return .mxfp4
+        case .nvfp4: return .nvfp4
+        }
+    }
 }
 
 /// Independent quantization configuration for text encoder and transformer
