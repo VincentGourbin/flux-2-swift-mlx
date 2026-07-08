@@ -211,12 +211,17 @@ public enum ModelRegistry {
         /// this returns the bf16 variant. The pipeline will then quantize on-the-fly after loading.
         public static func variant(for model: Flux2Model, quantization: TransformerQuantization) -> TransformerVariant {
             switch (model, quantization) {
+            // Quantization levels listed explicitly (no wildcard) so adding a new
+            // TransformerQuantization case fails to compile here until its
+            // pre-quantized-checkpoint availability is decided.
             case (.dev, .bf16): return .bf16
             case (.dev, .qint8): return .qint8
-            case (.dev, _): return .bf16  // int4/mxfp8/mxfp4/nvfp4: load bf16, quantize on-the-fly
+            case (.dev, .int4), (.dev, .mxfp8), (.dev, .mxfp4), (.dev, .nvfp4):
+                return .bf16  // Load bf16, quantize on-the-fly
             case (.klein4B, .bf16): return .klein4B_bf16
             case (.klein4B, .qint8): return .klein4B_8bit
-            case (.klein4B, _): return .klein4B_bf16  // int4/mxfp8/mxfp4/nvfp4: load bf16, quantize on-the-fly
+            case (.klein4B, .int4), (.klein4B, .mxfp8), (.klein4B, .mxfp4), (.klein4B, .nvfp4):
+                return .klein4B_bf16  // Load bf16, quantize on-the-fly
             // Base models only available in bf16
             case (.klein4BBase, _): return .klein4B_base_bf16
             case (.klein9BBase, _): return .klein9B_base_bf16
