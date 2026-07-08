@@ -172,7 +172,7 @@ flux2 t2i "a beaver building a dam" --model klein-9b
 | **Klein 9B** | **~60s** | **~9.2GB** | **Better** |
 | Dev | ~30min | ~32.7GB | Best |
 
-> **Note:** All models support on-the-fly quantization (no pre-quantized variant needed): affine `qint8`/`int4`, and microscaling FP `mxfp8`/`mxfp4` (OCP MX, group size 32) / `nvfp4` (group size 16). FP modes load the bf16 checkpoint and quantize after loading. The Klein 9B text encoder uses Qwen3-8B (8bit).
+> **Note:** All models support on-the-fly quantization (no pre-quantized variant needed): affine `qint8`/`int4`, and microscaling FP `mxfp8`/`mxfp4` (OCP MX, group size 32) / `nvfp4` (group size 16). FP modes load the bf16 checkpoint and quantize after loading. Color-fidelity caveats: the MX modes degrade deep blues and `nvfp4` shows a global color cast — prefer `qint8`/`int4`; see the [quantization benchmark](examples/quantization-benchmark/#color-fidelity-test--fp-quantization-modes-mire). The Klein 9B text encoder uses Qwen3-8B (8bit).
 
 ---
 
