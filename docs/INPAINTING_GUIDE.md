@@ -34,12 +34,15 @@ of impact:
      into the new one (verified: duck inherits the cat's tabby head).
 4. **Resolution: don't let the mask region shrink to nothing.** The chain
    works at ≤ `maxPixels` (default 1024²). A small mask in a 12 MP photo ends
-   up covered by a handful of latent tokens → mushy result. Use the
-   [crop-and-stitch recipe](#5-resolution-maxpixels-and-the-crop-and-stitch-recipe).
-5. **Composite the result back onto the original in pixel space.** The chain's
-   output is the *whole* decoded canvas at working resolution: the kept region
-   has been VAE-roundtripped and possibly downscaled. Paste the generated
-   masked region into your original instead of replacing the full image.
+   up covered by a handful of latent tokens → mushy result. Set
+   **`maskCropPadding: 32...64`** — the chain then inpaints only a crop around
+   the mask (full token budget on the edit) and pastes the result back onto
+   the untouched original. See [§5](#5-resolution-maxpixels-and-crop-and-stitch).
+5. **Keep the rest of the photo bit-identical.** Without compositing, the
+   chain's output is the *whole* decoded canvas at working resolution: the
+   kept region has been VAE-roundtripped and possibly downscaled. Set
+   **`compositeOnOriginal: true`** (implied by `maskCropPadding`) so kept
+   pixels come straight from the user's original.
 6. **If you use `enrichPromptWithVLM`, actually load the VLM.** The chain
    *silently falls back* to the verbatim prompt when
    `FluxTextEncoders.shared.isQwen35VLMLoaded == false` (a `FluxDebug` warning
@@ -84,14 +87,28 @@ The single most common integration mistake is using the wrong conditioning
 mode for the job. FLUX.2 has no negative prompts and no edit-instruction
 channel: conditioning = prompt + optional reference images, nothing else.
 
-| Goal | `referenceImages` | `useImageAsReference` | VLM `intent` | Notes |
-|---|---|---|---|---|
-| **Replace** X with Y (prompt-driven) | `nil` | `false` (default) | `.replace` | Prompt must describe the whole scene with Y in it |
-| **Replace** X with a *specific* Y (you have a photo of Y) | `[photoOfY]` | `false` | `.replace` | The diffusers reference example does exactly this (`"Replace this ball"` + ball photo + blurred mask). Short instruction prompts work when a reference carries the appearance |
-| **Remove** X, continue background | `nil` | `false` | `.remove` | **Never name X in the prompt** — FLUX.2 has no negatives; naming re-introduces it. Describe the background that should exist |
-| **Modify** X (color, material, pose) | `nil` | `false` | `.modify` | Describe X in its final state, in-scene |
-| **Repair** damaged/empty region | `nil` | `true` | `.modify` | Masked region carries no subject to leak, so source-as-reference safely provides palette/lighting |
-| **Outpaint** | handled by `Flux2OutpaintingChain` | — | — | Chain passes the original as reference + smart mask automatically |
+| Goal | `referenceImages` | `useImageAsReference` | `strength` | VLM `intent` | Notes |
+|---|---|---|---|---|---|
+| **Replace** X with Y (prompt-driven) | `nil` | `false` (default) | `1.0` | `.replace` | Prompt must describe the whole scene with Y in it |
+| **Replace** X with a *specific* Y (you have a photo of Y) | `[photoOfY]` | `false` | `1.0` | `.replace` | The diffusers reference example does exactly this (`"Replace this ball"` + ball photo + blurred mask). Short instruction prompts work when a reference carries the appearance |
+| **Remove** X, continue background | `nil` | `false` | `1.0` | `.remove` | **Never name X in the prompt** — FLUX.2 has no negatives; naming re-introduces it. Describe the background that should exist |
+| **Modify** X (color, material, pose) | `nil` | `false` | `0.5–0.75` | `.modify` | Describe X in its final state, in-scene. `strength < 1` starts from the noised original, preserving X's layout while restyling it |
+| **Repair** damaged/empty region | `nil` | `true` | `1.0` | `.modify` | Masked region carries no subject to leak, so source-as-reference safely provides palette/lighting |
+| **Outpaint** | handled by `Flux2OutpaintingChain` | — | `1.0` | — | Chain passes the original as reference + smart mask automatically |
+
+### `strength` — img2img init (diffusers parity)
+
+At `strength: 1.0` (default) the masked region starts from pure noise. At
+`< 1.0` the denoising starts from the **original image noised to σ₀** and the
+first `steps·(1-strength)` timesteps are skipped — the masked region keeps the
+original's low-frequency structure (layout, pose, palette) and the model only
+re-details it. Right tool for *modify* edits; wrong tool for *replace*/*remove*
+(the old subject survives as a ghost).
+
+Granularity caveat: with 4-step distilled models only `strength ≤ 0.75`
+actually skips a step (0.75 → 3 steps from σ≈0.75). On base models at 28–50
+steps, strength behaves continuously like SD img2img. Ignored (with a log)
+when LoRA custom sigmas are active.
 
 Why source-as-reference is default-OFF: with the source as an I2I reference,
 the transformer attends to the reference tokens — which still contain the
@@ -156,7 +173,7 @@ Contract to know when integrating:
 - The final prompt used is returned in the result's `usedPrompt` — surface it
   in debug UI; it's the fastest way to diagnose a bad edit.
 
-## 5. Resolution, `maxPixels`, and the crop-and-stitch recipe
+## 5. Resolution, `maxPixels`, and crop-and-stitch
 
 The chain resolves working dimensions as
 `min(image, maxPixels)` floored to multiples of 32. Two traps:
@@ -165,29 +182,48 @@ The chain resolves working dimensions as
    downscaled to ~1170×864 *before* anything happens. A 300 px mask region in
    that photo becomes ~90 px ≈ 5×5 latent tokens — far too few to paint a
    detailed subject.
-2. **Output ≠ original.** The result is the full decoded canvas at working
+2. **Output ≠ original.** The raw result is the full decoded canvas at working
    resolution: kept pixels are VAE-roundtripped (slightly softened) and
    downscaled. Users notice their photo "lost quality everywhere" even though
    the edit itself is fine.
 
-**By-the-book host-side recipe (crop-and-stitch)** — this is what diffusers'
-`padding_mask_crop` + `apply_overlay` do, and what your app should do until
-the framework provides it natively:
+Both are solved natively — these are the framework equivalents of diffusers'
+`padding_mask_crop` + `apply_overlay`:
 
-```
-1. bbox   = bounding box of mask > 0
-2. crop   = bbox expanded by ~32–64 px padding, adjusted to the image aspect
-            ratio, clamped to image bounds
-3. run the chain on (imageCrop, maskCrop) with maxPixels = 1024²
-   → the masked region now gets the FULL token budget
-4. resize the generated crop back to the crop's native size
-5. composite in pixel space onto the UNTOUCHED original:
-   out = original·(1 - blurredMask) + generated·blurredMask
-   (use the same soft mask; only pixels under the mask change)
+```swift
+let chain = Flux2MaskedInpaintingChain(
+    pipeline: pipeline,
+    prompt: prompt,
+    image: photo,               // full-resolution original
+    mask: mask,
+    maskCropPadding: 48,        // crop-and-stitch: inpaint only around the mask
+    seed: seed
+)
+// result.image has the ORIGINAL resolution; pixels outside the mask are
+// bit-identical to `photo` (no VAE roundtrip, no downscale).
 ```
 
-Step 5 alone (pixel composite, even without cropping) already guarantees the
-kept region is bit-identical to the user's photo. Do it in every integration.
+- **`maskCropPadding` (recommended: 32–64)** — the chain finds the mask's
+  bounding box, expands it by the padding then to the image's aspect ratio,
+  inpaints *that crop only* (full token budget on the edit), and pastes the
+  result back onto the untouched original with the soft mask as per-pixel
+  alpha. CLI: `--mask-crop-padding 48`.
+- **`compositeOnOriginal: true`** — pixel composite without cropping (implied
+  by `maskCropPadding`). Use when the mask covers most of the image but you
+  still want kept pixels bit-exact. CLI: `--composite-on-original`.
+
+Rule of thumb: mask bbox < ~half the image area → use `maskCropPadding`;
+otherwise `compositeOnOriginal` alone.
+
+Notes:
+- The composite assumes an **opaque** source (photos). Images with
+  alpha < 255 are flattened to opaque — semi-transparent regions won't be
+  bit-exact.
+- If the crop can't be established (e.g. the mask is empty), the chain falls
+  back to full-canvas inpainting but still composites onto the original, so
+  the output contract (original resolution, kept pixels bit-exact) holds.
+- `strength < 1/steps` yields zero denoising steps and throws
+  `invalidConfiguration` instead of silently returning the unedited image.
 
 For **outpainting**, the opposite trap: set `maxPixels ≥ canvas_w × canvas_h`
 or the extended canvas is downscaled below its native size
@@ -208,33 +244,27 @@ Also relevant to perceived quality:
 - **Determinism**: same seed + same inputs → identical output. Iterate on one
   variable at a time.
 
-## 7. Known gaps vs the diffusers reference (framework roadmap)
+## 7. Parity with the diffusers reference
 
 Our core blend is algorithm-identical to `Flux2KleinInpaintPipeline`
 (the mask preparation, per-step blend, and final-step restore match). The
-reference has four mechanisms we don't have yet — candidates for framework
-work, roughly by expected impact:
+reference's four additional mechanisms are now covered:
 
-1. **`padding_mask_crop` + `apply_overlay`** — native crop-and-stitch and
-   pixel-space compositing (§5 recipe, but inside the chain). Biggest win for
-   real-photo editing apps.
-2. **`strength` (img2img init)** — diffusers starts the masked region from the
-   *noised original* (`scale_noise(imageLatents, t₀)`) and runs only the last
-   `steps × strength` timesteps (default 0.8). At strength < 1 the masked
-   region keeps the original's low-frequency structure — much better for
-   `.modify` edits (recolor, retexture) where you want the layout preserved.
-   Our chain always starts from pure noise (≡ strength 1.0, which is also what
-   the diffusers replacement example uses).
-3. **Fixed blend noise** — diffusers draws the RePaint blend noise **once**
-   and reuses the same tensor at every step, so the outside-mask region follows
-   one consistent diffusion trajectory across steps. Our hook draws fresh
-   noise per step, which makes the model's context jitter between steps —
-   with only 4 steps, each of the few context views is different. Cheap fix,
-   plausible quality gain at the mask boundary.
-4. **Reference-guided replacement UX** — we support `referenceImages`, but the
-   documented pattern "pass a photo of the NEW object + short instruction
-   prompt + strength 1.0 + blurred mask" (the reference's flagship example)
-   should be surfaced as a first-class recipe.
+| diffusers | Framework equivalent | Status |
+|---|---|---|
+| `padding_mask_crop` + `apply_overlay` | `maskCropPadding` / `compositeOnOriginal` on the chain (§5) | ✅ native |
+| `strength` (img2img init via `scale_noise`) | `strength` on the chain, plumbed through `generateWithResult(initLatents:strength:)` (§2) | ✅ native |
+| Fixed blend noise (drawn once, reused each step) | The chain's RePaint hook draws the blend noise once per run — the outside-mask region follows one consistent diffusion trajectory across the 4 steps instead of jittering | ✅ native (automatic) |
+| Reference-guided replacement (`image_reference`) | `referenceImages: [photoOfNewObject]` — see the decision table (§2) | ✅ documented pattern |
+
+Residual differences, deliberate:
+- diffusers' inpaint pipeline defaults to klein-**base** + `guidance_scale=8.0`
+  + 50 steps; our chain defaults to klein distilled (4 steps, guidance 1.0)
+  for speed. Both paths are available (§6).
+- diffusers reuses the *same* tensor for the img2img init noise and the blend
+  noise; ours are independent draws from the same seeded RNG. RePaint forces
+  the outside region every step, so only within-run consistency matters — which
+  both implementations have.
 
 ## 8. App integration checklist (FluxForge-style hosts)
 
@@ -244,8 +274,9 @@ work, roughly by expected impact:
 - [ ] `intent` wired to the UI's mode (replace/remove/modify) — not hardcoded
 - [ ] VLM loaded before enabling `enrichPromptWithVLM`; `usedPrompt` surfaced in debug
 - [ ] No source-as-reference on replace; reference = new-object photo when the user provides one
-- [ ] Crop-and-stitch around the mask for photos > `maxPixels` (§5)
-- [ ] Final pixel composite onto the original (§5 step 5) — always
+- [ ] `maskCropPadding: 32...64` set for photos where the mask is small relative to the image (§5)
+- [ ] `compositeOnOriginal: true` when not using `maskCropPadding` — kept pixels bit-exact (§5)
+- [ ] `strength` wired to the edit mode: 1.0 for replace/remove, 0.5–0.75 for modify (§2)
 - [ ] Seed surfaced/loggable; steps/guidance left at model defaults
 - [ ] Outpainting goes through `Flux2OutpaintingChain` (not hand-built masks)
 

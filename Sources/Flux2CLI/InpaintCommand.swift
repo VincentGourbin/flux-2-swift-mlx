@@ -108,6 +108,12 @@ struct Inpaint: AsyncParsableCommand {
     var seed: UInt64?
     @Option(name: .long, help: "Maximum total pixel count for the working resolution. Defaults to 1024² (≈ 1 048 576).")
     var maxPixels: Int = 1024 * 1024
+    @Option(name: .long, help: "Denoising strength in (0, 1]. 1.0 (default) = masked region starts from pure noise (replace/remove). < 1.0 = start from the noised original and skip early timesteps — preserves layout/pose/palette, use ~0.5-0.75 for 'modify' edits. With 4-step distilled models only ≤ 0.75 actually skips a step.")
+    var strength: Float = 1.0
+    @Option(name: .long, help: "Crop-and-stitch padding in pixels (like diffusers padding_mask_crop). When set, inpaint only a crop around the mask (full token budget on the edit) and paste the result back onto the untouched original — output keeps the original resolution. Typical: 32-64. Recommended when the mask is small relative to the photo.")
+    var maskCropPadding: Int?
+    @Flag(name: .long, help: "Composite the generated canvas back onto the original in pixel space using the soft mask (kept pixels stay bit-identical, no VAE roundtrip). Implied by --mask-crop-padding.")
+    var compositeOnOriginal: Bool = false
 
     func run() async throws {
         @Sendable func logErr(_ msg: String) {
@@ -199,6 +205,9 @@ struct Inpaint: AsyncParsableCommand {
             steps: steps,
             guidance: guidance,
             seed: seed,
+            strength: strength,
+            maskCropPadding: maskCropPadding,
+            compositeOnOriginal: compositeOnOriginal,
             upsamplePrompt: upsamplePrompt,
             enrichPromptWithVLM: enrichPromptWithVLM,
             intent: intent.intent,

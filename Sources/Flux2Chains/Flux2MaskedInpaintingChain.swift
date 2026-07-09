@@ -96,6 +96,42 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
     public let steps: Int
     public let guidance: Float
     public let seed: UInt64?
+
+    /// Denoising strength in `(0, 1]` — diffusers `strength` semantics.
+    ///
+    /// `1.0` (default): the masked region starts from pure noise and the full
+    /// schedule runs — right for `.replace`/`.remove`, where nothing of the
+    /// original should survive inside the mask.
+    ///
+    /// `< 1.0`: the denoising starts from the *original image noised to σ₀*
+    /// and skips the first `steps·(1-strength)` timesteps, so the masked
+    /// region keeps the original's low-frequency structure (layout, pose,
+    /// palette). Use ≈ 0.5–0.75 for `.modify` edits (recolor, retexture).
+    /// Granularity warning: with 4-step distilled models only strength ≤ 0.75
+    /// actually skips a step (0.75 → 3 steps from σ≈0.75).
+    public let strength: Float
+
+    /// Crop-and-stitch (diffusers `padding_mask_crop`). When non-nil, the
+    /// chain finds the mask's bounding box, expands it by this many pixels
+    /// (then to the image's aspect ratio), runs the inpainting on that crop
+    /// only — so the full `maxPixels` token budget goes to the edit — and
+    /// pastes the result back onto the **untouched original** in pixel space.
+    ///
+    /// The output image then has the original's full resolution, and pixels
+    /// outside the mask are bit-identical to the input (no VAE roundtrip, no
+    /// downscale). Recommended whenever the masked region is small relative
+    /// to the photo (rule of thumb: mask bbox < ~half the image area).
+    /// Typical padding: 32–64 px. Default `nil` = full-canvas behavior.
+    public let maskCropPadding: Int?
+
+    /// When `true` (and `maskCropPadding` is nil), composite the generated
+    /// canvas back onto the original in pixel space using the soft mask:
+    /// `out = original·(1-mask) + generated·mask` at the original resolution.
+    /// Kept pixels stay bit-identical to the input instead of being
+    /// VAE-roundtripped and possibly downscaled. Implied (always on) when
+    /// `maskCropPadding` is set. Default `false` for back-compat — hosts
+    /// integrating for photo editing should turn it on.
+    public let compositeOnOriginal: Bool
     /// When `true`, the active text encoder rewrites the prompt with its
     /// own internal language model (Mistral / Klein-Qwen3) before
     /// encoding. **Text-only path** — does not look at ``image``. Useful
@@ -187,6 +223,16 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
     ///     klein; raise to ≈ 3.5 with `.klein9BBase` or `.klein4BBase` to
     ///     trigger the classical CFG path on the underlying pipeline.
     ///   - seed: Random seed for reproducibility. `nil` for non-deterministic.
+    ///   - strength: Denoising strength (diffusers semantics). `1.0` = masked
+    ///     region starts from pure noise (replace/remove); `< 1.0` anchors the
+    ///     start on the noised original and skips early timesteps (modify).
+    ///     See ``strength`` for the 4-step granularity caveat.
+    ///   - maskCropPadding: When non-nil, crop-and-stitch around the mask with
+    ///     this padding (px) — full token budget on the edit, output at the
+    ///     original resolution, kept pixels untouched. See ``maskCropPadding``.
+    ///   - compositeOnOriginal: Pixel-space composite of the full canvas onto
+    ///     the original (implied when `maskCropPadding` is set). See
+    ///     ``compositeOnOriginal``.
     ///   - upsamplePrompt: Text-encoder-only prompt rewriting. See the
     ///     property doc for the difference vs ``enrichPromptWithVLM``,
     ///     and for the collision rule when both are set. Default `false`.
@@ -211,6 +257,9 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
         steps: Int = 4,
         guidance: Float = 1.0,
         seed: UInt64? = nil,
+        strength: Float = 1.0,
+        maskCropPadding: Int? = nil,
+        compositeOnOriginal: Bool = false,
         upsamplePrompt: Bool = false,
         enrichPromptWithVLM: Bool = false,
         intent: Flux2InpaintIntent = .replace,
@@ -227,6 +276,9 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
         self.steps = steps
         self.guidance = guidance
         self.seed = seed
+        self.strength = strength
+        self.maskCropPadding = maskCropPadding
+        self.compositeOnOriginal = compositeOnOriginal
         self.upsamplePrompt = upsamplePrompt
         self.enrichPromptWithVLM = enrichPromptWithVLM
         self.intent = intent
@@ -250,33 +302,88 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
 
         // Resolve which prompt + upsample flag actually reach the pipeline.
         // VLM enrichment is strictly opt-in and gracefully falls back when
-        // the VLM is not loaded — never throws or auto-loads.
+        // the VLM is not loaded — never throws or auto-loads. The VLM sees
+        // the FULL source image even in crop mode (scene-level context).
         let (resolvedPrompt, resolvedUpsample) = await resolveFinalPromptAndUpsample()
 
+        // Optional crop-and-stitch (diffusers `padding_mask_crop`): run the
+        // whole inpainting on a crop around the mask so the token budget goes
+        // to the edit, then paste back onto the untouched original.
+        var workImage = image
+        var workMask = mask
+        var cropRect: CGRect? = nil
+        if let padding = maskCropPadding {
+            if let bbox = Flux2InpaintCompositing.maskBoundingBox(
+                mask,
+                convention: maskConvention,
+                imageWidth: image.width,
+                imageHeight: image.height
+            ) {
+                let region = Flux2InpaintCompositing.expandCropRegion(
+                    bbox: bbox,
+                    padding: padding,
+                    imageWidth: image.width,
+                    imageHeight: image.height
+                )
+                // The mask may have different dimensions than the image —
+                // map the region into mask space before cropping it.
+                let maskRegion = CGRect(
+                    x: region.minX * CGFloat(mask.width) / CGFloat(image.width),
+                    y: region.minY * CGFloat(mask.height) / CGFloat(image.height),
+                    width: region.width * CGFloat(mask.width) / CGFloat(image.width),
+                    height: region.height * CGFloat(mask.height) / CGFloat(image.height)
+                )
+                if let croppedImage = image.cropping(to: region),
+                   let croppedMask = mask.cropping(to: maskRegion) {
+                    workImage = croppedImage
+                    workMask = croppedMask
+                    cropRect = region
+                    FluxDebug.info("[Flux2MaskedInpaintingChain] Crop-and-stitch: region \(Int(region.minX)),\(Int(region.minY)) \(Int(region.width))x\(Int(region.height)) of \(image.width)x\(image.height)")
+                } else {
+                    FluxDebug.error("[Flux2MaskedInpaintingChain] Failed to crop image/mask to \(region) — falling back to full-canvas inpainting.")
+                }
+            } else {
+                FluxDebug.error("[Flux2MaskedInpaintingChain] maskCropPadding set but the mask has no inpaint region — falling back to full-canvas inpainting.")
+            }
+        }
+
         let (targetH, targetW) = Flux2Pipeline.resolveChainDimensions(
-            width: image.width,
-            height: image.height,
+            width: workImage.width,
+            height: workImage.height,
             maxPixels: maxPixels
         )
 
         // Encode the source image *once*, before the denoising loop starts.
         // The VAE stays resident so the post-denoising decode reuses it.
         let imageLatents = try await pipeline.encodeImageToPackedSequence(
-            image,
+            workImage,
             targetHeight: targetH,
             targetWidth: targetW
         )
 
         let maskLatents = await Flux2Pipeline.packMaskForLatentBlending(
-            mask,
+            workMask,
             targetHeight: targetH,
             targetWidth: targetW,
             convention: maskConvention
         )
 
+        // Blend noise is drawn ONCE and reused at every step (diffusers
+        // parity): the outside-mask region then follows a single consistent
+        // diffusion trajectory across steps instead of jittering — with only
+        // 4 steps on distilled models, each context view counts. Seed the
+        // global RNG first so the draw is reproducible; the pipeline re-seeds
+        // with the same value for its own draws.
+        if let seed = seed {
+            MLXRandom.seed(seed)
+        }
+        let blendNoise = MLXRandom.normal(imageLatents.shape)
+        eval(blendNoise)
+
         // RePaint blend: outside-mask region is forced back to (image latent
         // re-noised to sigmaNext). On the final step sigmaNext == 0 ⇒ the
-        // original clean latent is restored (no hallucination outside mask).
+        // original clean latent is restored (no hallucination outside mask —
+        // in latent space; enable `compositeOnOriginal` for pixel-exact keep).
         //
         // NOTE: the I2I path emits transformer noise predictions for the
         // *concatenated* (output + reference) sequence and slices them back
@@ -285,9 +392,8 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
         let imageLatentsCaptured = imageLatents
         let maskLatentsCaptured = maskLatents
         let onStep: Flux2StepHook = { ctx, latents in
-            let freshNoise = MLXRandom.normal(latents.shape)
             let sigmaNext = MLXArray(ctx.sigmaNext)
-            let originalNoised = (1 - sigmaNext) * imageLatentsCaptured + sigmaNext * freshNoise
+            let originalNoised = (1 - sigmaNext) * imageLatentsCaptured + sigmaNext * blendNoise
             return (1 - maskLatentsCaptured) * originalNoised + maskLatentsCaptured * latents
         }
 
@@ -295,12 +401,12 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
         if let refs = referenceImages, !refs.isEmpty {
             mode = .imageToImage(images: refs)
         } else if useImageAsReference {
-            mode = .imageToImage(images: [image])
+            mode = .imageToImage(images: [workImage])
         } else {
             mode = .textToImage
         }
 
-        return try await pipeline.generateWithResult(
+        let result = try await pipeline.generateWithResult(
             mode: mode,
             prompt: resolvedPrompt,
             interpretImagePaths: nil,
@@ -312,10 +418,45 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
             upsamplePrompt: resolvedUpsample,
             precomputedEmbeddings: nil,
             checkpointInterval: nil,
+            initLatents: strength < 1.0 ? imageLatents : nil,
+            strength: strength,
             onProgress: onProgress,
             onCheckpoint: nil,
             onStep: onStep
         )
+
+        // Pixel-space composite (diffusers `apply_overlay`): paste the
+        // generated content back onto the untouched original. Runs whenever
+        // `maskCropPadding` was REQUESTED (even if the crop itself fell back
+        // to full-canvas — the caller was promised an original-resolution
+        // output with bit-exact kept pixels) or `compositeOnOriginal` is set.
+        if cropRect != nil || maskCropPadding != nil || compositeOnOriginal {
+            let region = cropRect ?? CGRect(x: 0, y: 0, width: image.width, height: image.height)
+            if let composited = Flux2InpaintCompositing.composite(
+                original: image,
+                generated: result.image,
+                cropRect: region,
+                maskCrop: workMask,
+                convention: maskConvention
+            ) {
+                return Flux2GenerationResult(
+                    image: composited,
+                    usedPrompt: result.usedPrompt,
+                    wasUpsampled: result.wasUpsampled,
+                    originalPrompt: result.originalPrompt
+                )
+            }
+            if cropRect != nil {
+                // In crop mode the raw result has the CROP's working
+                // resolution — returning it would hand the caller an image of
+                // the wrong dimensions. Fail loudly instead.
+                throw Flux2Error.imageProcessingFailed(
+                    "Inpainting crop composite failed — cannot assemble the full-resolution output")
+            }
+            FluxDebug.error("[Flux2MaskedInpaintingChain] Pixel composite failed — returning the raw generated canvas.")
+        }
+
+        return result
     }
 
     // MARK: - VLM enrichment resolution

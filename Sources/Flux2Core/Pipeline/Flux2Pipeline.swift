@@ -876,6 +876,18 @@ public class Flux2Pipeline: @unchecked Sendable {
     /// - Parameter maxReferencePixels: I2I only — per-reference-image VAE encode
     ///   budget in pixels (see ``encodeReferenceImages``). Ignored for text-to-image.
     ///   Defaults to the historical 1024² budget.
+    /// - Parameter initLatents: Optional packed-sequence latents `[1, seq, 128]`
+    ///   of an init image (see ``encodeImageToPackedSequence``). Required when
+    ///   `strength < 1.0`: the denoising starts from
+    ///   `(1-σ₀)·initLatents + σ₀·noise` instead of pure noise — the img2img
+    ///   init used by diffusers' inpaint/img2img pipelines (`scale_noise`).
+    /// - Parameter strength: Denoising strength in `(0, 1]`. `1.0` (default)
+    ///   is the existing behavior: start from pure noise, full schedule.
+    ///   `< 1.0` skips the first `steps·(1-strength)` timesteps and anchors the
+    ///   start on `initLatents`, preserving the init image's low-frequency
+    ///   structure. Note the granularity: with 4-step distilled models only
+    ///   strength ≤ 0.75 actually skips a step. Ignored (with a log) when LoRA
+    ///   custom sigmas are active.
     public func generateWithResult(
         mode: Flux2GenerationMode,
         prompt: String,
@@ -889,6 +901,8 @@ public class Flux2Pipeline: @unchecked Sendable {
         precomputedEmbeddings: MLXArray? = nil,
         checkpointInterval: Int?,
         maxReferencePixels: Int = 1024 * 1024,
+        initLatents: MLXArray? = nil,
+        strength: Float = 1.0,
         onProgress: Flux2ProgressCallback?,
         onCheckpoint: Flux2CheckpointCallback?,
         onStep: Flux2StepHook? = nil
@@ -908,6 +922,14 @@ public class Flux2Pipeline: @unchecked Sendable {
         // Set random seed
         if let seed = seed {
             MLXRandom.seed(seed)
+        }
+
+        // img2img-style init (diffusers `strength` semantics)
+        let effectiveStrength = max(0.01, min(1.0, strength))
+        let useImg2ImgInit = initLatents != nil && effectiveStrength < 1.0
+        if effectiveStrength < 1.0 && initLatents == nil {
+            throw Flux2Error.invalidConfiguration(
+                "strength < 1.0 requires initLatents (packed-sequence latents of the init image, see encodeImageToPackedSequence)")
         }
 
         Flux2Debug.log("Starting generation: \(validWidth)x\(validHeight), \(steps) steps, guidance=\(guidance)")
@@ -1192,12 +1214,39 @@ public class Flux2Pipeline: @unchecked Sendable {
             let combinedImageIds = concatenated([outputImageIds, referencePositionIds], axis: 0)
             Flux2Debug.log("Combined image IDs: \(combinedImageIds.shape)")
 
-            // Setup scheduler for FULL denoising (no timestep skip in Flux.2 I2I)
+            // Setup scheduler. Flux.2 I2I conditioning itself never skips
+            // timesteps; the optional img2img init (initLatents + strength)
+            // is an orthogonal, caller-requested anchor on the OUTPUT latents.
             // Check for custom sigmas from LoRA (e.g., Turbo LoRAs)
             if let customSigmas = loraSchedulerOverrides?.customSigmas {
+                if useImg2ImgInit {
+                    Flux2Debug.log("Warning: LoRA custom sigmas active — strength/initLatents ignored")
+                }
                 scheduler.setCustomSigmas(customSigmas)
             } else {
-                scheduler.setTimesteps(numInferenceSteps: steps, imageSeqLen: outputSeqLen, strength: 1.0)
+                scheduler.setTimesteps(
+                    numInferenceSteps: steps,
+                    imageSeqLen: outputSeqLen,
+                    strength: useImg2ImgInit ? effectiveStrength : 1.0
+                )
+                // A too-low strength slices the schedule down to the terminal
+                // sigma only (zero denoising steps): the standard loops would
+                // silently no-op and the KV path would crash on sigmas[1].
+                if useImg2ImgInit && scheduler.sigmas.count < 2 {
+                    throw Flux2Error.invalidConfiguration(
+                        "strength \(effectiveStrength) with \(steps) steps yields zero denoising steps — use strength ≥ 1/steps (here ≥ \(String(format: "%.2f", 1.0 / Float(max(1, steps))))).")
+                }
+                if useImg2ImgInit, let initLatents = initLatents {
+                    guard initLatents.shape == packedOutputLatents.shape else {
+                        throw Flux2Error.invalidConfiguration(
+                            "initLatents shape \(initLatents.shape) does not match output latents shape \(packedOutputLatents.shape)")
+                    }
+                    // diffusers scale_noise: latents = (1-σ₀)·init + σ₀·noise
+                    let sigma0 = MLXArray(scheduler.initialSigma)
+                    packedOutputLatents = (1 - sigma0) * initLatents + sigma0 * packedOutputLatents
+                    eval(packedOutputLatents)
+                    Flux2Debug.log("img2img init: strength=\(effectiveStrength), σ₀=\(scheduler.initialSigma)")
+                }
             }
 
             let effectiveSteps = scheduler.sigmas.count - 1
@@ -1525,12 +1574,39 @@ public class Flux2Pipeline: @unchecked Sendable {
         let imageSeqLen = packedLatents.shape[1]
         Flux2Debug.log("Image sequence length: \(imageSeqLen)")
 
-        // Setup scheduler (T2I always uses strength 1.0)
+        // Setup scheduler. Strength defaults to 1.0 (pure-noise start);
+        // callers providing initLatents can anchor the start on an init image
+        // (img2img semantics — used by the masked inpainting chain).
         // Check for custom sigmas from LoRA (e.g., Turbo LoRAs)
         if let customSigmas = loraSchedulerOverrides?.customSigmas {
+            if useImg2ImgInit {
+                Flux2Debug.log("Warning: LoRA custom sigmas active — strength/initLatents ignored")
+            }
             scheduler.setCustomSigmas(customSigmas)
         } else {
-            scheduler.setTimesteps(numInferenceSteps: steps, imageSeqLen: imageSeqLen, strength: 1.0)
+            scheduler.setTimesteps(
+                numInferenceSteps: steps,
+                imageSeqLen: imageSeqLen,
+                strength: useImg2ImgInit ? effectiveStrength : 1.0
+            )
+            // A too-low strength slices the schedule down to the terminal
+            // sigma only (zero denoising steps) — surface it instead of
+            // silently returning the un-edited init image.
+            if useImg2ImgInit && scheduler.sigmas.count < 2 {
+                throw Flux2Error.invalidConfiguration(
+                    "strength \(effectiveStrength) with \(steps) steps yields zero denoising steps — use strength ≥ 1/steps (here ≥ \(String(format: "%.2f", 1.0 / Float(max(1, steps))))).")
+            }
+            if useImg2ImgInit, let initLatents = initLatents {
+                guard initLatents.shape == packedLatents.shape else {
+                    throw Flux2Error.invalidConfiguration(
+                        "initLatents shape \(initLatents.shape) does not match latents shape \(packedLatents.shape)")
+                }
+                // diffusers scale_noise: latents = (1-σ₀)·init + σ₀·noise
+                let sigma0 = MLXArray(scheduler.initialSigma)
+                packedLatents = (1 - sigma0) * initLatents + sigma0 * packedLatents
+                eval(packedLatents)
+                Flux2Debug.log("img2img init: strength=\(effectiveStrength), σ₀=\(scheduler.initialSigma)")
+            }
         }
 
         let effectiveSteps = scheduler.sigmas.count - 1
