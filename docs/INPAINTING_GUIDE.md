@@ -215,6 +215,28 @@ let chain = Flux2MaskedInpaintingChain(
 Rule of thumb: mask bbox < ~half the image area → use `maskCropPadding`;
 otherwise `compositeOnOriginal` alone.
 
+### What it changes in practice (E2E, klein-9b distilled, seed 42)
+
+Real 1920×1280 photo, ~4%-of-image mask on the gravel, prompt asking for a
+leather suitcase; then a `.modify` edit on the front wheel:
+
+![crop-and-stitch and strength comparison](examples/inpainting/crop_and_strength_comparison.jpg)
+
+Top row (suitcase): with the **old full-canvas behavior** (middle) the model
+didn't even produce the subject — at the ≤1 MP working resolution the masked
+region held too few tokens, so it painted weeds; the whole photo also came
+back downscaled to 1248×832 and VAE-softened. With **`maskCropPadding: 48`**
+(right) the same seed yields a correctly scaled, sharply textured suitcase
+with a soft shadow, the output keeps the native 1920×1280, and kept pixels
+are bit-exact (verified: 99.7% strictly identical on a PNG source, max ±1
+from buffer rounding — on JPEG sources, decoder differences between readers
+account for ~±1, not the composite).
+
+Bottom row (wheel → yellow rim): at **`strength: 1.0`** (middle) the edit
+engages but reinvents the rim; at **`strength: 0.7`** (right) the original
+wheel structure — hubcap, tire, geometry — is preserved and only the paint
+changes, with cleaner mask edges. That is the intended `.modify` behavior.
+
 Notes:
 - The composite assumes an **opaque** source (photos). Images with
   alpha < 255 are flattened to opaque — semi-transparent regions won't be
