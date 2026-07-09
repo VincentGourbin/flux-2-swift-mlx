@@ -41,7 +41,7 @@ struct EvaluateLoRA: AsyncParsableCommand {
     @Option(name: .long, help: "Dataset path for training config")
     var datasetPath: String = "./dataset"
 
-    @Option(name: .long, help: "Transformer quantization: bf16, qint8, int4, mxfp8, mxfp4, nvfp4")
+    @Option(name: .long, help: "Transformer quantization: \(TransformerQuantization.cliValueList)")
     var transformerQuant: String = "qint8"
 
     @Option(name: .long, help: "HuggingFace token for gated models")
@@ -55,9 +55,7 @@ struct EvaluateLoRA: AsyncParsableCommand {
             throw ValidationError("Invalid model: \(model). Use klein-4b, klein-9b, or dev")
         }
 
-        guard let transQuant = TransformerQuantization(rawValue: transformerQuant) else {
-            throw ValidationError("Invalid transformer quantization: \(transformerQuant)")
-        }
+        let transQuant = try TransformerQuantization.parseCLI(transformerQuant)
 
         // Load reference image
         guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: image) as CFURL, nil),

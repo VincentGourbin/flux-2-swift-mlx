@@ -61,24 +61,27 @@ final class Flux2CoreTests: XCTestCase {
         XCTAssertEqual(TransformerQuantization.int4.rawValue, "int4")
     }
 
-    func testTransformerQuantizationFPModes() {
-        // Group size and bits are fixed by the MX/NVFP formats — MLX rejects other values
-        XCTAssertEqual(TransformerQuantization.mxfp8.bits, 8)
-        XCTAssertEqual(TransformerQuantization.mxfp8.groupSize, 32)
-        XCTAssertEqual(TransformerQuantization.mxfp8.mode, .mxfp8)
-
-        XCTAssertEqual(TransformerQuantization.mxfp4.bits, 4)
-        XCTAssertEqual(TransformerQuantization.mxfp4.groupSize, 32)
-        XCTAssertEqual(TransformerQuantization.mxfp4.mode, .mxfp4)
-
-        XCTAssertEqual(TransformerQuantization.nvfp4.bits, 4)
-        XCTAssertEqual(TransformerQuantization.nvfp4.groupSize, 16)
-        XCTAssertEqual(TransformerQuantization.nvfp4.mode, .nvfp4)
-
-        // Affine modes keep their historical parameters
-        XCTAssertEqual(TransformerQuantization.qint8.mode, .affine)
-        XCTAssertEqual(TransformerQuantization.int4.mode, .affine)
-        XCTAssertEqual(TransformerQuantization.qint8.groupSize, 64)
+    func testTransformerQuantizationParameters() {
+        // Single table covering bits/groupSize/mode for every level.
+        // Group size and bits are fixed by the MX/NVFP formats — MLX rejects other values.
+        let expected: [TransformerQuantization: (bits: Int, groupSize: Int, mode: QuantizationMode)] = [
+            .bf16: (16, 64, .affine),
+            .qint8: (8, 64, .affine),
+            .int4: (4, 64, .affine),
+            .mxfp8: (8, 32, .mxfp8),
+            .mxfp4: (4, 32, .mxfp4),
+            .nvfp4: (4, 16, .nvfp4),
+        ]
+        XCTAssertEqual(expected.count, TransformerQuantization.allCases.count)
+        for quant in TransformerQuantization.allCases {
+            guard let e = expected[quant] else {
+                XCTFail("Missing expectation for \(quant)")
+                continue
+            }
+            XCTAssertEqual(quant.bits, e.bits, "\(quant) bits")
+            XCTAssertEqual(quant.groupSize, e.groupSize, "\(quant) groupSize")
+            XCTAssertEqual(quant.mode, e.mode, "\(quant) mode")
+        }
     }
 
     func testModelRegistryVariantOnTheFlyQuantization() {
@@ -1092,16 +1095,6 @@ final class OnTheFlyQuantizationTests: XCTestCase {
 
         let veryHigh = ModelRegistry.recommendedConfig(forRAMGB: 128)
         XCTAssertEqual(veryHigh.transformer, .bf16)
-    }
-
-    func testInt4QuantizationGroupSize() {
-        // Affine levels use group size 64; fp formats impose their own (32 / 16)
-        XCTAssertEqual(TransformerQuantization.bf16.groupSize, 64)
-        XCTAssertEqual(TransformerQuantization.qint8.groupSize, 64)
-        XCTAssertEqual(TransformerQuantization.int4.groupSize, 64)
-        XCTAssertEqual(TransformerQuantization.mxfp8.groupSize, 32)
-        XCTAssertEqual(TransformerQuantization.mxfp4.groupSize, 32)
-        XCTAssertEqual(TransformerQuantization.nvfp4.groupSize, 16)
     }
 
     func testOnTheFlyQuantizationModesRuntime() {

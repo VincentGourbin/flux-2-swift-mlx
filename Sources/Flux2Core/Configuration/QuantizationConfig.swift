@@ -45,52 +45,31 @@ public enum TransformerQuantization: String, CaseIterable, Codable, Sendable {
     case mxfp4 = "mxfp4"    // 4-bit MXFP4 microscaling ~16GB (on-the-fly)
     case nvfp4 = "nvfp4"    // 4-bit NVFP4 ~16GB (on-the-fly)
 
-    public var estimatedMemoryGB: Int {
+    /// Per-level parameters in a single switch, so a new case cannot be half-wired.
+    /// Group size is fixed by the format for microscaling modes (MLX rejects any
+    /// other value): mxfp4/mxfp8 require 32, nvfp4 requires 16.
+    private var descriptor: (bits: Int, groupSize: Int, mode: QuantizationMode, memoryGB: Int, displayName: String) {
         switch self {
-        case .bf16: return 64
-        case .qint8, .mxfp8: return 32
-        case .int4, .mxfp4, .nvfp4: return 16
+        case .bf16: return (16, 64, .affine, 64, "Full Precision (bf16)")
+        case .qint8: return (8, 64, .affine, 32, "8-bit (qint8)")
+        case .int4: return (4, 64, .affine, 16, "4-bit (int4)")
+        case .mxfp8: return (8, 32, .mxfp8, 32, "8-bit FP (mxfp8)")
+        case .mxfp4: return (4, 32, .mxfp4, 16, "4-bit FP (mxfp4)")
+        case .nvfp4: return (4, 16, .nvfp4, 16, "4-bit FP (nvfp4)")
         }
     }
 
-    public var displayName: String {
-        switch self {
-        case .bf16: return "Full Precision (bf16)"
-        case .qint8: return "8-bit (qint8)"
-        case .int4: return "4-bit (int4)"
-        case .mxfp8: return "8-bit FP (mxfp8)"
-        case .mxfp4: return "4-bit FP (mxfp4)"
-        case .nvfp4: return "4-bit FP (nvfp4)"
-        }
-    }
+    public var estimatedMemoryGB: Int { descriptor.memoryGB }
 
-    public var bits: Int {
-        switch self {
-        case .bf16: return 16
-        case .qint8, .mxfp8: return 8
-        case .int4, .mxfp4, .nvfp4: return 4
-        }
-    }
+    public var displayName: String { descriptor.displayName }
 
-    /// Quantization group size. Fixed by the format for microscaling modes
-    /// (MLX rejects any other value): mxfp4/mxfp8 require 32, nvfp4 requires 16.
-    public var groupSize: Int {
-        switch self {
-        case .bf16, .qint8, .int4: return 64
-        case .mxfp8, .mxfp4: return 32
-        case .nvfp4: return 16
-        }
-    }
+    public var bits: Int { descriptor.bits }
+
+    /// Quantization group size (see `descriptor` for the format constraints)
+    public var groupSize: Int { descriptor.groupSize }
 
     /// The MLX quantization mode used for on-the-fly quantization
-    public var mode: QuantizationMode {
-        switch self {
-        case .bf16, .qint8, .int4: return .affine
-        case .mxfp8: return .mxfp8
-        case .mxfp4: return .mxfp4
-        case .nvfp4: return .nvfp4
-        }
-    }
+    public var mode: QuantizationMode { descriptor.mode }
 }
 
 /// Independent quantization configuration for text encoder and transformer
