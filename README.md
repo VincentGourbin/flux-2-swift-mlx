@@ -45,6 +45,7 @@ A native Swift implementation of [Flux.2](https://blackforestlabs.ai/) image gen
 - **`Flux2MaskedInpaintingChain`**: RePaint-style per-step latent blending.
   No Fill checkpoint required — works on every FLUX.2 base/distilled
   variant. Soft masks (Gaussian-blurred edges) yield seamless edits.
+  Read the [by-the-book implementation guide](docs/INPAINTING_GUIDE.md) before integrating.
   ([example](docs/examples/inpainting/))
 - **`Flux2OutpaintingChain`**: BFL-style outpainting API. Caller passes an
   image, per-side paddings in pixels, and a prompt; the chain handles
