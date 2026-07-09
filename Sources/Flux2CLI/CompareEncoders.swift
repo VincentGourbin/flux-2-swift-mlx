@@ -37,7 +37,7 @@ struct CompareEncoders: AsyncParsableCommand {
     @Option(name: .long, help: "Output directory for comparison results")
     var outputDir: String = "./comparison"
 
-    @Option(name: .long, help: "Transformer quantization: bf16, qint8, int4, mxfp8, mxfp4, nvfp4")
+    @Option(name: .long, help: "Transformer quantization: \(TransformerQuantization.cliValueList)")
     var transformerQuant: String = "qint8"
 
     @Option(name: .long, help: "Local path to Qwen3-VL model (if not set, auto-downloads)")
@@ -148,9 +148,7 @@ struct CompareEncoders: AsyncParsableCommand {
 
         // ── Step 4: Generate images (optional) ──
         if !embeddingsOnly {
-            guard let transformerQuantization = TransformerQuantization(rawValue: transformerQuant) else {
-                throw ValidationError("Invalid transformer quantization: \(transformerQuant)")
-            }
+            let transformerQuantization = try TransformerQuantization.parseCLI(transformerQuant)
 
             let quantConfig = Flux2QuantizationConfig(
                 textEncoder: .mlx8bit,
