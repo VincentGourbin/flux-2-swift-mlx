@@ -215,6 +215,16 @@ let chain = Flux2MaskedInpaintingChain(
 Rule of thumb: mask bbox < ~half the image area → use `maskCropPadding`;
 otherwise `compositeOnOriginal` alone.
 
+Notes:
+- The composite assumes an **opaque** source (photos). Images with
+  alpha < 255 are flattened to opaque — semi-transparent regions won't be
+  bit-exact.
+- If the crop can't be established (e.g. the mask is empty), the chain falls
+  back to full-canvas inpainting but still composites onto the original, so
+  the output contract (original resolution, kept pixels bit-exact) holds.
+- `strength < 1/steps` yields zero denoising steps and throws
+  `invalidConfiguration` instead of silently returning the unedited image.
+
 For **outpainting**, the opposite trap: set `maxPixels ≥ canvas_w × canvas_h`
 or the extended canvas is downscaled below its native size
 (`Flux2OutpaintingChain` raises it internally — don't fight it by passing a

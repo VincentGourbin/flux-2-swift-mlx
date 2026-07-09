@@ -426,10 +426,11 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
         )
 
         // Pixel-space composite (diffusers `apply_overlay`): paste the
-        // generated content back onto the untouched original. Mandatory in
-        // crop mode (the output must be the full original image), opt-in via
-        // `compositeOnOriginal` otherwise.
-        if cropRect != nil || compositeOnOriginal {
+        // generated content back onto the untouched original. Runs whenever
+        // `maskCropPadding` was REQUESTED (even if the crop itself fell back
+        // to full-canvas — the caller was promised an original-resolution
+        // output with bit-exact kept pixels) or `compositeOnOriginal` is set.
+        if cropRect != nil || maskCropPadding != nil || compositeOnOriginal {
             let region = cropRect ?? CGRect(x: 0, y: 0, width: image.width, height: image.height)
             if let composited = Flux2InpaintCompositing.composite(
                 original: image,
@@ -444,6 +445,13 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
                     wasUpsampled: result.wasUpsampled,
                     originalPrompt: result.originalPrompt
                 )
+            }
+            if cropRect != nil {
+                // In crop mode the raw result has the CROP's working
+                // resolution — returning it would hand the caller an image of
+                // the wrong dimensions. Fail loudly instead.
+                throw Flux2Error.imageProcessingFailed(
+                    "Inpainting crop composite failed — cannot assemble the full-resolution output")
             }
             FluxDebug.error("[Flux2MaskedInpaintingChain] Pixel composite failed — returning the raw generated canvas.")
         }

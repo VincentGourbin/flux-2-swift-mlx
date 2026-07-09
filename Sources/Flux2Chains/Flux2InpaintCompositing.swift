@@ -113,6 +113,11 @@ enum Flux2InpaintCompositing {
     /// the same region) as per-pixel blend weight:
     /// `out = original·(1-m) + generated·m`. Soft mask values give a seamless
     /// transition; pixels with `m == 0` are bit-identical to the original.
+    ///
+    /// Assumes an **opaque** original (photos). Sources with alpha < 255 are
+    /// flattened: the buffer is premultiplied RGBA and the output forces
+    /// alpha = 255, so semi-transparent regions come out darkened rather than
+    /// bit-exact.
     static func composite(
         original: CGImage,
         generated: CGImage,

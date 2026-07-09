@@ -1229,6 +1229,13 @@ public class Flux2Pipeline: @unchecked Sendable {
                     imageSeqLen: outputSeqLen,
                     strength: useImg2ImgInit ? effectiveStrength : 1.0
                 )
+                // A too-low strength slices the schedule down to the terminal
+                // sigma only (zero denoising steps): the standard loops would
+                // silently no-op and the KV path would crash on sigmas[1].
+                if useImg2ImgInit && scheduler.sigmas.count < 2 {
+                    throw Flux2Error.invalidConfiguration(
+                        "strength \(effectiveStrength) with \(steps) steps yields zero denoising steps — use strength ≥ 1/steps (here ≥ \(String(format: "%.2f", 1.0 / Float(max(1, steps))))).")
+                }
                 if useImg2ImgInit, let initLatents = initLatents {
                     guard initLatents.shape == packedOutputLatents.shape else {
                         throw Flux2Error.invalidConfiguration(
@@ -1582,6 +1589,13 @@ public class Flux2Pipeline: @unchecked Sendable {
                 imageSeqLen: imageSeqLen,
                 strength: useImg2ImgInit ? effectiveStrength : 1.0
             )
+            // A too-low strength slices the schedule down to the terminal
+            // sigma only (zero denoising steps) — surface it instead of
+            // silently returning the un-edited init image.
+            if useImg2ImgInit && scheduler.sigmas.count < 2 {
+                throw Flux2Error.invalidConfiguration(
+                    "strength \(effectiveStrength) with \(steps) steps yields zero denoising steps — use strength ≥ 1/steps (here ≥ \(String(format: "%.2f", 1.0 / Float(max(1, steps))))).")
+            }
             if useImg2ImgInit, let initLatents = initLatents {
                 guard initLatents.shape == packedLatents.shape else {
                     throw Flux2Error.invalidConfiguration(
