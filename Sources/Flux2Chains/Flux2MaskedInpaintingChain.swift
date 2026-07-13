@@ -298,7 +298,10 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
     /// - Throws: Whatever the underlying pipeline can throw (model not
     ///   loaded, memory, generation cancellation).
     public func run() async throws -> Flux2GenerationResult {
+        let profiler = Flux2Profiler.shared
+        profiler.start("0. Chain: Load Models")
         try await pipeline.loadModels()
+        profiler.end("0. Chain: Load Models")
 
         // Resolve which prompt + upsample flag actually reach the pipeline.
         // VLM enrichment is strictly opt-in and gracefully falls back when
@@ -355,6 +358,7 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
 
         // Encode the source image *once*, before the denoising loop starts.
         // The VAE stays resident so the post-denoising decode reuses it.
+        profiler.start("0b. Chain: VAE Encode Source")
         let imageLatents = try await pipeline.encodeImageToPackedSequence(
             workImage,
             targetHeight: targetH,
@@ -367,6 +371,7 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
             targetWidth: targetW,
             convention: maskConvention
         )
+        profiler.end("0b. Chain: VAE Encode Source")
 
         // Blend noise is drawn ONCE and reused at every step (diffusers
         // parity): the outside-mask region then follows a single consistent
@@ -431,6 +436,8 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
         // to full-canvas — the caller was promised an original-resolution
         // output with bit-exact kept pixels) or `compositeOnOriginal` is set.
         if cropRect != nil || maskCropPadding != nil || compositeOnOriginal {
+            profiler.start("9. Chain: Pixel Composite")
+            defer { profiler.end("9. Chain: Pixel Composite") }
             let region = cropRect ?? CGRect(x: 0, y: 0, width: image.width, height: image.height)
             if let composited = Flux2InpaintCompositing.composite(
                 original: image,

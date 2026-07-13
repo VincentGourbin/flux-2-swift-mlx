@@ -14,6 +14,7 @@ import UniformTypeIdentifiers
 import Flux2Core
 import Flux2Chains
 import FluxTextEncoders
+import MLX
 
 /// User-facing string mapping for ``Flux2MaskConvention``.
 ///
@@ -112,6 +113,21 @@ struct Inpaint: AsyncParsableCommand {
     var strength: Float = 1.0
     @Option(name: .long, help: "Crop-and-stitch padding in pixels (like diffusers padding_mask_crop). When set, inpaint only a crop around the mask (full token budget on the edit) and paste the result back onto the untouched original — output keeps the original resolution. Typical: 32-64. Recommended when the mask is small relative to the photo.")
     var maskCropPadding: Int?
+
+    @Option(name: .long, help: "Text encoder quantization: bf16, 8bit, 6bit, 4bit")
+    var textQuant: String = "4bit"
+
+    @Option(name: .long, help: "Transformer quantization: \(TransformerQuantization.cliValueList)")
+    var transformerQuant: String = "qint8"
+
+    @Flag(name: .long, help: "Show detailed per-phase performance profiling (model loads, text encoding, VAE encodes, per-step timings).")
+    var profile: Bool = false
+
+    @Option(name: .long, help: "Run the chain N times in the same process (same pipeline instance) to separate cold-start (first run: kernel compilation, cache warm-up) from steady-state. Default 1.")
+    var repeatCount: Int = 1
+
+    @Flag(name: .long, help: "Clear the MLX GPU buffer cache between --repeat-count runs (diagnostic for run-to-run slowdown).")
+    var cleanupBetweenRuns: Bool = false
     @Flag(name: .long, help: "Composite the generated canvas back onto the original in pixel space using the soft mask (kept pixels stay bit-identical, no VAE roundtrip). Implied by --mask-crop-padding.")
     var compositeOnOriginal: Bool = false
 
@@ -176,9 +192,21 @@ struct Inpaint: AsyncParsableCommand {
             logErr("✓ Qwen3.5 VLM loaded")
         }
 
+        guard let textQuantization = MistralQuantization(rawValue: textQuant) else {
+            throw ValidationError("Invalid text quantization: \(textQuant). Use bf16, 8bit, 6bit, or 4bit")
+        }
+        let quantConfig = Flux2QuantizationConfig(
+            textEncoder: textQuantization,
+            transformer: try TransformerQuantization.parseCLI(transformerQuant)
+        )
+
+        if profile {
+            Flux2Profiler.shared.enable()
+        }
+
         let pipeline = Flux2Pipeline(
             model: modelChoice,
-            quantization: .memoryEfficient,
+            quantization: quantConfig,
             vaeVariant: .smallDecoder
         )
         let loadStart = Date()
@@ -217,11 +245,52 @@ struct Inpaint: AsyncParsableCommand {
             }
         )
 
-        let runStart = Date()
-        let result = try await chain.run()
-        logErr("✓ Inpainting done in \(String(format: "%.1fs", Date().timeIntervalSince(runStart)))")
-        try Self.savePNG(result.image, to: output)
-        logErr("✓ Inpainted image → \(output)")
+        guard repeatCount >= 1 else {
+            throw ValidationError("--repeat-count must be ≥ 1")
+        }
+        @Sendable func logMLXMemory(_ label: String) {
+            let active = MLX.Memory.activeMemory / 1_048_576
+            let peak = MLX.Memory.peakMemory / 1_048_576
+            let cache = MLX.Memory.cacheMemory / 1_048_576
+            var info = mach_task_basic_info()
+            var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size) / 4
+            let kr = withUnsafeMutablePointer(to: &info) {
+                $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                    task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+                }
+            }
+            let rss = kr == KERN_SUCCESS ? "\(info.resident_size / 1_048_576) MB" : "n/a"
+            logErr("[mem \(label)] MLX active=\(active) MB peak=\(peak) MB cache=\(cache) MB | RSS=\(rss)")
+        }
+
+        var wallTimes: [TimeInterval] = []
+        for runIndex in 1...repeatCount {
+            if profile { Flux2Profiler.shared.reset() }
+            if cleanupBetweenRuns && runIndex > 1 {
+                MLX.Memory.clearCache()
+                logErr("[mem] cleared MLX cache between runs")
+            }
+            logMLXMemory("before run \(runIndex)")
+            let runStart = Date()
+            let result = try await chain.run()
+            let wall = Date().timeIntervalSince(runStart)
+            wallTimes.append(wall)
+            logMLXMemory("after run \(runIndex)")
+            logErr("✓ Inpainting run \(runIndex)/\(repeatCount) done in \(String(format: "%.1fs", wall))")
+            if profile {
+                print(Flux2Profiler.shared.generateReport())
+            }
+            if runIndex == repeatCount {
+                try Self.savePNG(result.image, to: output)
+                logErr("✓ Inpainted image → \(output)")
+            }
+        }
+        if repeatCount > 1 {
+            let summary = wallTimes.enumerated()
+                .map { "run \($0.offset + 1): \(String(format: "%.1fs", $0.element))" }
+                .joined(separator: "  |  ")
+            logErr("Σ wall times — \(summary)")
+        }
     }
 
     private static func loadCGImage(at path: String) -> CGImage? {
