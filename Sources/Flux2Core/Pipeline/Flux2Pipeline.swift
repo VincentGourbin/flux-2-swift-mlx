@@ -245,6 +245,23 @@ public class Flux2Pipeline: @unchecked Sendable {
         return compiledForward!(args)[0]
     }
 
+    /// Keep the text encoder loaded between generations (default `false`).
+    ///
+    /// By default the pipeline is memory-first: the text encoder is loaded,
+    /// used, and unloaded on EVERY generation so it never coexists with the
+    /// transformer. On machines with headroom this re-load is pure waste
+    /// (~1s warm, several seconds cold for the Klein/Qwen3 encoders; much
+    /// more for the Dev/Mistral-24B encoder).
+    ///
+    /// When `true`, the encoder stays resident across generations — the
+    /// text-encoding phase of subsequent generations skips the reload
+    /// entirely. The trade-off is peak memory: encoder + transformer are
+    /// resident simultaneously during denoising (e.g. Klein-9B bf16 +
+    /// Qwen3-8B-4bit ≈ +5 GB). Policy belongs to the host: enable it based
+    /// on available RAM, leave it off on constrained machines. Releasing
+    /// the pipeline instance still frees the encoder as usual.
+    public var keepTextEncoderLoaded: Bool = false
+
     /// Initialize the Flux.2 pipeline
     /// - Parameters:
     ///   - model: Model variant (dev, klein-4b, klein-9b)
@@ -1220,9 +1237,16 @@ public class Flux2Pipeline: @unchecked Sendable {
 
             Flux2Debug.log("Text embeddings shape: \(textEmbeddings.shape)")
 
-            // Unload text encoder to free memory
+            // Unload text encoder to free memory — unless the host opted
+            // into keeping it resident (`keepTextEncoderLoaded`), in which
+            // case only the GPU buffer cache is dropped before denoising.
             profiler.start("3. Unload Text Encoder")
-            await unloadTextEncoder()
+            if keepTextEncoderLoaded {
+                Flux2Debug.log("Keeping text encoder resident (keepTextEncoderLoaded)")
+                memoryManager.fullCleanup()
+            } else {
+                await unloadTextEncoder()
+            }
             profiler.end("3. Unload Text Encoder")
         }
 
@@ -1642,6 +1666,12 @@ public class Flux2Pipeline: @unchecked Sendable {
             }
             profiler.end("8. Post-processing")
 
+            // End-of-generation hygiene: drop the transient GPU buffer cache
+            // (~3 GB measured after a 1 MP run). For a resident host app this
+            // is dead weight between generations; the next run re-warms it in
+            // milliseconds.
+            memoryManager.clearCache()
+
             if profiler.isEnabled {
                 print(profiler.generateReport())
             }
@@ -1895,6 +1925,9 @@ public class Flux2Pipeline: @unchecked Sendable {
             throw Flux2Error.imageProcessingFailed("Failed to convert output to image")
         }
         profiler.end("8. Post-processing")
+
+        // End-of-generation hygiene: see the I2I return path above.
+        memoryManager.clearCache()
 
         Flux2Debug.log("Generation complete!")
         memoryManager.logMemoryState()

@@ -134,6 +134,9 @@ struct Inpaint: AsyncParsableCommand {
     @Flag(name: .long, help: "Composite the generated canvas back onto the original in pixel space using the soft mask (kept pixels stay bit-identical, no VAE roundtrip). Implied by --mask-crop-padding.")
     var compositeOnOriginal: Bool = false
 
+    @Flag(name: .long, help: "Keep the text encoder loaded between generations instead of reloading it each time (memory-first default). Saves ~1s warm / several seconds cold per generation at the cost of encoder + transformer resident simultaneously (Klein-9B: ≈ +5 GB). Enable on machines with RAM headroom.")
+    var keepTextEncoder: Bool = false
+
     func run() async throws {
         @Sendable func logErr(_ msg: String) {
             FileHandle.standardError.write(Data((msg + "\n").utf8))
@@ -213,6 +216,7 @@ struct Inpaint: AsyncParsableCommand {
             vaeVariant: .smallDecoder
         )
         pipeline.compileDenoisingStep = compileStep
+        pipeline.keepTextEncoderLoaded = keepTextEncoder
         let loadStart = Date()
         try await pipeline.loadModels()
         logErr("✓ Flux2 pipeline ready in \(String(format: "%.1fs", Date().timeIntervalSince(loadStart)))")
