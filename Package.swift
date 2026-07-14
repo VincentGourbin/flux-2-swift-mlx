@@ -74,6 +74,7 @@ let package = Package(
             dependencies: [
                 "Flux2Core",
                 "Flux2Chains",
+                .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Yams", package: "Yams"),
             ]

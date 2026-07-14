@@ -1180,6 +1180,7 @@ public class Flux2Pipeline: @unchecked Sendable {
             Flux2Debug.log("Generated output noise latents: \(patchifiedLatents.shape)")
 
             // Encode ALL reference images
+            profiler.start("5b. VAE Encode References")
             let (referenceLatents, referencePositionIds) = try await encodeReferenceImages(
                 images,
                 height: validHeight,
@@ -1187,6 +1188,7 @@ public class Flux2Pipeline: @unchecked Sendable {
                 maxReferencePixels: maxReferencePixels
             )
             eval(referenceLatents)
+            profiler.end("5b. VAE Encode References")
             Flux2Debug.log("Encoded \(images.count) reference images: latents \(referenceLatents.shape), posIds \(referencePositionIds.shape)")
 
             // Pack output latents to sequence format
