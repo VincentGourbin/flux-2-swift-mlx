@@ -128,6 +128,9 @@ struct Inpaint: AsyncParsableCommand {
 
     @Flag(name: .long, help: "Clear the MLX GPU buffer cache between --repeat-count runs (diagnostic for run-to-run slowdown).")
     var cleanupBetweenRuns: Bool = false
+
+    @Flag(name: .long, help: "Compile the denoising transformer forward with MLX.compile (experimental). First step pays a one-time trace; subsequent steps benefit from fused elementwise kernels.")
+    var compileStep: Bool = false
     @Flag(name: .long, help: "Composite the generated canvas back onto the original in pixel space using the soft mask (kept pixels stay bit-identical, no VAE roundtrip). Implied by --mask-crop-padding.")
     var compositeOnOriginal: Bool = false
 
@@ -209,6 +212,7 @@ struct Inpaint: AsyncParsableCommand {
             quantization: quantConfig,
             vaeVariant: .smallDecoder
         )
+        pipeline.compileDenoisingStep = compileStep
         let loadStart = Date()
         try await pipeline.loadModels()
         logErr("✓ Flux2 pipeline ready in \(String(format: "%.1fs", Date().timeIntervalSince(loadStart)))")

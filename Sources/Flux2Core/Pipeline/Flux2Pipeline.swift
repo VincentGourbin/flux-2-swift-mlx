@@ -155,6 +155,77 @@ public class Flux2Pipeline: @unchecked Sendable {
     /// Clear cache every N denoising steps (0 = disabled)
     public var clearCacheEveryNSteps: Int = 5
 
+    /// Compile the denoising transformer forward with `MLX.compile` (opt-in,
+    /// experimental). Fuses the elementwise chains (AdaLN modulation, gates,
+    /// activations) into JIT'd kernels — measured target ~5-15% per step.
+    /// The compiled closure is cached on the pipeline and re-traced
+    /// automatically by MLX when input shapes change (new resolution or
+    /// text length); it is rebuilt if the transformer instance or the
+    /// guidance arity changes. Not applied to the KV-cached path.
+    public var compileDenoisingStep: Bool = false
+
+    /// Cached compiled forward (see `compileDenoisingStep`).
+    private var compiledForward: (([MLXArray]) -> [MLXArray])?
+    /// Identity key of the compiled closure: transformer instance + guidance arity.
+    private var compiledForwardKey: (transformer: ObjectIdentifier, hasGuidance: Bool)?
+
+    /// Transformer forward used by the standard denoising loops. Routes
+    /// through the compiled closure when `compileDenoisingStep` is set,
+    /// otherwise calls the transformer directly.
+    private func denoiseForward(
+        _ transformer: Flux2Transformer2DModel,
+        hiddenStates: MLXArray,
+        encoderHiddenStates: MLXArray,
+        timestep: MLXArray,
+        guidance: MLXArray?,
+        imgIds: MLXArray,
+        txtIds: MLXArray
+    ) -> MLXArray {
+        guard compileDenoisingStep else {
+            return transformer.callAsFunction(
+                hiddenStates: hiddenStates,
+                encoderHiddenStates: encoderHiddenStates,
+                timestep: timestep,
+                guidance: guidance,
+                imgIds: imgIds,
+                txtIds: txtIds
+            )
+        }
+
+        let hasGuidance = guidance != nil
+        let key = (transformer: ObjectIdentifier(transformer), hasGuidance: hasGuidance)
+        if compiledForward == nil || compiledForwardKey! != key {
+            Flux2Debug.log("Compiling denoising forward (guidance: \(hasGuidance))...")
+            // Intra-forward eval() (memory-optimization graph segmentation) is
+            // illegal inside compile tracing — and pointless once the graph is
+            // compiled. Disable it for this transformer; peak memory rises to
+            // the unsegmented level, which is the trade-off of compiling.
+            if transformer.memoryOptimization != .disabled {
+                Flux2Debug.log("compileDenoisingStep: overriding memoryOptimization \(transformer.memoryOptimization) → .disabled (intra-forward eval is incompatible with compile)")
+                transformer.memoryOptimization = .disabled
+            }
+            // Weights are tracked as compile state via `inputs: [transformer]`,
+            // so LoRA merges (value-only updates) don't stale the trace.
+            compiledForward = compile(inputs: [transformer]) { (arrays: [MLXArray]) -> [MLXArray] in
+                [transformer.callAsFunction(
+                    hiddenStates: arrays[0],
+                    encoderHiddenStates: arrays[1],
+                    timestep: arrays[2],
+                    guidance: hasGuidance ? arrays[3] : nil,
+                    imgIds: hasGuidance ? arrays[4] : arrays[3],
+                    txtIds: hasGuidance ? arrays[5] : arrays[4]
+                )]
+            }
+            compiledForwardKey = key
+        }
+
+        var args = [hiddenStates, encoderHiddenStates, timestep]
+        if let guidance { args.append(guidance) }
+        args.append(imgIds)
+        args.append(txtIds)
+        return compiledForward!(args)[0]
+    }
+
     /// Initialize the Flux.2 pipeline
     /// - Parameters:
     ///   - model: Model variant (dev, klein-4b, klein-9b)
@@ -566,6 +637,10 @@ public class Flux2Pipeline: @unchecked Sendable {
 
     /// Unload transformer to free memory
     private func unloadTransformer() {
+        // The compiled forward retains the transformer (and its weights) —
+        // drop it first or the unload frees nothing.
+        compiledForward = nil
+        compiledForwardKey = nil
         transformer = nil
         memoryManager.clearCache()
     }
@@ -1420,7 +1495,8 @@ public class Flux2Pipeline: @unchecked Sendable {
                 }
 
                 // Run transformer (conditional pass)
-                let noisePredCond = transformer.callAsFunction(
+                let noisePredCond = denoiseForward(
+                    transformer,
                     hiddenStates: inputLatents,
                     encoderHiddenStates: textEmbeddings,
                     timestep: t,
@@ -1435,7 +1511,8 @@ public class Flux2Pipeline: @unchecked Sendable {
                 if useClassicalCFG,
                    let negEmbeds = negativeTextEmbeddings,
                    let uncondIds = i2iUncondTextIds {
-                    let noisePredUncond = transformer.callAsFunction(
+                    let noisePredUncond = denoiseForward(
+                        transformer,
                         hiddenStates: inputLatents,
                         encoderHiddenStates: negEmbeds,
                         timestep: t,
@@ -1646,7 +1723,8 @@ public class Flux2Pipeline: @unchecked Sendable {
             }
 
             // Run transformer (conditional pass)
-            let noisePredCond = transformer.callAsFunction(
+            let noisePredCond = denoiseForward(
+                transformer,
                 hiddenStates: packedLatents,
                 encoderHiddenStates: textEmbeddings,
                 timestep: t,
@@ -1661,7 +1739,8 @@ public class Flux2Pipeline: @unchecked Sendable {
             if useClassicalCFG,
                let negEmbeds = negativeTextEmbeddings,
                let uncondIds = uncondTextIds {
-                let noisePredUncond = transformer.callAsFunction(
+                let noisePredUncond = denoiseForward(
+                    transformer,
                     hiddenStates: packedLatents,
                     encoderHiddenStates: negEmbeds,
                     timestep: t,
