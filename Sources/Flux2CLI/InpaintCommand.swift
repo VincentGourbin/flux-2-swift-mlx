@@ -129,7 +129,7 @@ struct Inpaint: AsyncParsableCommand {
     @Flag(name: .long, help: "Clear the MLX GPU buffer cache between --repeat-count runs (diagnostic for run-to-run slowdown).")
     var cleanupBetweenRuns: Bool = false
 
-    @Flag(name: .long, help: "Compile the denoising transformer forward with MLX.compile (experimental). First step pays a one-time trace; subsequent steps benefit from fused elementwise kernels.")
+    @Flag(name: .long, help: "Compile the denoising transformer forward with MLX.compile (experimental, benchmarking only). Measured neutral on klein-9b bf16 — the elementwise hot spots are already hand-fused; steps are GEMM-bound. Forces memoryOptimization to .disabled (higher peak memory) and pays a one-time trace on the first step. Output is numerically identical.")
     var compileStep: Bool = false
     @Flag(name: .long, help: "Composite the generated canvas back onto the original in pixel space using the soft mask (kept pixels stay bit-identical, no VAE roundtrip). Implied by --mask-crop-padding.")
     var compositeOnOriginal: Bool = false

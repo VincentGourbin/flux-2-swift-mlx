@@ -155,13 +155,32 @@ public class Flux2Pipeline: @unchecked Sendable {
     /// Clear cache every N denoising steps (0 = disabled)
     public var clearCacheEveryNSteps: Int = 5
 
-    /// Compile the denoising transformer forward with `MLX.compile` (opt-in,
-    /// experimental). Fuses the elementwise chains (AdaLN modulation, gates,
-    /// activations) into JIT'd kernels — measured target ~5-15% per step.
-    /// The compiled closure is cached on the pipeline and re-traced
-    /// automatically by MLX when input shapes change (new resolution or
-    /// text length); it is rebuilt if the transformer instance or the
-    /// guidance arity changes. Not applied to the KV-cached path.
+    /// Compile the denoising transformer forward with `MLX.compile`.
+    ///
+    /// **Opt-in, experimental — OFF by default, and there is currently no
+    /// reason to enable it in production.** Measured on klein-9b bf16
+    /// (1 MP, 4 steps, M3 Max 96 GB, 2026-07): steady-state step time is
+    /// unchanged (13.2 s compiled vs 12.5–13.6 s baseline) because this
+    /// codebase already hand-optimizes the elementwise hot spots that
+    /// `compile` would fuse (modulation precomputed outside the block loop,
+    /// fused RoPE Metal kernel, `MLXFast` rmsNorm/SDPA); the remaining step
+    /// time is GEMM/SDPA-bound, which `compile` does not accelerate. The
+    /// output is numerically identical to the uncompiled path (mean RGB
+    /// delta 0.01/255 at equal seed).
+    ///
+    /// The switch is kept for experimentation (future mlx-swift versions,
+    /// other model variants, modified forward paths). Behaviour when
+    /// enabled:
+    /// - the compiled closure is cached on the pipeline; MLX re-traces it
+    ///   automatically when input shapes change (resolution, text length)
+    ///   and it is rebuilt if the transformer instance or guidance arity
+    ///   changes. First step after a (re)build pays a one-time trace
+    ///   (~1–2 s on klein-9b).
+    /// - `memoryOptimization` is forced to `.disabled` on the transformer:
+    ///   intra-forward `eval()` graph segmentation is illegal under compile
+    ///   tracing. Peak memory therefore rises to the unsegmented level —
+    ///   do NOT combine with low-memory profiles on constrained machines.
+    /// - the KV-cached path (`klein-9b-kv`) is not affected.
     public var compileDenoisingStep: Bool = false
 
     /// Cached compiled forward (see `compileDenoisingStep`).
