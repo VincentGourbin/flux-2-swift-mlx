@@ -222,23 +222,28 @@ public class Flux2WeightLoader {
             Flux2Debug.verbose("  - \(key): \(mapped[key]!.shape)")
         }
 
-        // DEBUG: Print raw BFL weight statistics BEFORE conversion
-        Flux2Debug.log("=== Raw BFL Weight Statistics (BEFORE conversion) ===")
-        for key in ["xEmbedder.weight", "contextEmbedder.weight",
-                    "transformerBlocks.0.attn.toQ.weight",
-                    "transformerBlocks.0.ff.activation.proj.weight",
-                    "singleTransformerBlocks.0.attn.toQkvMlp.weight"] {
-            if let w = mapped[key] {
-                eval(w)
-                // Convert to float32 for accurate stats
-                let wf32 = w.asType(.float32)
-                let absVal = MLX.abs(wf32)
-                let meanVal = mean(absVal).item(Float.self)
-                let maxVal = MLX.max(absVal).item(Float.self)
-                let minVal = MLX.min(absVal).item(Float.self)
-                let hasNaN = any(isNaN(wf32)).item(Bool.self)
-                let numInf = sum(MLX.abs(wf32) .> 1e30).item(Int.self)  // Count very large values as proxy for inf
-                Flux2Debug.log("  \(key): dtype=\(w.dtype), shape=\(w.shape), mean=\(meanVal), max=\(maxVal), min=\(minVal), hasNaN=\(hasNaN), numInf=\(numInf)")
+        // DEBUG: Print raw BFL weight statistics BEFORE conversion.
+        // Gated on loggability: the stats themselves cost GPU evals + full
+        // f32 reductions over large tensors — don't pay them when the print
+        // would be filtered out anyway.
+        if Flux2Debug.isLoggable(.info) {
+            Flux2Debug.log("=== Raw BFL Weight Statistics (BEFORE conversion) ===")
+            for key in ["xEmbedder.weight", "contextEmbedder.weight",
+                        "transformerBlocks.0.attn.toQ.weight",
+                        "transformerBlocks.0.ff.activation.proj.weight",
+                        "singleTransformerBlocks.0.attn.toQkvMlp.weight"] {
+                if let w = mapped[key] {
+                    eval(w)
+                    // Convert to float32 for accurate stats
+                    let wf32 = w.asType(.float32)
+                    let absVal = MLX.abs(wf32)
+                    let meanVal = mean(absVal).item(Float.self)
+                    let maxVal = MLX.max(absVal).item(Float.self)
+                    let minVal = MLX.min(absVal).item(Float.self)
+                    let hasNaN = any(isNaN(wf32)).item(Bool.self)
+                    let numInf = sum(MLX.abs(wf32) .> 1e30).item(Int.self)  // Count very large values as proxy for inf
+                    Flux2Debug.log("  \(key): dtype=\(w.dtype), shape=\(w.shape), mean=\(meanVal), max=\(maxVal), min=\(minVal), hasNaN=\(hasNaN), numInf=\(numInf)")
+                }
             }
         }
 
@@ -262,24 +267,27 @@ public class Flux2WeightLoader {
         }
         Flux2Debug.log("Converted \(convertedCount) bfloat16 weights to float16 (direct)")
 
-        // DEBUG: Print weight statistics for key layers (AFTER processing)
-        Flux2Debug.log("=== BFL Weight Statistics (AFTER processing) ===")
-        for key in ["xEmbedder.weight", "contextEmbedder.weight",
-                    "transformerBlocks.0.attn.toQ.weight",
-                    "transformerBlocks.0.ff.activation.proj.weight",
-                    "singleTransformerBlocks.0.attn.toQkvMlp.weight"] {
-            if let w = converted[key] {
-                eval(w)
-                let wf32 = w.asType(.float32)
-                let absVal = MLX.abs(wf32)
-                let meanVal = mean(absVal).item(Float.self)
-                let maxVal = MLX.max(absVal).item(Float.self)
-                let minVal = MLX.min(absVal).item(Float.self)
-                let hasNaN = any(isNaN(wf32)).item(Bool.self)
-                let numInf = sum(MLX.abs(wf32) .> 1e30).item(Int.self)  // Count very large values as proxy for inf
-                Flux2Debug.log("  \(key): dtype=\(w.dtype), shape=\(w.shape), mean=\(meanVal), max=\(maxVal), min=\(minVal), hasNaN=\(hasNaN), numInf=\(numInf)")
-            } else {
-                Flux2Debug.log("  \(key): NOT FOUND")
+        // DEBUG: Print weight statistics for key layers (AFTER processing).
+        // Same gating as above — stats compute is not free.
+        if Flux2Debug.isLoggable(.info) {
+            Flux2Debug.log("=== BFL Weight Statistics (AFTER processing) ===")
+            for key in ["xEmbedder.weight", "contextEmbedder.weight",
+                        "transformerBlocks.0.attn.toQ.weight",
+                        "transformerBlocks.0.ff.activation.proj.weight",
+                        "singleTransformerBlocks.0.attn.toQkvMlp.weight"] {
+                if let w = converted[key] {
+                    eval(w)
+                    let wf32 = w.asType(.float32)
+                    let absVal = MLX.abs(wf32)
+                    let meanVal = mean(absVal).item(Float.self)
+                    let maxVal = MLX.max(absVal).item(Float.self)
+                    let minVal = MLX.min(absVal).item(Float.self)
+                    let hasNaN = any(isNaN(wf32)).item(Bool.self)
+                    let numInf = sum(MLX.abs(wf32) .> 1e30).item(Int.self)  // Count very large values as proxy for inf
+                    Flux2Debug.log("  \(key): dtype=\(w.dtype), shape=\(w.shape), mean=\(meanVal), max=\(maxVal), min=\(minVal), hasNaN=\(hasNaN), numInf=\(numInf)")
+                } else {
+                    Flux2Debug.log("  \(key): NOT FOUND")
+                }
             }
         }
 
@@ -361,21 +369,24 @@ public class Flux2WeightLoader {
         }
         Flux2Debug.log("Dequantized \(dequantCount) qint8 weights to float16")
 
-        // DEBUG: Print weight statistics for key layers
-        Flux2Debug.log("=== Diffusers Weight Statistics ===")
-        for key in ["xEmbedder.weight", "contextEmbedder.weight",
-                    "transformerBlocks.0.attn.toQ.weight",
-                    "transformerBlocks.0.ff.activation.proj.weight",
-                    "singleTransformerBlocks.0.attn.toQkvMlp.weight"].prefix(5) {
-            if let w = mapped[key] {
-                eval(w)
-                let absVal = MLX.abs(w)
-                let meanVal = mean(absVal).item(Float.self)
-                let maxVal = MLX.max(absVal).item(Float.self)
-                let minVal = MLX.min(absVal).item(Float.self)
-                Flux2Debug.log("  \(key): shape=\(w.shape), mean=\(meanVal), max=\(maxVal), min=\(minVal)")
-            } else {
-                Flux2Debug.log("  \(key): NOT FOUND")
+        // DEBUG: Print weight statistics for key layers.
+        // Same gating as the BFL path — stats compute is not free.
+        if Flux2Debug.isLoggable(.info) {
+            Flux2Debug.log("=== Diffusers Weight Statistics ===")
+            for key in ["xEmbedder.weight", "contextEmbedder.weight",
+                        "transformerBlocks.0.attn.toQ.weight",
+                        "transformerBlocks.0.ff.activation.proj.weight",
+                        "singleTransformerBlocks.0.attn.toQkvMlp.weight"].prefix(5) {
+                if let w = mapped[key] {
+                    eval(w)
+                    let absVal = MLX.abs(w)
+                    let meanVal = mean(absVal).item(Float.self)
+                    let maxVal = MLX.max(absVal).item(Float.self)
+                    let minVal = MLX.min(absVal).item(Float.self)
+                    Flux2Debug.log("  \(key): shape=\(w.shape), mean=\(meanVal), max=\(maxVal), min=\(minVal)")
+                } else {
+                    Flux2Debug.log("  \(key): NOT FOUND")
+                }
             }
         }
 

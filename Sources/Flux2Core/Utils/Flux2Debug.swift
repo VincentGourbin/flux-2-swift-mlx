@@ -35,6 +35,14 @@ public enum Flux2Debug {
         minLevel = .warning
     }
 
+    /// Whether a message at `level` would actually be printed. Use this to
+    /// skip computations that exist only to feed debug logs (e.g. weight
+    /// statistics requiring GPU evals) — `log()` filters the print, not the
+    /// work done to build its arguments.
+    public static func isLoggable(_ level: Level) -> Bool {
+        enabled && level >= minLevel
+    }
+
     /// Log a debug message
     public static func log(_ message: String, level: Level = .info) {
         guard enabled, level >= minLevel else { return }
