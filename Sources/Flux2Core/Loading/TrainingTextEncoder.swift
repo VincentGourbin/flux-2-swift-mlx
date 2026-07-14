@@ -18,8 +18,11 @@ public protocol TrainingTextEncoder: AnyObject, Sendable {
     /// Estimated memory usage in GB
     var estimatedMemoryGB: Int { get }
 
-    /// Load the model (if not already loaded)
-    @MainActor
+    /// Load the model (if not already loaded).
+    ///
+    /// Nonisolated since #105 (aligned with #103/#104): weight loading runs
+    /// off the main actor so a hosting UI never blocks on it. Callers
+    /// sequence load → encode themselves (see `LoRATrainingHelper`).
     func load() async throws
 
     /// Encode a text prompt to embeddings for training
@@ -28,15 +31,14 @@ public protocol TrainingTextEncoder: AnyObject, Sendable {
     func encodeForTraining(_ prompt: String) throws -> MLXArray
 
     /// Unload the model to free memory
-    @MainActor
     func unload()
 }
 
 // MARK: - KleinTextEncoder Conformance
 
 extension KleinTextEncoder: TrainingTextEncoder {
-    /// Load the model (protocol conformance wrapper)
-    @MainActor
+    /// Load the model (protocol conformance wrapper). Nonisolated — the
+    /// underlying `load(from:)` has been off-main since #104.
     public func load() async throws {
         try await load(from: nil)
     }
@@ -50,8 +52,8 @@ extension KleinTextEncoder: TrainingTextEncoder {
 // MARK: - DevTextEncoder Conformance
 
 extension DevTextEncoder: TrainingTextEncoder {
-    /// Load the model (protocol conformance wrapper)
-    @MainActor
+    /// Load the model (protocol conformance wrapper). Nonisolated — the
+    /// underlying `load(from:)` has been off-main since #104.
     public func load() async throws {
         try await load(from: nil)
     }
