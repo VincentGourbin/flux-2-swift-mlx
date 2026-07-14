@@ -406,6 +406,35 @@ flux2 download --transformer-quant bf16
 
 ---
 
+## Pre-Quantized Checkpoints (`export-quantized`)
+
+On-the-fly quantization re-pays, at every load, the full bf16 read (17 GB
+for Klein 9B) plus a quantize pass. `export-quantized` writes an MLX-native
+pre-quantized checkpoint next to the source weights; subsequent loads with
+the same model/quantization pick it up **automatically** and skip both.
+
+```bash
+# One-time export (pays the standard load once, then writes ~9.6 GB)
+flux2 export-quantized --flux-model klein-9b --transformer-quant qint8
+# From now on, any qint8 load of klein-9b uses it automatically.
+```
+
+- Biggest win on machines whose page cache cannot hold the bf16 file
+  (16–32 GB Macs): every load there is a cold load, and the checkpoint
+  halves the bytes read on top of skipping the quantize pass.
+- Output is bit-identical to the on-the-fly path (quantization is
+  deterministic; verified at equal seed).
+- Layout: `<model dir>/mlx-prequantized/<quant>/transformer.safetensors`,
+  with strict metadata validation (bits/group size/mode) and automatic
+  fallback to the standard path on any mismatch. Delete the
+  `mlx-prequantized/` subdirectory to reclaim disk space.
+- Library API: `Flux2Pipeline.exportPrequantizedTransformer()` (refuses to
+  bake merged LoRAs unless `allowLoRABaked: true`).
+- Works for all quantized modes (`qint8`, `int4`, `mxfp8`, `mxfp4`,
+  `nvfp4`) — fp modes have no `.biases` tensors, which is expected.
+
+---
+
 ## LoRA Adapters
 
 Apply LoRA (Low-Rank Adaptation) weights to customize model behavior for specific tasks.

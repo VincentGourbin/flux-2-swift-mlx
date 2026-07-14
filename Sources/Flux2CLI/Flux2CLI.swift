@@ -30,6 +30,7 @@ struct Flux2CLI: AsyncParsableCommand {
             Outpaint.self,
             MaskSubject.self,
             Download.self,
+            ExportQuantized.self,
             Info.self,
             Profile.self,
             VLMTest.self,

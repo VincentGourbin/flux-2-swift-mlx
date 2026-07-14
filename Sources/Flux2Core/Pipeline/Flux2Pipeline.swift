@@ -143,6 +143,10 @@ public class Flux2Pipeline: @unchecked Sendable {
     /// LoRA adapter manager
     private var loraManager: LoRAManager?
 
+    /// Source directory the transformer weights were resolved from (set by
+    /// `loadTransformer`) — anchor for pre-quantized checkpoint exports.
+    private var transformerSourcePath: URL?
+
     /// Active LoRA scheduler overrides (from loaded LoRA config)
     private var loraSchedulerOverrides: SchedulerOverrides?
 
@@ -490,6 +494,31 @@ public class Flux2Pipeline: @unchecked Sendable {
             memoryOptimization: memoryOptimization
         )
         Flux2Debug.log("Memory optimization: \(memoryOptimization)")
+        transformerSourcePath = modelPath
+
+        // Fast path: a pre-quantized MLX checkpoint exported earlier (see
+        // Flux2PrequantizedCheckpoint / `flux2 export-quantized`) skips the
+        // bf16 read, the key mapping, and the quantize pass entirely. Falls
+        // through to the standard path on absence or validation failure.
+        if quantization.transformer != .bf16,
+           Flux2PrequantizedCheckpoint.load(
+               into: transformer!,
+               sourceModelPath: modelPath,
+               quantization: quantization.transformer
+           ) {
+            memoryManager.fullCleanup()
+            // Merge LoRA weights if any are loaded (same as the standard path)
+            if let loraManager = loraManager, loraManager.count > 0 {
+                MLX.Memory.peakMemory = 0
+                Flux2WeightLoader.mergeLoRAWeights(from: loraManager, into: transformer!)
+                loraManager.clearWeightsAfterFusion()
+                memoryManager.fullCleanup()
+            }
+            eval(transformer!.parameters())
+            memoryManager.logMemoryState()
+            Flux2Debug.log("Transformer loaded successfully (pre-quantized checkpoint)")
+            return
+        }
 
         // Load weights with explicit memory management
         // For large models (Dev), this can temporarily use 2x memory during mapping
@@ -669,6 +698,40 @@ public class Flux2Pipeline: @unchecked Sendable {
         eval(vae!.parameters())
 
         Flux2Debug.log("VAE loaded successfully (\(vaeVariant.displayName), decoder: \(vaeConfig.effectiveDecoderChannels))")
+    }
+
+    /// Export the transformer as a pre-quantized MLX checkpoint next to its
+    /// source weights, so subsequent loads with the same quantization skip
+    /// the bf16 read and the quantize pass (see `Flux2PrequantizedCheckpoint`).
+    ///
+    /// Loads the transformer first if needed (paying the standard on-the-fly
+    /// path once). Requires a non-bf16 transformer quantization. The write is
+    /// explicit by design — call this from the host when trading disk for
+    /// load time is wanted (roughly the quantized model size on disk, e.g.
+    /// ~9.6 GB for Klein 9B qint8). Delete the model's `mlx-prequantized/`
+    /// subdirectory to reclaim the space.
+    ///
+    /// - Parameter allowLoRABaked: exporting while LoRAs are merged would
+    ///   bake them into the checkpoint; refused unless explicitly allowed.
+    /// - Returns: URL of the written safetensors file.
+    @discardableResult
+    public func exportPrequantizedTransformer(allowLoRABaked: Bool = false) async throws -> URL {
+        guard quantization.transformer != .bf16 else {
+            throw Flux2Error.invalidConfiguration(
+                "exportPrequantizedTransformer requires a quantized transformer configuration (current: bf16)")
+        }
+        if !allowLoRABaked, let loraManager, loraManager.count > 0 {
+            throw Flux2Error.invalidConfiguration(
+                "LoRAs are loaded — the export would bake them into the base checkpoint. Pass allowLoRABaked: true if that is intended.")
+        }
+        try await loadTransformer()
+        guard let transformer, let sourcePath = transformerSourcePath else {
+            throw Flux2Error.modelNotLoaded("Transformer not loaded — cannot export")
+        }
+        return try Flux2PrequantizedCheckpoint.save(
+            model: transformer,
+            sourceModelPath: sourcePath,
+            quantization: quantization.transformer)
     }
 
     /// Unload transformer to free memory
