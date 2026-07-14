@@ -155,6 +155,96 @@ public class Flux2Pipeline: @unchecked Sendable {
     /// Clear cache every N denoising steps (0 = disabled)
     public var clearCacheEveryNSteps: Int = 5
 
+    /// Compile the denoising transformer forward with `MLX.compile`.
+    ///
+    /// **Opt-in, experimental — OFF by default, and there is currently no
+    /// reason to enable it in production.** Measured on klein-9b bf16
+    /// (1 MP, 4 steps, M3 Max 96 GB, 2026-07): steady-state step time is
+    /// unchanged (13.2 s compiled vs 12.5–13.6 s baseline) because this
+    /// codebase already hand-optimizes the elementwise hot spots that
+    /// `compile` would fuse (modulation precomputed outside the block loop,
+    /// fused RoPE Metal kernel, `MLXFast` rmsNorm/SDPA); the remaining step
+    /// time is GEMM/SDPA-bound, which `compile` does not accelerate. The
+    /// output is numerically identical to the uncompiled path (mean RGB
+    /// delta 0.01/255 at equal seed).
+    ///
+    /// The switch is kept for experimentation (future mlx-swift versions,
+    /// other model variants, modified forward paths). Behaviour when
+    /// enabled:
+    /// - the compiled closure is cached on the pipeline; MLX re-traces it
+    ///   automatically when input shapes change (resolution, text length)
+    ///   and it is rebuilt if the transformer instance or guidance arity
+    ///   changes. First step after a (re)build pays a one-time trace
+    ///   (~1–2 s on klein-9b).
+    /// - `memoryOptimization` is forced to `.disabled` on the transformer:
+    ///   intra-forward `eval()` graph segmentation is illegal under compile
+    ///   tracing. Peak memory therefore rises to the unsegmented level —
+    ///   do NOT combine with low-memory profiles on constrained machines.
+    /// - the KV-cached path (`klein-9b-kv`) is not affected.
+    public var compileDenoisingStep: Bool = false
+
+    /// Cached compiled forward (see `compileDenoisingStep`).
+    private var compiledForward: (([MLXArray]) -> [MLXArray])?
+    /// Identity key of the compiled closure: transformer instance + guidance arity.
+    private var compiledForwardKey: (transformer: ObjectIdentifier, hasGuidance: Bool)?
+
+    /// Transformer forward used by the standard denoising loops. Routes
+    /// through the compiled closure when `compileDenoisingStep` is set,
+    /// otherwise calls the transformer directly.
+    private func denoiseForward(
+        _ transformer: Flux2Transformer2DModel,
+        hiddenStates: MLXArray,
+        encoderHiddenStates: MLXArray,
+        timestep: MLXArray,
+        guidance: MLXArray?,
+        imgIds: MLXArray,
+        txtIds: MLXArray
+    ) -> MLXArray {
+        guard compileDenoisingStep else {
+            return transformer.callAsFunction(
+                hiddenStates: hiddenStates,
+                encoderHiddenStates: encoderHiddenStates,
+                timestep: timestep,
+                guidance: guidance,
+                imgIds: imgIds,
+                txtIds: txtIds
+            )
+        }
+
+        let hasGuidance = guidance != nil
+        let key = (transformer: ObjectIdentifier(transformer), hasGuidance: hasGuidance)
+        if compiledForward == nil || compiledForwardKey! != key {
+            Flux2Debug.log("Compiling denoising forward (guidance: \(hasGuidance))...")
+            // Intra-forward eval() (memory-optimization graph segmentation) is
+            // illegal inside compile tracing — and pointless once the graph is
+            // compiled. Disable it for this transformer; peak memory rises to
+            // the unsegmented level, which is the trade-off of compiling.
+            if transformer.memoryOptimization != .disabled {
+                Flux2Debug.log("compileDenoisingStep: overriding memoryOptimization \(transformer.memoryOptimization) → .disabled (intra-forward eval is incompatible with compile)")
+                transformer.memoryOptimization = .disabled
+            }
+            // Weights are tracked as compile state via `inputs: [transformer]`,
+            // so LoRA merges (value-only updates) don't stale the trace.
+            compiledForward = compile(inputs: [transformer]) { (arrays: [MLXArray]) -> [MLXArray] in
+                [transformer.callAsFunction(
+                    hiddenStates: arrays[0],
+                    encoderHiddenStates: arrays[1],
+                    timestep: arrays[2],
+                    guidance: hasGuidance ? arrays[3] : nil,
+                    imgIds: hasGuidance ? arrays[4] : arrays[3],
+                    txtIds: hasGuidance ? arrays[5] : arrays[4]
+                )]
+            }
+            compiledForwardKey = key
+        }
+
+        var args = [hiddenStates, encoderHiddenStates, timestep]
+        if let guidance { args.append(guidance) }
+        args.append(imgIds)
+        args.append(txtIds)
+        return compiledForward!(args)[0]
+    }
+
     /// Initialize the Flux.2 pipeline
     /// - Parameters:
     ///   - model: Model variant (dev, klein-4b, klein-9b)
@@ -566,6 +656,10 @@ public class Flux2Pipeline: @unchecked Sendable {
 
     /// Unload transformer to free memory
     private func unloadTransformer() {
+        // The compiled forward retains the transformer (and its weights) —
+        // drop it first or the unload frees nothing.
+        compiledForward = nil
+        compiledForwardKey = nil
         transformer = nil
         memoryManager.clearCache()
     }
@@ -1420,7 +1514,8 @@ public class Flux2Pipeline: @unchecked Sendable {
                 }
 
                 // Run transformer (conditional pass)
-                let noisePredCond = transformer.callAsFunction(
+                let noisePredCond = denoiseForward(
+                    transformer,
                     hiddenStates: inputLatents,
                     encoderHiddenStates: textEmbeddings,
                     timestep: t,
@@ -1435,7 +1530,8 @@ public class Flux2Pipeline: @unchecked Sendable {
                 if useClassicalCFG,
                    let negEmbeds = negativeTextEmbeddings,
                    let uncondIds = i2iUncondTextIds {
-                    let noisePredUncond = transformer.callAsFunction(
+                    let noisePredUncond = denoiseForward(
+                        transformer,
                         hiddenStates: inputLatents,
                         encoderHiddenStates: negEmbeds,
                         timestep: t,
@@ -1646,7 +1742,8 @@ public class Flux2Pipeline: @unchecked Sendable {
             }
 
             // Run transformer (conditional pass)
-            let noisePredCond = transformer.callAsFunction(
+            let noisePredCond = denoiseForward(
+                transformer,
                 hiddenStates: packedLatents,
                 encoderHiddenStates: textEmbeddings,
                 timestep: t,
@@ -1661,7 +1758,8 @@ public class Flux2Pipeline: @unchecked Sendable {
             if useClassicalCFG,
                let negEmbeds = negativeTextEmbeddings,
                let uncondIds = uncondTextIds {
-                let noisePredUncond = transformer.callAsFunction(
+                let noisePredUncond = denoiseForward(
+                    transformer,
                     hiddenStates: packedLatents,
                     encoderHiddenStates: negEmbeds,
                     timestep: t,
