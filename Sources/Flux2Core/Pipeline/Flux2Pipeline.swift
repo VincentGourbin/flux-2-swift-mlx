@@ -143,6 +143,25 @@ public class Flux2Pipeline: @unchecked Sendable {
     /// LoRA adapter manager
     private var loraManager: LoRAManager?
 
+    /// Source directory the transformer weights were resolved from (set by
+    /// `loadTransformer`) — anchor for pre-quantized checkpoint exports.
+    private var transformerSourcePath: URL?
+
+    /// When set, `loadTransformer` ignores any pre-quantized checkpoint and
+    /// loads from the source weights. Used by exports to guarantee the
+    /// result is derived from the source, never from a previous export.
+    private var skipPrequantizedCheckpoint = false
+
+    /// Whether the currently loaded transformer came from a pre-quantized
+    /// checkpoint (informational; also guards export round-trips).
+    public private(set) var transformerLoadedFromPrequantized = false
+
+    /// Whether LoRA weights have been merged into the CURRENT transformer
+    /// instance. Unlike `loraManager.count`, this survives `unloadLoRA` —
+    /// merged weights cannot be un-merged without reloading the base model,
+    /// so this is the flag export safety checks must consult.
+    public private(set) var transformerHasMergedLoRAs = false
+
     /// Active LoRA scheduler overrides (from loaded LoRA config)
     private var loraSchedulerOverrides: SchedulerOverrides?
 
@@ -490,61 +509,101 @@ public class Flux2Pipeline: @unchecked Sendable {
             memoryOptimization: memoryOptimization
         )
         Flux2Debug.log("Memory optimization: \(memoryOptimization)")
+        transformerSourcePath = modelPath
+        transformerHasMergedLoRAs = false  // fresh instance, nothing merged yet
 
-        // Load weights with explicit memory management
-        // For large models (Dev), this can temporarily use 2x memory during mapping
-        Flux2Debug.log("Loading transformer weights from disk...")
-        var weights = try Flux2WeightLoader.loadWeights(from: modelPath)
+        // Fast path: a pre-quantized MLX checkpoint exported earlier (see
+        // Flux2PrequantizedCheckpoint / `flux2 export-quantized`) skips the
+        // bf16 read, the key mapping, and the quantize pass entirely. Its
+        // validation runs BEFORE any model mutation, so on failure the same
+        // pristine instance falls through to the standard path below.
+        // Exports set `skipPrequantizedCheckpoint` to guarantee the result
+        // derives from the source weights, never from a previous export.
+        var loadedFromPrequantized = false
+        if quantization.transformer != .bf16, !skipPrequantizedCheckpoint {
+            loadedFromPrequantized = Flux2PrequantizedCheckpoint.load(
+                into: transformer!,
+                makeStructureClone: {
+                    Flux2Transformer2DModel(
+                        config: self.model.transformerConfig,
+                        memoryOptimization: self.memoryOptimization)
+                },
+                sourceModelPath: modelPath,
+                quantization: quantization.transformer
+            )
+            if loadedFromPrequantized {
+                memoryManager.fullCleanup()
+            }
+        }
+        transformerLoadedFromPrequantized = loadedFromPrequantized
 
-        Flux2Debug.log("Applying weights to model...")
-        try Flux2WeightLoader.applyTransformerWeights(&weights, to: transformer!)
+        if !loadedFromPrequantized {
+            // Load weights with explicit memory management
+            // For large models (Dev), this can temporarily use 2x memory during mapping
+            Flux2Debug.log("Loading transformer weights from disk...")
+            var weights = try Flux2WeightLoader.loadWeights(from: modelPath)
 
-        // Explicitly release the raw weights dictionary to free memory
-        // This is important for Dev model where weights can be ~32GB
-        weights.removeAll()
-        eval([])  // Sync to ensure weights are released
-        memoryManager.fullCleanup()
-        Flux2Debug.log("Raw weights released from memory")
+            Flux2Debug.log("Applying weights to model...")
+            try Flux2WeightLoader.applyTransformerWeights(&weights, to: transformer!)
 
-        // Quantize transformer to native MLX QuantizedLinear if requested
-        // This handles both:
-        // 1. Pre-quantized weights (quanto→float16→MLX qint8): negligible precision loss
-        // 2. On-the-fly quantization from bf16 (e.g. Klein 9B qint8, any model int4)
-        // The quantization uses MLX's native QuantizedLinear format which:
-        // - Reduces memory usage proportionally to bit width (8-bit: ~50%, 4-bit: ~75%)
-        // - Uses optimized quantizedMM() for faster inference on Apple Silicon
-        // - Enables efficient dequant→merge→requant for LoRA weight merging
-        if quantization.transformer != .bf16 {
-            let bits = quantization.transformer.bits
-            let groupSize = quantization.transformer.groupSize
-            let mode = quantization.transformer.mode
-            Flux2Debug.log("Quantizing transformer on-the-fly to \(bits)-bit (groupSize=\(groupSize), mode=\(mode.rawValue))...")
-            memoryManager.logMemoryState()
-            quantize(model: transformer!, groupSize: groupSize, bits: bits, mode: mode)
-            eval(transformer!.parameters())
+            // Explicitly release the raw weights dictionary to free memory
+            // This is important for Dev model where weights can be ~32GB
+            weights.removeAll()
+            eval([])  // Sync to ensure weights are released
             memoryManager.fullCleanup()
-            memoryManager.logMemoryState()
-            Flux2Debug.log("Transformer quantized to QuantizedLinear (\(bits)-bit, \(mode.rawValue))")
+            Flux2Debug.log("Raw weights released from memory")
+
+            // Quantize transformer to native MLX QuantizedLinear if requested
+            // This handles both:
+            // 1. Pre-quantized weights (quanto→float16→MLX qint8): negligible precision loss
+            // 2. On-the-fly quantization from bf16 (e.g. Klein 9B qint8, any model int4)
+            // The quantization uses MLX's native QuantizedLinear format which:
+            // - Reduces memory usage proportionally to bit width (8-bit: ~50%, 4-bit: ~75%)
+            // - Uses optimized quantizedMM() for faster inference on Apple Silicon
+            // - Enables efficient dequant→merge→requant for LoRA weight merging
+            if quantization.transformer != .bf16 {
+                let bits = quantization.transformer.bits
+                let groupSize = quantization.transformer.groupSize
+                let mode = quantization.transformer.mode
+                Flux2Debug.log("Quantizing transformer on-the-fly to \(bits)-bit (groupSize=\(groupSize), mode=\(mode.rawValue))...")
+                memoryManager.logMemoryState()
+                quantize(model: transformer!, groupSize: groupSize, bits: bits, mode: mode)
+                eval(transformer!.parameters())
+                memoryManager.fullCleanup()
+                memoryManager.logMemoryState()
+                Flux2Debug.log("Transformer quantized to QuantizedLinear (\(bits)-bit, \(mode.rawValue))")
+            }
         }
 
-        // Merge LoRA weights if any are loaded
+        // Merge LoRA weights if any are loaded — common tail, shared by both
+        // load paths so their behavior cannot drift.
         if let loraManager = loraManager, loraManager.count > 0 {
-            MLX.Memory.peakMemory = 0
-            Flux2Debug.log("[LoRA] Before merge:")
-            memoryManager.logMemoryState()
-            Flux2WeightLoader.mergeLoRAWeights(from: loraManager, into: transformer!)
-            // Free LoRA matrices from memory after fusion (they're now baked into base weights)
-            loraManager.clearWeightsAfterFusion()
-            memoryManager.fullCleanup()
-            Flux2Debug.log("[LoRA] After merge:")
-            memoryManager.logMemoryState()
+            if loraManager.loadedLayerPaths.isEmpty {
+                // A previous fusion already consumed the LoRA weights
+                // (clearWeightsAfterFusion). This freshly loaded transformer
+                // holds BASE weights only — merging would silently no-op
+                // while hasLoRA still reports LoRAs active.
+                Flux2Debug.warning(
+                    "[LoRA] \(loraManager.count) LoRA(s) registered but their weights were already fused into a previous transformer instance and cleared — the reloaded transformer has NO LoRA applied. Reload the LoRA adapters to re-merge.")
+            } else {
+                MLX.Memory.peakMemory = 0
+                Flux2Debug.log("[LoRA] Before merge:")
+                memoryManager.logMemoryState()
+                Flux2WeightLoader.mergeLoRAWeights(from: loraManager, into: transformer!)
+                // Free LoRA matrices from memory after fusion (they're now baked into base weights)
+                loraManager.clearWeightsAfterFusion()
+                transformerHasMergedLoRAs = true
+                memoryManager.fullCleanup()
+                Flux2Debug.log("[LoRA] After merge:")
+                memoryManager.logMemoryState()
+            }
         }
 
         // Ensure weights are evaluated
         eval(transformer!.parameters())
 
         memoryManager.logMemoryState()
-        Flux2Debug.log("Transformer loaded successfully")
+        Flux2Debug.log("Transformer loaded successfully\(loadedFromPrequantized ? " (pre-quantized checkpoint)" : "")")
     }
 
     // MARK: - LoRA Support
@@ -594,6 +653,7 @@ public class Flux2Pipeline: @unchecked Sendable {
             Flux2WeightLoader.mergeLoRAWeights(from: loraManager!, into: transformer)
             // Free LoRA matrices from memory after fusion (they're now baked into base weights)
             loraManager!.clearWeightsAfterFusion()
+            transformerHasMergedLoRAs = true
         }
 
         return info
@@ -671,6 +731,94 @@ public class Flux2Pipeline: @unchecked Sendable {
         Flux2Debug.log("VAE loaded successfully (\(vaeVariant.displayName), decoder: \(vaeConfig.effectiveDecoderChannels))")
     }
 
+    /// Export the transformer as a pre-quantized MLX checkpoint next to its
+    /// source weights, so subsequent loads with the same quantization skip
+    /// the bf16 read and the quantize pass (see `Flux2PrequantizedCheckpoint`).
+    ///
+    /// The export always derives from the SOURCE weights (never from a
+    /// previous export): the fast path is disabled for the internal load and
+    /// a checkpoint-loaded resident transformer is dropped first. If a
+    /// checkpoint already exists, the call is a no-op returning its URL
+    /// unless `force` is set. Requires a non-bf16 transformer quantization.
+    /// The write is explicit by design — call this from the host when
+    /// trading disk for load time is wanted (roughly the quantized model
+    /// size on disk, e.g. ~9.6 GB for Klein 9B qint8). Delete the model's
+    /// `mlx-prequantized/` subdirectory to reclaim the space.
+    ///
+    /// - Parameters:
+    ///   - allowLoRABaked: the bake check runs AFTER the load against
+    ///     `transformerHasMergedLoRAs` (merged weights survive `unloadLoRA`);
+    ///     when allowed, the export is tagged `lora_baked` in metadata and
+    ///     `load` warns loudly on every use.
+    ///   - force: delete and regenerate an existing checkpoint.
+    /// - Returns: URL of the written (or already existing) safetensors file.
+    @discardableResult
+    public func exportPrequantizedTransformer(
+        allowLoRABaked: Bool = false,
+        force: Bool = false
+    ) async throws -> URL {
+        guard quantization.transformer != .bf16 else {
+            throw Flux2Error.invalidConfiguration(
+                "exportPrequantizedTransformer requires a quantized transformer configuration (current: bf16)")
+        }
+
+        // Resolve the source directory up-front (same resolution as
+        // loadTransformer) so the exists/force decision precedes any load.
+        let variant = ModelRegistry.TransformerVariant.variant(
+            for: model, quantization: quantization.transformer)
+        guard let sourcePath = Flux2ModelDownloader.findModelPath(for: .transformer(variant)) else {
+            throw Flux2Error.modelNotLoaded(
+                "\(model.displayName) transformer weights not found — download the model before exporting")
+        }
+
+        if Flux2PrequantizedCheckpoint.exists(
+            sourceModelPath: sourcePath, quantization: quantization.transformer)
+        {
+            // Without force, only a VALID existing checkpoint is a no-op; an
+            // invalid/stale squatter is regenerated (the load-side warning
+            // tells users to re-run the export — that advice must work).
+            if !force,
+               Flux2PrequantizedCheckpoint.isValid(
+                   sourceModelPath: sourcePath, quantization: quantization.transformer)
+            {
+                let url = Flux2PrequantizedCheckpoint.weightsURL(
+                    sourceModelPath: sourcePath, quantization: quantization.transformer)
+                Flux2Debug.log(
+                    "Pre-quantized checkpoint already exists and is valid — nothing to do (pass force to regenerate from the source weights): \(url.path)")
+                return url
+            }
+            Flux2PrequantizedCheckpoint.remove(
+                sourceModelPath: sourcePath, quantization: quantization.transformer)
+        }
+
+        // The export must derive from the SOURCE weights, never from a
+        // previous export: drop a checkpoint-loaded resident transformer and
+        // disable the fast path for the (re)load below.
+        if transformerLoadedFromPrequantized {
+            unloadTransformer()
+        }
+        skipPrequantizedCheckpoint = true
+        defer { skipPrequantizedCheckpoint = false }
+        try await loadTransformer()
+
+        guard let transformer, let loadedSourcePath = transformerSourcePath else {
+            throw Flux2Error.modelNotLoaded("Transformer not loaded — cannot export")
+        }
+        // Bake check AFTER the load, against the instance actually being
+        // saved: `transformerHasMergedLoRAs` survives unloadLoRA (merged
+        // weights cannot be un-merged) and covers merges that happened
+        // during the load above — `loraManager.count` alone covers neither.
+        if !allowLoRABaked, transformerHasMergedLoRAs {
+            throw Flux2Error.invalidConfiguration(
+                "The loaded transformer contains merged LoRA weights (merges survive unloadLoRA) — the export would bake them into the base checkpoint for every future load. Pass allowLoRABaked: true only if that is intended.")
+        }
+        return try Flux2PrequantizedCheckpoint.save(
+            model: transformer,
+            sourceModelPath: loadedSourcePath,
+            quantization: quantization.transformer,
+            loRABaked: transformerHasMergedLoRAs)
+    }
+
     /// Unload transformer to free memory
     private func unloadTransformer() {
         // The compiled forward retains the transformer (and its weights) —
@@ -678,6 +826,8 @@ public class Flux2Pipeline: @unchecked Sendable {
         compiledForward = nil
         compiledForwardKey = nil
         transformer = nil
+        transformerHasMergedLoRAs = false
+        transformerLoadedFromPrequantized = false
         memoryManager.clearCache()
     }
 

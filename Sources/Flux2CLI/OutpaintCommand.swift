@@ -77,17 +77,7 @@ struct Outpaint: AsyncParsableCommand {
         logErr("Padding: top=\(top) bottom=\(bottom) left=\(left) right=\(right)")
         logErr("Prompt: \(prompt)")
 
-        let modelChoice: Flux2Model
-        switch fluxModel.lowercased() {
-        case "klein-9b", "klein9b":               modelChoice = .klein9B
-        case "klein-9b-base", "klein9b-base":     modelChoice = .klein9BBase
-        case "klein-9b-kv", "klein9b-kv":         modelChoice = .klein9BKV
-        case "klein-4b", "klein4b":               modelChoice = .klein4B
-        case "klein-4b-base", "klein4b-base":     modelChoice = .klein4BBase
-        case "dev":                               modelChoice = .dev
-        default:
-            throw ValidationError("Unsupported --flux-model '\(fluxModel)'.")
-        }
+        let modelChoice = try Flux2Model.parseCLI(fluxModel)
 
         let pipeline = Flux2Pipeline(
             model: modelChoice,

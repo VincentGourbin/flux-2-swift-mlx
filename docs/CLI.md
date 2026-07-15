@@ -406,6 +406,44 @@ flux2 download --transformer-quant bf16
 
 ---
 
+## Pre-Quantized Checkpoints (`export-quantized`)
+
+On-the-fly quantization re-pays, at every load, the full bf16 read (17 GB
+for Klein 9B) plus a quantize pass. `export-quantized` writes an MLX-native
+pre-quantized checkpoint next to the source weights; subsequent loads with
+the same model/quantization pick it up **automatically** and skip both.
+
+```bash
+# One-time export (pays the standard load once, then writes ~9.6 GB)
+flux2 export-quantized --flux-model klein-9b --transformer-quant qint8
+# From now on, any qint8 load of klein-9b uses it automatically.
+```
+
+- Biggest win on machines whose page cache cannot hold the bf16 file
+  (16–32 GB Macs): every load there is a cold load, and the checkpoint
+  halves the bytes read on top of skipping the quantize pass.
+- Output is bit-identical to the on-the-fly path (quantization is
+  deterministic; verified at equal seed).
+- Layout: `<model dir>/mlx-prequantized/<quant>/transformer.safetensors`,
+  with validation before any model mutation — payload integrity (truncation
+  detection), metadata identity (bits/group size/mode/source + a source
+  fingerprint that detects re-downloaded base weights), key sets, and tensor
+  shapes — and automatic fallback to the standard path on any mismatch.
+  Writes are atomic (temp file + rename). Delete the `mlx-prequantized/`
+  subdirectory to reclaim disk space.
+- Re-running the command is a fast no-op while a valid checkpoint exists;
+  pass `--force` to regenerate from the source weights (exports never derive
+  from a previous export).
+- Library API: `Flux2Pipeline.exportPrequantizedTransformer(force:)`. LoRA
+  safety: the export refuses when LoRA weights are merged into the loaded
+  transformer (`transformerHasMergedLoRAs`, which survives `unloadLoRA`)
+  unless `allowLoRABaked: true` — such exports are tagged `lora_baked` in
+  metadata and warned about on every load.
+- Works for all quantized modes (`qint8`, `int4`, `mxfp8`, `mxfp4`,
+  `nvfp4`) — fp modes have no `.biases` tensors, which is expected.
+
+---
+
 ## LoRA Adapters
 
 Apply LoRA (Low-Rank Adaptation) weights to customize model behavior for specific tasks.
