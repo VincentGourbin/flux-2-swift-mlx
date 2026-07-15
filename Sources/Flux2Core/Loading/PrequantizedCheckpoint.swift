@@ -355,9 +355,17 @@ public enum Flux2PrequantizedCheckpoint {
                 "Pre-quantized checkpoint key set mismatch (missing \(missing.count), extra \(extra.count); e.g. \(missing.prefix(3)) / \(extra.prefix(3))) — falling back to standard load: \(url.path)")
             return false
         }
+        // Shapes must match exactly. Dtypes are compared by CATEGORY: the
+        // integer packing (uint32 weight, uint8 fp-mode scales) must be
+        // exact, but float parameters may legitimately differ in precision —
+        // e.g. the quanto source path leaves unquantized params in bfloat16
+        // while the BFL path converts everything to float16.
+        let floatDTypes: Set<DType> = [.float16, .bfloat16, .float32]
         for (key, expectedArray) in manifest {
             guard let actual = loaded[key] else { continue }  // covered by key check
-            if actual.shape != expectedArray.shape || actual.dtype != expectedArray.dtype {
+            let dtypeCompatible = actual.dtype == expectedArray.dtype
+                || (floatDTypes.contains(actual.dtype) && floatDTypes.contains(expectedArray.dtype))
+            if actual.shape != expectedArray.shape || !dtypeCompatible {
                 Flux2Debug.warning(
                     "Pre-quantized checkpoint tensor mismatch at \(key) (shape \(actual.shape) dtype \(actual.dtype) ≠ expected \(expectedArray.shape) \(expectedArray.dtype)) — falling back to standard load: \(url.path)")
                 return false
