@@ -36,6 +36,7 @@ A native Swift implementation of [Flux.2](https://blackforestlabs.ai/) image gen
 - **Image-to-Image Training**: Train paired I2I LoRAs (e.g. style transfer, image restoration)
 - **CLI Tool**: Full-featured command-line interface (`Flux2CLI`)
 - **macOS App**: Demo SwiftUI application (`Flux2App`) with T2I, I2I, and chat
+- **Engineering knowledge base**: measured baselines, decisions and verified pitfalls ([docs/knowledge](docs/knowledge/index.md), OKF-structured — readable by humans and agents)
 
 ### Chains (Flux2Chains)
 - **`Flux2Chain` protocol**: composable, single-shot inference jobs returning
