@@ -22,27 +22,19 @@ struct ExportQuantized: AsyncParsableCommand {
     @Option(name: .long, help: "Custom models directory (for sandboxed apps or custom storage).")
     var modelsDir: String?
 
-    @Option(name: .long, help: "FLUX.2 model: klein-9b | klein-9b-base | klein-9b-kv | dev | klein-4b | klein-4b-base.")
+    @Option(name: .long, help: "\(Flux2Model.cliValueList).")
     var fluxModel: String = "klein-9b"
 
     @Option(name: .long, help: "Transformer quantization to export (bf16 is rejected — the original checkpoint already is bf16): \(TransformerQuantization.cliValueList)")
     var transformerQuant: String = "qint8"
 
+    @Flag(name: .long, help: "Regenerate from the source weights even when a checkpoint already exists (without this flag, an existing checkpoint is kept as-is and the command is a no-op).")
+    var force: Bool = false
+
     func run() async throws {
         configureModelsDirectory(modelsDir)
 
-        let modelChoice: Flux2Model
-        switch fluxModel.lowercased() {
-        case "klein-9b", "klein9b":               modelChoice = .klein9B
-        case "klein-9b-base", "klein9b-base":     modelChoice = .klein9BBase
-        case "klein-9b-kv", "klein9b-kv":         modelChoice = .klein9BKV
-        case "klein-4b", "klein4b":               modelChoice = .klein4B
-        case "klein-4b-base", "klein4b-base":     modelChoice = .klein4BBase
-        case "dev":                               modelChoice = .dev
-        default:
-            throw ValidationError("Unsupported --flux-model '\(fluxModel)'.")
-        }
-
+        let modelChoice = try Flux2Model.parseCLI(fluxModel)
         let quant = try TransformerQuantization.parseCLI(transformerQuant)
         guard quant != .bf16 else {
             throw ValidationError("--transformer-quant bf16 makes no sense for a pre-quantized export.")
@@ -55,9 +47,23 @@ struct ExportQuantized: AsyncParsableCommand {
             vaeVariant: .smallDecoder
         )
 
+        // Distinguish the no-op case up front so the user isn't told a
+        // fresh export happened when a valid checkpoint was simply kept.
+        if !force,
+           let sourcePath = Flux2ModelDownloader.findModelPath(for: .transformer(
+               ModelRegistry.TransformerVariant.variant(for: modelChoice, quantization: quant))),
+           Flux2PrequantizedCheckpoint.isValid(sourceModelPath: sourcePath, quantization: quant)
+        {
+            let url = Flux2PrequantizedCheckpoint.weightsURL(
+                sourceModelPath: sourcePath, quantization: quant)
+            print("✓ A valid pre-quantized checkpoint already exists — nothing to do (pass --force to regenerate from the source weights).")
+            print("✓ Checkpoint: \(url.path)")
+            return
+        }
+
         print("Loading \(modelChoice.displayName) with on-the-fly \(quant.rawValue) quantization (one-time cost)...")
         let start = Date()
-        let url = try await pipeline.exportPrequantizedTransformer()
+        let url = try await pipeline.exportPrequantizedTransformer(force: force)
         print("✓ Export done in \(String(format: "%.1fs", Date().timeIntervalSince(start)))")
         print("✓ Checkpoint: \(url.path)")
         print("Subsequent loads of \(modelChoice.displayName) with --transformer-quant \(quant.rawValue) will use it automatically.")

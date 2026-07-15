@@ -425,11 +425,20 @@ flux2 export-quantized --flux-model klein-9b --transformer-quant qint8
 - Output is bit-identical to the on-the-fly path (quantization is
   deterministic; verified at equal seed).
 - Layout: `<model dir>/mlx-prequantized/<quant>/transformer.safetensors`,
-  with strict metadata validation (bits/group size/mode) and automatic
-  fallback to the standard path on any mismatch. Delete the
-  `mlx-prequantized/` subdirectory to reclaim disk space.
-- Library API: `Flux2Pipeline.exportPrequantizedTransformer()` (refuses to
-  bake merged LoRAs unless `allowLoRABaked: true`).
+  with validation before any model mutation — payload integrity (truncation
+  detection), metadata identity (bits/group size/mode/source + a source
+  fingerprint that detects re-downloaded base weights), key sets, and tensor
+  shapes — and automatic fallback to the standard path on any mismatch.
+  Writes are atomic (temp file + rename). Delete the `mlx-prequantized/`
+  subdirectory to reclaim disk space.
+- Re-running the command is a fast no-op while a valid checkpoint exists;
+  pass `--force` to regenerate from the source weights (exports never derive
+  from a previous export).
+- Library API: `Flux2Pipeline.exportPrequantizedTransformer(force:)`. LoRA
+  safety: the export refuses when LoRA weights are merged into the loaded
+  transformer (`transformerHasMergedLoRAs`, which survives `unloadLoRA`)
+  unless `allowLoRABaked: true` — such exports are tagged `lora_baked` in
+  metadata and warned about on every load.
 - Works for all quantized modes (`qint8`, `int4`, `mxfp8`, `mxfp4`,
   `nvfp4`) — fp modes have no `.biases` tensors, which is expected.
 
