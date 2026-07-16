@@ -368,6 +368,9 @@ public class Flux2Pipeline: @unchecked Sendable {
     /// Load all required models
     /// - Parameter progressCallback: Optional callback for download progress
     public func loadModels(progressCallback: Flux2DownloadProgressCallback? = nil) async throws {
+        let beacon = RuntimeBeacon.begin(task: "load-models", model: model.rawValue)
+        defer { beacon?.end() }
+
         // Check memory before loading
         let memCheck = memoryManager.checkTextEncodingPhase(config: quantization)
         if !memCheck.isOk {
@@ -761,6 +764,9 @@ public class Flux2Pipeline: @unchecked Sendable {
             throw Flux2Error.invalidConfiguration(
                 "exportPrequantizedTransformer requires a quantized transformer configuration (current: bf16)")
         }
+
+        let beacon = RuntimeBeacon.begin(task: "export-quantized", model: model.rawValue)
+        defer { beacon?.end() }
 
         // Resolve the source directory up-front (same resolution as
         // loadTransformer) so the exists/force decision precedes any load.
@@ -1168,6 +1174,19 @@ public class Flux2Pipeline: @unchecked Sendable {
         onCheckpoint: Flux2CheckpointCallback?,
         onStep: Flux2StepHook? = nil
     ) async throws -> Flux2GenerationResult {
+        let beacon = RuntimeBeacon.begin(task: "generate", model: model.rawValue)
+        defer { beacon?.end() }
+        let userProgress = onProgress
+        let onProgress: Flux2ProgressCallback?
+        if let beacon {
+            onProgress = { step, totalSteps in
+                beacon.update(phase: "denoising", step: step, totalSteps: totalSteps)
+                userProgress?(step, totalSteps)
+            }
+        } else {
+            onProgress = userProgress
+        }
+
         // Validate dimensions
         let (validHeight, validWidth) = LatentUtils.validateDimensions(
             height: height,
@@ -1220,6 +1239,7 @@ public class Flux2Pipeline: @unchecked Sendable {
             Flux2Debug.log("Pre-computed embeddings shape: \(precomputed.shape)")
         } else {
             Flux2Debug.log("=== PHASE 1: Text Encoding ===")
+            beacon?.update(phase: "text-encoding")
 
             MemoryConfig.applyCacheLimit(bytes: phaseLimits.textEncoding)
 
@@ -2060,6 +2080,7 @@ public class Flux2Pipeline: @unchecked Sendable {
 
         // === PHASE 3: Decode to Image ===
         Flux2Debug.log("=== PHASE 3: VAE Decoding ===")
+        beacon?.update(phase: "vae-decode")
 
         // MEMORY OPTIMIZATION: Set cache limit for VAE decoding phase
         MemoryConfig.applyCacheLimit(bytes: phaseLimits.vaeDecoding)

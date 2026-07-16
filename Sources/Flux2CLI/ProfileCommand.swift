@@ -94,8 +94,12 @@ struct ProfileRun: AsyncParsableCommand {
     @Flag(name: .long, help: "Disable Chrome Trace JSON export")
     var noChromeTrace: Bool = false
 
+    @Flag(name: .long, help: "Advertise activity to external monitors (writes a transient manifest in ~/Library/Application Support/ai-runtime-beacons/)")
+    var beacon: Bool = false
+
     func run() async throws {
         configureModelsDirectory(options.modelsDir)
+        RuntimeBeacon.isEnabled = beacon
 
         let modelVariant = try options.resolveModel()
         let quantConfig = try options.resolveQuantization()
@@ -194,8 +198,12 @@ struct ProfileBenchmark: AsyncParsableCommand {
     @Option(name: .long, help: "Output directory for results")
     var outputDir: String = "./benchmark_results"
 
+    @Flag(name: .long, help: "Advertise activity to external monitors (writes a transient manifest in ~/Library/Application Support/ai-runtime-beacons/)")
+    var beacon: Bool = false
+
     func run() async throws {
         configureModelsDirectory(options.modelsDir)
+        RuntimeBeacon.isEnabled = beacon
 
         let modelVariant = try options.resolveModel()
         let quantConfig = try options.resolveQuantization()
@@ -323,8 +331,12 @@ struct ProfileCompare: AsyncParsableCommand {
     @Option(name: .long, help: "Output directory")
     var outputDir: String = "./comparison_results"
 
+    @Flag(name: .long, help: "Advertise activity to external monitors (writes a transient manifest in ~/Library/Application Support/ai-runtime-beacons/)")
+    var beacon: Bool = false
+
     func run() async throws {
         configureModelsDirectory(modelsDir)
+        RuntimeBeacon.isEnabled = beacon
 
         let token = hfToken ?? ProcessInfo.processInfo.environment["HF_TOKEN"]
 

@@ -261,6 +261,9 @@ public final class SimpleLoRATrainer {
         shouldStop = false
         currentStep = startStep
 
+        let beacon = RuntimeBeacon.begin(task: "train", model: modelType.rawValue)
+        defer { beacon?.end() }
+
         // Create output directory if needed
         try FileManager.default.createDirectory(at: config.outputDir, withIntermediateDirectories: true)
 
@@ -665,6 +668,7 @@ public final class SimpleLoRATrainer {
             // Update current step FIRST (before stop/pause checks so checkpoint has correct step)
             currentStep = step
             trainingState?.currentStep = step
+            beacon?.update(phase: "training", step: step, totalSteps: config.maxSteps)
 
             // Check for stop request (from controller or internal flag)
             if shouldStop { break }

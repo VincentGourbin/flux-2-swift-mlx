@@ -31,8 +31,12 @@ struct ExportQuantized: AsyncParsableCommand {
     @Flag(name: .long, help: "Regenerate from the source weights even when a checkpoint already exists (without this flag, an existing checkpoint is kept as-is and the command is a no-op).")
     var force: Bool = false
 
+    @Flag(name: .long, help: "Advertise activity to external monitors (writes a transient manifest in ~/Library/Application Support/ai-runtime-beacons/)")
+    var beacon: Bool = false
+
     func run() async throws {
         configureModelsDirectory(modelsDir)
+        RuntimeBeacon.isEnabled = beacon
 
         let modelChoice = try Flux2Model.parseCLI(fluxModel)
         let quant = try TransformerQuantization.parseCLI(transformerQuant)
