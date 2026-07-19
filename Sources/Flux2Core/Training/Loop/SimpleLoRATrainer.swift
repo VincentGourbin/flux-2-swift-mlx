@@ -690,11 +690,13 @@ public final class SimpleLoRATrainer {
                     try await saveCheckpoint(step: step, transformer: transformer, optimizer: optimizer, isPauseCheckpoint: true)
                     print("   Checkpoint saved. You can safely quit or wait for resume.")
 
-                    // Now wait while paused
+                    // Now wait while paused — advertise the idle GPU to monitors
+                    beacon?.update(phase: "paused", step: step, totalSteps: config.maxSteps)
                     if !ctrl.waitWhilePaused() {
                         // Stop was requested while paused - keep the checkpoint
                         break
                     }
+                    beacon?.update(phase: "training", step: step, totalSteps: config.maxSteps)
 
                     // Resumed from pause - delete the pause checkpoint (only kept if stopped)
                     print("▶️  Resuming training, cleaning up pause checkpoint...")

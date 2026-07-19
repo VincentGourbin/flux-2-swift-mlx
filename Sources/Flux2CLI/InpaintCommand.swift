@@ -123,8 +123,7 @@ struct Inpaint: AsyncParsableCommand {
     @Flag(name: .long, help: "Show detailed per-phase performance profiling (model loads, text encoding, VAE encodes, per-step timings).")
     var profile: Bool = false
 
-    @Flag(name: .long, help: "Advertise activity to external monitors (writes a transient manifest in ~/Library/Application Support/ai-runtime-beacons/)")
-    var beacon: Bool = false
+    @OptionGroup var beaconOptions: BeaconOptions
 
     @Option(name: .long, help: "Run the chain N times in the same process (same pipeline instance) to separate cold-start (first run: kernel compilation, cache warm-up) from steady-state. Default 1.")
     var repeatCount: Int = 1
@@ -146,7 +145,7 @@ struct Inpaint: AsyncParsableCommand {
         }
 
         configureModelsDirectory(modelsDir)
-        RuntimeBeacon.isEnabled = beacon
+        beaconOptions.activate()
 
         guard let imageCG = Self.loadCGImage(at: image) else {
             throw ValidationError("Could not decode image at \(image)")

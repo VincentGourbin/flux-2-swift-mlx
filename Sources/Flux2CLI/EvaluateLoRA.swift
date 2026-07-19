@@ -47,8 +47,11 @@ struct EvaluateLoRA: AsyncParsableCommand {
     @Option(name: .long, help: "HuggingFace token for gated models")
     var hfToken: String?
 
+    @OptionGroup var beaconOptions: BeaconOptions
+
     func run() async throws {
         let startTime = Date()
+        beaconOptions.activate()
 
         // Parse model
         guard let modelVariant = Flux2Model(rawValue: model) else {

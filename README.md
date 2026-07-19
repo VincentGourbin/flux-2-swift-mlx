@@ -248,8 +248,8 @@ RuntimeBeacon.isEnabled = true
 ```
 
 ```bash
-# CLI: --beacon flag (t2i / i2i / inpaint / outpaint / train-lora / export-quantized / profile),
-# or the environment variable
+# CLI: --beacon flag (t2i / i2i / inpaint / outpaint / train-lora / export-quantized /
+# profile / compare-encoders / evaluate-lora), or the environment variable
 FLUX2_RUNTIME_BEACON=1 flux2 t2i "..."
 ```
 

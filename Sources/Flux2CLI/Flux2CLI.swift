@@ -89,8 +89,7 @@ struct TextToImage: AsyncParsableCommand {
     @Flag(name: .long, help: "Enable performance profiling")
     var profile: Bool = false
 
-    @Flag(name: .long, help: "Advertise activity to external monitors (writes a transient manifest in ~/Library/Application Support/ai-runtime-beacons/)")
-    var beacon: Bool = false
+    @OptionGroup var beaconOptions: BeaconOptions
 
     @Flag(name: .long, help: "Enhance prompt with more visual details before encoding")
     var upsamplePrompt: Bool = false
@@ -126,7 +125,7 @@ struct TextToImage: AsyncParsableCommand {
         // Configure custom models directory
         configureModelsDirectory(modelsDir)
 
-        RuntimeBeacon.isEnabled = beacon
+        beaconOptions.activate()
 
         // Configure logging verbosity
         if verbose {
@@ -420,8 +419,7 @@ struct ImageToImage: AsyncParsableCommand {
     @Flag(name: .long, help: "Show detailed performance profiling")
     var profile: Bool = false
 
-    @Flag(name: .long, help: "Advertise activity to external monitors (writes a transient manifest in ~/Library/Application Support/ai-runtime-beacons/)")
-    var beacon: Bool = false
+    @OptionGroup var beaconOptions: BeaconOptions
 
     @Flag(name: .long, help: "Show detailed logs (model loading, config, VLM interpretation)")
     var verbose: Bool = false
@@ -462,7 +460,7 @@ struct ImageToImage: AsyncParsableCommand {
         // Configure custom models directory
         configureModelsDirectory(modelsDir)
 
-        RuntimeBeacon.isEnabled = beacon
+        beaconOptions.activate()
 
         // Configure logging verbosity
         if verbose {

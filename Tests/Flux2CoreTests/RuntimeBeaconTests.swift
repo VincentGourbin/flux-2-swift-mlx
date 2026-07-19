@@ -18,6 +18,9 @@ final class RuntimeBeaconTests: XCTestCase {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("beacon-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // An exported FLUX2_RUNTIME_BEACON=1 would force-enable begin() and
+        // break the enabled:false assertions — neutralize it for the test.
+        unsetenv("FLUX2_RUNTIME_BEACON")
         RuntimeBeacon.directoryOverride = dir
         RuntimeBeacon.isEnabled = enabled
         defer {

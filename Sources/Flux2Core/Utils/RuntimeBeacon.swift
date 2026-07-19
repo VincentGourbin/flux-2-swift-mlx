@@ -64,8 +64,10 @@ public enum RuntimeBeacon {
         set { enabledState.withLock { $0 = newValue } }
     }
 
+    /// Live read (getenv, not ProcessInfo's launch snapshot) so tests can
+    /// neutralize an exported FLUX2_RUNTIME_BEACON=1 via unsetenv.
     private static var environmentEnabled: Bool {
-        ProcessInfo.processInfo.environment["FLUX2_RUNTIME_BEACON"] == "1"
+        getenv("FLUX2_RUNTIME_BEACON").map { String(cString: $0) == "1" } ?? false
     }
 
     /// Test hook: redirects all manifest writes away from the real shared directory.
@@ -156,23 +158,24 @@ public enum RuntimeBeacon {
             let id = UUID().uuidString.prefix(8)
             self.fileURL = directory.appendingPathComponent("\(pid)-\(id).json")
             let now = Date()
+            let manifest = Manifest(
+                version: RuntimeBeacon.schemaVersion,
+                pid: pid,
+                runtime: RuntimeBeacon.runtimeID,
+                displayName: RuntimeBeacon.runtimeDisplayName,
+                task: task,
+                model: model,
+                phase: nil,
+                step: nil,
+                totalSteps: nil,
+                startedAt: now,
+                updatedAt: now
+            )
             self.state = OSAllocatedUnfairLock(initialState: State(
-                manifest: Manifest(
-                    version: RuntimeBeacon.schemaVersion,
-                    pid: pid,
-                    runtime: RuntimeBeacon.runtimeID,
-                    displayName: RuntimeBeacon.runtimeDisplayName,
-                    task: task,
-                    model: model,
-                    phase: nil,
-                    step: nil,
-                    totalSteps: nil,
-                    startedAt: now,
-                    updatedAt: now
-                ),
+                manifest: manifest,
                 ended: false
             ))
-            write()
+            Self.write(manifest, to: fileURL)
         }
 
         deinit {
@@ -182,33 +185,32 @@ public enum RuntimeBeacon {
         /// Refresh the manifest with the operation's current phase/step.
         /// Safe to call from any thread; no-op after ``end()``.
         public func update(phase: String, step: Int? = nil, totalSteps: Int? = nil) {
-            let stillLive = state.withLock { s -> Bool in
-                guard !s.ended else { return false }
+            state.withLock { s in
+                guard !s.ended else { return }
                 s.manifest.phase = phase
                 s.manifest.step = step
                 s.manifest.totalSteps = totalSteps
                 s.manifest.updatedAt = Date()
-                return true
+                Self.write(s.manifest, to: fileURL)
             }
-            if stillLive { write() }
         }
 
         /// Delete the manifest. Idempotent; also runs from `deinit`.
         public func end() {
-            let shouldRemove = state.withLock { s -> Bool in
-                guard !s.ended else { return false }
+            state.withLock { s in
+                guard !s.ended else { return }
                 s.ended = true
-                return true
-            }
-            if shouldRemove {
                 try? FileManager.default.removeItem(at: fileURL)
             }
         }
 
         /// Atomic write so a monitor never reads a half-written manifest.
-        private func write() {
-            let manifest = state.withLock { $0.manifest }
-            guard let data = try? Self.encoder.encode(manifest) else { return }
+        /// The file I/O stays inside the state lock (a ~300-byte write, at
+        /// most once per multi-second step): concurrent updates can neither
+        /// land out of order nor resurrect the manifest after a racing
+        /// `end()` has deleted it.
+        private static func write(_ manifest: Manifest, to fileURL: URL) {
+            guard let data = try? encoder.encode(manifest) else { return }
             try? data.write(to: fileURL, options: .atomic)
         }
     }

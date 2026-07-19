@@ -63,8 +63,7 @@ struct Outpaint: AsyncParsableCommand {
     @Option(name: .long, help: "Cap on the total working pixel count. Defaults to 4 M; raise if you want larger canvases.")
     var maxPixels: Int = 4 * 1024 * 1024
 
-    @Flag(name: .long, help: "Advertise activity to external monitors (writes a transient manifest in ~/Library/Application Support/ai-runtime-beacons/)")
-    var beacon: Bool = false
+    @OptionGroup var beaconOptions: BeaconOptions
 
     func run() async throws {
         @Sendable func logErr(_ msg: String) {
@@ -72,7 +71,7 @@ struct Outpaint: AsyncParsableCommand {
         }
 
         configureModelsDirectory(modelsDir)
-        RuntimeBeacon.isEnabled = beacon
+        beaconOptions.activate()
 
         guard let imageCG = Self.loadCGImage(at: image) else {
             throw ValidationError("Could not decode image at \(image)")
