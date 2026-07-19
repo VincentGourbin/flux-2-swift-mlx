@@ -31,8 +31,11 @@ struct ExportQuantized: AsyncParsableCommand {
     @Flag(name: .long, help: "Regenerate from the source weights even when a checkpoint already exists (without this flag, an existing checkpoint is kept as-is and the command is a no-op).")
     var force: Bool = false
 
+    @OptionGroup var beaconOptions: BeaconOptions
+
     func run() async throws {
         configureModelsDirectory(modelsDir)
+        beaconOptions.activate()
 
         let modelChoice = try Flux2Model.parseCLI(fluxModel)
         let quant = try TransformerQuantization.parseCLI(transformerQuant)

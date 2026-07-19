@@ -261,6 +261,9 @@ public final class SimpleLoRATrainer {
         shouldStop = false
         currentStep = startStep
 
+        let beacon = RuntimeBeacon.begin(task: "train", model: modelType.rawValue)
+        defer { beacon?.end() }
+
         // Create output directory if needed
         try FileManager.default.createDirectory(at: config.outputDir, withIntermediateDirectories: true)
 
@@ -665,6 +668,7 @@ public final class SimpleLoRATrainer {
             // Update current step FIRST (before stop/pause checks so checkpoint has correct step)
             currentStep = step
             trainingState?.currentStep = step
+            beacon?.update(phase: "training", step: step, totalSteps: config.maxSteps)
 
             // Check for stop request (from controller or internal flag)
             if shouldStop { break }
@@ -686,11 +690,13 @@ public final class SimpleLoRATrainer {
                     try await saveCheckpoint(step: step, transformer: transformer, optimizer: optimizer, isPauseCheckpoint: true)
                     print("   Checkpoint saved. You can safely quit or wait for resume.")
 
-                    // Now wait while paused
+                    // Now wait while paused — advertise the idle GPU to monitors
+                    beacon?.update(phase: "paused", step: step, totalSteps: config.maxSteps)
                     if !ctrl.waitWhilePaused() {
                         // Stop was requested while paused - keep the checkpoint
                         break
                     }
+                    beacon?.update(phase: "training", step: step, totalSteps: config.maxSteps)
 
                     // Resumed from pause - delete the pause checkpoint (only kept if stopped)
                     print("▶️  Resuming training, cleaning up pause checkpoint...")

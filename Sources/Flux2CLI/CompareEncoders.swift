@@ -52,8 +52,11 @@ struct CompareEncoders: AsyncParsableCommand {
     @Flag(name: .long, help: "Skip image generation (embeddings comparison only)")
     var embeddingsOnly: Bool = false
 
+    @OptionGroup var beaconOptions: BeaconOptions
+
     func run() async throws {
         let startTime = Date()
+        beaconOptions.activate()
 
         // Parse model variant
         guard model == "klein-4b" || model == "klein-9b" else {

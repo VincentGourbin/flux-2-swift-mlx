@@ -210,6 +210,8 @@ struct TrainLoRA: AsyncParsableCommand {
     @Flag(name: .long, help: "Dry run - validate configuration without training")
     var dryRun: Bool = false
 
+    @OptionGroup var beaconOptions: BeaconOptions
+
     @Option(name: .long, help: "Custom models directory (for sandboxed apps or custom storage)")
     var modelsDir: String?
 
@@ -218,6 +220,8 @@ struct TrainLoRA: AsyncParsableCommand {
     func run() async throws {
         // Configure custom models directory
         configureModelsDirectory(modelsDir)
+
+        beaconOptions.activate()
 
         // Configure logging
         if verbose {

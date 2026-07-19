@@ -94,8 +94,11 @@ struct ProfileRun: AsyncParsableCommand {
     @Flag(name: .long, help: "Disable Chrome Trace JSON export")
     var noChromeTrace: Bool = false
 
+    @OptionGroup var beaconOptions: BeaconOptions
+
     func run() async throws {
         configureModelsDirectory(options.modelsDir)
+        beaconOptions.activate()
 
         let modelVariant = try options.resolveModel()
         let quantConfig = try options.resolveQuantization()
@@ -194,8 +197,11 @@ struct ProfileBenchmark: AsyncParsableCommand {
     @Option(name: .long, help: "Output directory for results")
     var outputDir: String = "./benchmark_results"
 
+    @OptionGroup var beaconOptions: BeaconOptions
+
     func run() async throws {
         configureModelsDirectory(options.modelsDir)
+        beaconOptions.activate()
 
         let modelVariant = try options.resolveModel()
         let quantConfig = try options.resolveQuantization()
@@ -323,8 +329,11 @@ struct ProfileCompare: AsyncParsableCommand {
     @Option(name: .long, help: "Output directory")
     var outputDir: String = "./comparison_results"
 
+    @OptionGroup var beaconOptions: BeaconOptions
+
     func run() async throws {
         configureModelsDirectory(modelsDir)
+        beaconOptions.activate()
 
         let token = hfToken ?? ProcessInfo.processInfo.environment["HF_TOKEN"]
 

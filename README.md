@@ -238,6 +238,25 @@ flux2 t2i "a cat" --model klein-4b --vae-variant small-decoder
 
 See [Small Decoder Benchmark](docs/examples/small-decoder/) for measured performance and visual comparison.
 
+## Activity Beacon (Opt-in)
+
+Heavy operations (generation, model loading, LoRA training, quantized export) can advertise themselves to external activity monitors such as [SiliconScope](https://github.com/kennss/SiliconScope). While the operation runs, a small JSON manifest lives at `~/Library/Application Support/ai-runtime-beacons/<pid>-<id>.json` and is deleted the moment it ends — errors included. Nothing is ever written unless you opt in:
+
+```swift
+// Swift package
+RuntimeBeacon.isEnabled = true
+```
+
+```bash
+# CLI: --beacon flag (t2i / i2i / inpaint / outpaint / train-lora / export-quantized /
+# profile / compare-encoders / evaluate-lora), or the environment variable
+FLUX2_RUNTIME_BEACON=1 flux2 t2i "..."
+```
+
+The manifest schema is deliberately runtime-agnostic (`version`, `pid`, `runtime`, `displayName`, `task`, `model`, `phase`, `step`, `totalSteps`, timestamps) — the same convention as [ltx-video-swift-mlx](https://github.com/VincentGourbin/ltx-video-swift-mlx), so monitors only need one reader. Manifests left behind by a force-killed process are garbage-collected on the next beacon start via a pid liveness check.
+
+> **Note:** sandboxed apps write inside their container, invisible to external monitors — the beacon targets CLI tools and non-sandboxed apps.
+
 ## Documentation
 
 ### Guides
