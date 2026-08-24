@@ -11,21 +11,26 @@
 // words structured Subject + Action + Style + Context, with photographic
 // vocabulary (focal length, lighting direction, depth of field).
 //
-// This builder asks the bundled Qwen3.5 VLM to *look at the source* and
-// assemble such a prompt automatically, with an operation-specific system
-// prompt so the produced text matches the actual intent (replace / remove
-// / modify / outpaint). The chains call this as a strictly opt-in
-// preprocessor — when the VLM isn't loaded the call returns `nil` so the
-// caller can fall back to the user's verbatim prompt.
+// This builder asks the active VLM to *look at the source* and assemble
+// such a prompt automatically, with an operation-specific system prompt so
+// the produced text matches the actual intent (replace / remove / modify /
+// outpaint). The chains call this as a strictly opt-in preprocessor — when
+// no VLM is loaded the call returns `nil` so the caller can fall back to
+// the user's verbatim prompt.
+//
+// Which VLM runs is `FluxVLM.active`: the bundled Qwen3.5 by default, or
+// Gemma 4 E2B when the process registered it (see the `FluxGemma4VLM`
+// target). The system prompts below are provider-agnostic — they describe
+// the task, not the model.
 
 import Foundation
 import CoreGraphics
 import FluxTextEncoders
 
-/// Build FLUX.2-style prompts from a source image using the bundled
-/// Qwen3.5 VLM. Returns `nil` whenever the VLM is not currently loaded
-/// (callers must treat this as a graceful fallback signal — never as an
-/// error).
+/// Build FLUX.2-style prompts from a source image using ``FluxVLM/active``
+/// (bundled Qwen3.5 unless another provider was registered). Returns `nil`
+/// whenever the VLM is not currently loaded (callers must treat this as a
+/// graceful fallback signal — never as an error).
 public enum Flux2VLMPromptBuilder {
 
     // MARK: - System prompts (public so tests can introspect them)
@@ -184,7 +189,7 @@ public enum Flux2VLMPromptBuilder {
         userInstruction: String,
         intent: Flux2InpaintIntent
     ) async throws -> String? {
-        guard FluxTextEncoders.shared.isQwen35VLMLoaded else { return nil }
+        guard FluxVLM.active.isLoaded else { return nil }
 
         let systemPrompt: String
         switch intent {
@@ -195,9 +200,6 @@ public enum Flux2VLMPromptBuilder {
         }
         let userMessage = userMessage(forInpaint: intent, instruction: userInstruction)
 
-        // The VLM forward is synchronous and takes ~3 s on M-series. Run
-        // it on a detached task so other work on the cooperative pool
-        // (UI updates, concurrent chains) isn't starved while we wait.
         let raw = try await runVLM(image: source, prompt: userMessage, systemPrompt: systemPrompt)
         return cleanFinalPrompt(raw)
     }
@@ -220,7 +222,7 @@ public enum Flux2VLMPromptBuilder {
         userInstruction: String,
         sides: Set<OutpaintSide>
     ) async throws -> String? {
-        guard FluxTextEncoders.shared.isQwen35VLMLoaded else { return nil }
+        guard FluxVLM.active.isLoaded else { return nil }
         guard !sides.isEmpty else { return nil }
 
         let userMessage = userMessage(forOutpaintSides: sides, instruction: userInstruction)
@@ -229,24 +231,21 @@ public enum Flux2VLMPromptBuilder {
         return cleanFinalPrompt(raw)
     }
 
-    /// Run the Qwen3.5 VLM forward on a detached, user-initiated task
-    /// so the ~3 s sync call doesn't block the cooperative thread pool.
-    /// CGImage / String are Sendable in the SDK we target.
+    /// Run one forward on the active provider. Each provider keeps the heavy
+    /// work off the cooperative pool itself (the Qwen3.5 forward is sync and
+    /// takes ~3 s, so it runs detached; Gemma streams from a ModelContainer
+    /// actor), so this stays a plain await.
     private static func runVLM(
         image: CGImage,
         prompt: String,
         systemPrompt: String
     ) async throws -> String {
-        try await Task.detached(priority: .userInitiated) {
-            try FluxTextEncoders.shared.analyzeImageWithQwen35(
-                image: image,
-                prompt: prompt,
-                systemPrompt: systemPrompt,
-                enableThinking: false,
-                maxTokens: 220,
-                temperature: 0
-            ).text
-        }.value
+        try await FluxVLM.active.analyzeImage(
+            image: image,
+            prompt: prompt,
+            systemPrompt: systemPrompt,
+            maxTokens: 220
+        )
     }
 
     // MARK: - User message assembly (exposed for tests)

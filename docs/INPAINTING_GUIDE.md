@@ -20,8 +20,8 @@ of impact:
 1. **Prompt describes the WHOLE scene, not the edit.** 30–80 words, BFL
    structure (Subject + Action + Style + Context). `"a duck"` gives a floating,
    unshaded duck; a full scene description gives correct scale + cast shadow.
-   Best: load the Qwen3.5 VLM and set `enrichPromptWithVLM: true` + the right
-   `intent`.
+   Best: load a VLM (bundled Qwen3.5, or Gemma 4 E2B via `FluxGemma4VLM`) and
+   set `enrichPromptWithVLM: true` + the right `intent`.
 2. **Soft mask edges.** Gaussian-blur the mask edge ≈ `image_width / 30`
    (the diffusers example uses `blur_factor=12` at 1024 px — same ballpark).
    Hard masks produce visible seams.
@@ -45,8 +45,8 @@ of impact:
    pixels come straight from the user's original.
 6. **If you use `enrichPromptWithVLM`, actually load the VLM.** The chain
    *silently falls back* to the verbatim prompt when
-   `FluxTextEncoders.shared.isQwen35VLMLoaded == false` (a `FluxDebug` warning
-   is logged, nothing throws). Easy to miss in an app.
+   `FluxVLM.active.isLoaded == false` (a `FluxDebug` warning is logged, nothing
+   throws). Easy to miss in an app.
 7. **Seed everything** while iterating, so you can attribute changes to your
    changes.
 
@@ -152,7 +152,9 @@ Hand-writing a 50-word scene-aware prompt for every user edit is unrealistic.
 The framework bundles an image-aware prompt builder:
 
 ```swift
-try await FluxTextEncoders.shared.loadQwen35VLM(from: vlmPath)  // caller owns lifecycle
+// Caller owns the VLM lifecycle. Either provider serves the rewriter:
+try await FluxTextEncoders.shared.loadQwen35VLM(from: vlmPath)  // bundled Qwen3.5
+// or: try await FluxGemma4VLM.activate(variant: .e2b6bit)      // Gemma 4 E2B
 
 let chain = Flux2MaskedInpaintingChain(
     pipeline: pipeline,

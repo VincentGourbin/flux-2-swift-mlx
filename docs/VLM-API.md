@@ -1,4 +1,17 @@
-# Qwen3.5 VLM API Reference
+# VLM API Reference
+
+The framework's image-aware services — FLUX.2 image description, 0-100
+scene/style scoring, BFL prompt rewriting for the inpainting/outpainting
+chains, training captions — run on a **VLM provider**. Two are available:
+
+| Provider | Weights | Target to link | Notes |
+|---|---|---|---|
+| **Qwen3.5 4B** (default) | ~3 GB 4-bit / ~5 GB 8-bit | `FluxTextEncoders` (bundled) | Historical default; nothing to opt into |
+| **Gemma 4 E2B-it** | ~3.6 GB 4-bit / **~4.2 GB 6-bit** / ~5.2 GB 8-bit / ~10 GB bf16 | `FluxGemma4VLM` (opt-in) | Runs on [gemma-4-swift-mlx](https://github.com/VincentGourbin/gemma-4-swift-mlx); brings `mlx-swift-lm` into the graph, hence the separate target |
+
+Both answer the *same* system prompts and are parsed by the same code — see
+[Providers](#providers). The sections below document the Qwen3.5-specific
+entry points, which remain unchanged.
 
 Native Qwen3.5-4B Vision-Language Model running locally on Apple Silicon. Auto-downloaded (~3GB 4-bit, ~5GB 8-bit) on first use.
 
@@ -219,10 +232,10 @@ Generate a validation prompt from a reference photo. Useful when setting up trai
 ```swift
 let setupAPI = LoRATrainingSetup_API()
 
-// Load VLM first
-try await FluxTextEncoders.shared.loadQwen35VLM(from: vlmPath)
+// Load whichever provider is active first
+try await FluxVLM.active.ensureLoaded()
 
-let prompt = try setupAPI.describeReferenceForValidation(
+let prompt = try await setupAPI.describeReferenceForValidation(
     image: refImage,
     triggerWord: "VinZ"
 )
@@ -246,6 +259,86 @@ Step  50: 72/100 (scene: 70, style: 74)  ← improving
 Step  75: 71/100 (scene: 68, style: 73)  ← plateau
 Step 100: 73/100 (scene: 72, style: 74)  ← best checkpoint saved
 ```
+
+## Providers
+
+### Choosing one
+
+`FluxVLM.active` is what every enrichment call uses. With nothing registered it
+is the bundled Qwen3.5, so an app that never touches this API keeps its previous
+behaviour exactly.
+
+```swift
+import FluxTextEncoders
+import FluxGemma4VLM   // opt-in target
+
+// Load Gemma 4 E2B-it 6-bit (downloads on first use) and take over from Qwen3.5
+try await FluxGemma4VLM.activate(variant: .e2b6bit)
+
+// …every enrichment call now runs on Gemma:
+let text = try await FluxVLM.active.describeImageForFlux(image: photo)
+let scores = try await FluxVLM.active.compareImagesForFlux(reference: ref, generated: gen)
+
+// Hand the seat back (and free the weights)
+await FluxGemma4VLM.deactivate()
+```
+
+Sandboxed apps that manage their own weights directory pass a path instead of a
+variant, and can point the Gemma cache at their shared models folder (the layout
+inside is `{org}/{model}`, the same HuggingFace owner namespace the FLUX
+checkpoints use):
+
+```swift
+FluxGemma4VLM.setModelsDirectory(URL(fileURLWithPath: "…/FluxforgeStudio/Models"))
+try await FluxGemma4VLM.activate(
+    modelPath: URL(fileURLWithPath: "…/Models/mlx-community/gemma-4-e2b-it-6bit")
+)
+```
+
+For the training paths (LoRA evaluation, VLM-guided checkpoint selection), which
+load and unload the VLM around each generation phase, register without loading:
+
+```swift
+FluxGemma4VLM.register(variant: .e2b6bit)   // loaded on first use via ensureLoaded()
+```
+
+### The provider protocol
+
+```swift
+public protocol FluxVLMProvider: AnyObject, Sendable {
+    var displayName: String { get }
+    var isLoaded: Bool { get }
+    func ensureLoaded() async throws
+    func unload() async
+    func generateText(
+        images: [CGImage],          // 0 = text-only, 1 = analysis, 2 = comparison
+        prompt: String,
+        systemPrompt: String?,
+        enableThinking: Bool,
+        maxTokens: Int,
+        temperature: Float
+    ) async throws -> String
+}
+```
+
+That is the whole contract. The system prompts, the JSON score parsing, the
+FLUX.2 description rubric and the BFL rewriting rules live in
+`FluxTextEncoders` as protocol extensions (`describeImageForFlux`,
+`compareImagesForFlux`, `analyzeImage`, `generate`), so a new provider inherits
+all of them and only has to know how to run a forward.
+
+Registering a third VLM is therefore:
+
+```swift
+final class MyVLMProvider: FluxVLMProvider { /* four members */ }
+FluxVLM.register(MyVLMProvider())
+```
+
+### What the chains do when nothing is loaded
+
+Unchanged and load-bearing: `enrichPromptWithVLM: true` with no VLM resident
+logs a warning and falls back to the caller's verbatim prompt. The chains never
+auto-load a VLM, whichever provider is active.
 
 ## Thinking Mode
 
@@ -291,6 +384,26 @@ flux2 evaluate-lora --image ref.png \
 # Model variant selection
 flux2 test-qwen35 "Hello" --variant 8bit  # higher quality (5GB)
 flux2 test-qwen35 "Hello" --variant 4bit  # faster, less memory (3GB)
+```
+
+### Gemma 4 provider
+
+```bash
+# Same three modes as test-qwen35, on Gemma 4 E2B-it (6-bit by default)
+flux2 test-gemma4 "What do you see?" --image photo.png
+flux2 test-gemma4 "Describe" --image photo.png --flux-describe
+flux2 test-gemma4 "Compare" --image ref.png --image2 gen.png --compare
+
+# Variant / local weights / custom cache
+flux2 test-gemma4 "Hello" --variant 4bit
+flux2 test-gemma4 "Hello" --model-path ~/Models/mlx-community/gemma-4-e2b-it-6bit
+flux2 test-gemma4 "Hello" --models-dir ~/Pictures/FluxforgeStudio/Models
+
+# Image-aware prompt rewriting on either provider
+flux2 inpaint  -i in.jpg -m mask.png -p "replace the cat with a duck" -o out.png \
+  --enrich-prompt-with-vlm --vlm-provider gemma4 --gemma4-variant 6bit
+flux2 outpaint -i in.jpg --right 384 -p "…" -o out.png \
+  --enrich-prompt-with-vlm --vlm-provider qwen35 --qwen35-variant 8bit
 ```
 
 ## Performance

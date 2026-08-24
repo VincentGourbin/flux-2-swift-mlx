@@ -44,33 +44,32 @@ public class LoRATrainingSetup_API {
     public func describeReferenceForValidation(
         image: CGImage,
         triggerWord: String
-    ) throws -> String {
-        guard FluxTextEncoders.shared.isQwen35VLMLoaded else {
-            throw Flux2Error.modelNotLoaded("Qwen3.5 VLM not loaded")
+    ) async throws -> String {
+        let vlm = FluxVLM.active
+        guard vlm.isLoaded else {
+            throw Flux2Error.modelNotLoaded("\(vlm.displayName) not loaded")
         }
 
-        let result = try FluxTextEncoders.shared.analyzeImageWithQwen35(
+        let caption = try await vlm.analyzeImage(
             image: image,
             prompt: "Describe this person's physical appearance for image generation. Focus on: face shape, hair color and style, glasses, clothing, pose, and lighting. Be concise (one paragraph).",
-            enableThinking: false,
-            maxTokens: 200,
-            temperature: 0
+            maxTokens: 200
         )
 
         // Prepend trigger word
-        return "\(triggerWord), \(result.text)"
+        return "\(triggerWord), \(caption)"
     }
 
     /// Describe a reference image from file path
     public func describeReferenceForValidation(
         path: String,
         triggerWord: String
-    ) throws -> String {
+    ) async throws -> String {
         guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
             throw Flux2Error.invalidConfiguration("Failed to load image: \(path)")
         }
-        return try describeReferenceForValidation(image: image, triggerWord: triggerWord)
+        return try await describeReferenceForValidation(image: image, triggerWord: triggerWord)
     }
 
     /// Create a complete training setup with VLM evaluation
@@ -118,20 +117,19 @@ public class LoRATrainingSetup_API {
 
         // Step 2: Generate validation prompt from reference
         onProgress?("Generating validation prompt from reference...")
-        if !FluxTextEncoders.shared.isQwen35VLMLoaded {
-            let downloader = TextEncoderModelDownloader()
-            let vlmPath = try await downloader.downloadQwen35(variant: .qwen35_4B_4bit)
-            try await FluxTextEncoders.shared.loadQwen35VLM(from: vlmPath.path)
+        let vlm = FluxVLM.active
+        if !vlm.isLoaded {
+            try await vlm.ensureLoaded()
         }
 
-        let validationPrompt = try describeReferenceForValidation(
+        let validationPrompt = try await describeReferenceForValidation(
             image: refImage,
             triggerWord: triggerWord
         )
         onProgress?("Validation prompt: \"\(validationPrompt.prefix(80))...\"")
 
         // Unload VLM
-        FluxTextEncoders.shared.unloadQwen35VLM()
+        await vlm.unload()
 
         return LoRATrainingSetup(
             referenceImage: refImage,

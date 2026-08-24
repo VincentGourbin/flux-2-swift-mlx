@@ -65,6 +65,7 @@ A native Swift implementation of [Flux.2](https://blackforestlabs.ai/) image gen
 - **Mistral Small 3.2 (24B)**: Text encoder for FLUX.2 dev/pro
 - **Qwen3 (4B/8B)**: Text encoder for FLUX.2 Klein
 - **Qwen3.5-4B VLM**: Native vision-language model for image analysis (~3GB, auto-downloaded)
+- **Gemma 4 E2B VLM (opt-in)**: Alternative provider for the same enrichment services, via [gemma-4-swift-mlx](https://github.com/VincentGourbin/gemma-4-swift-mlx) — link `FluxGemma4VLM` and call `FluxGemma4VLM.activate()` ([VLM API](docs/VLM-API.md#providers))
 - **FLUX.2 Image Description**: VLM-powered image analysis optimized for FLUX.2 regeneration
 - **Image Comparison**: Score two images on scene and style fidelity (0-10)
 - **Text Generation**: Streaming text generation with configurable parameters
@@ -267,7 +268,7 @@ The manifest schema is deliberately runtime-agnostic (`version`, `pid`, `runtime
 | [LoRA Guide](docs/LoRA.md) | Loading and using LoRA adapters |
 | [LoRA Training Guide](docs/examples/TRAINING_GUIDE.md) | Training parameters, DOP, gradient checkpointing, YAML config |
 | [LoRA Evaluation](docs/examples/evaluate-lora/) | Automated gap analysis and training parameter recommendations |
-| [VLM API](docs/VLM-API.md) | Qwen3.5 VLM — image analysis, comparison, LoRA training setup |
+| [VLM API](docs/VLM-API.md) | VLM providers (Qwen3.5 bundled, Gemma 4 E2B opt-in) — image analysis, comparison, prompt rewriting, LoRA training setup |
 | [Text Encoders](docs/TextEncoders.md) | FluxTextEncoders library API and CLI |
 | [Custom Model Integration](docs/CustomModelIntegration.md) | Integrating custom MLX-compatible models into the framework |
 | [Flux2App Guide](docs/Flux2App.md) | Demo macOS application |

@@ -152,31 +152,30 @@ public class LoRAEvaluator {
         onProgress?("[1/5] Analyzing reference image with VLM...")
         onProgress?("  LoRA context: \"\(context.name)\" — \(context.description)")
 
-        // Load VLM if not already loaded
-        if !FluxTextEncoders.shared.isQwen35VLMLoaded {
-            onProgress?("  Loading Qwen3.5 VLM...")
-            let downloader = TextEncoderModelDownloader()
-            let vlmPath = try await downloader.downloadQwen35(variant: .qwen35_4B_4bit)
-            try await FluxTextEncoders.shared.loadQwen35VLM(from: vlmPath.path)
+        // Load whichever VLM is active (bundled Qwen3.5 by default, Gemma 4
+        // E2B when the process registered it) if it isn't resident yet.
+        let vlm = FluxVLM.active
+        if !vlm.isLoaded {
+            onProgress?("  Loading \(vlm.displayName)...")
+            try await vlm.ensureLoaded()
         }
 
         // Describe the image with LoRA context for focused description
-        let descResult = try FluxTextEncoders.shared.describeImageForFlux(
+        let description = try await vlm.describeImageForFlux(
             image: referenceImage,
             context: "This image is a training reference for a LoRA called \"\(context.name)\". Training goal: \(context.description). Describe the image focusing on what makes this subject unique and what the model needs to learn."
         )
-        let description = descResult.text
         onProgress?("  Description: \"\(description.prefix(80))...\"")
 
         // === Step 2: LLM analyzes LoRA context for trigger word and DOP ===
         onProgress?("[2/5] Analyzing LoRA training context...")
 
-        let analysisResult = try analyzeLoRAContext(context: context)
+        let analysisResult = try await analyzeLoRAContext(context: context)
         onProgress?("  Trigger word: \(analysisResult.triggerWord)")
         onProgress?("  DOP: \(analysisResult.dopRecommended ? "yes (\(analysisResult.dopClass ?? "object"))" : "no")")
 
         // Unload VLM to free memory for generation
-        FluxTextEncoders.shared.unloadQwen35VLM()
+        await vlm.unload()
         Memory.clearCache()
 
         // === Step 3: Generate baseline image with base model ===
@@ -211,10 +210,8 @@ public class LoRAEvaluator {
         onProgress?("[4/5] Comparing reference vs baseline...")
 
         // Reload VLM
-        if !FluxTextEncoders.shared.isQwen35VLMLoaded {
-            let downloader = TextEncoderModelDownloader()
-            let vlmPath = try await downloader.downloadQwen35(variant: .qwen35_4B_4bit)
-            try await FluxTextEncoders.shared.loadQwen35VLM(from: vlmPath.path)
+        if !vlm.isLoaded {
+            try await vlm.ensureLoaded()
         }
 
         // Contextual comparison — focused on what the LoRA needs to learn
@@ -244,26 +241,22 @@ public class LoRAEvaluator {
         {"scene_score": N, "scene_reason": "what the LoRA needs to learn", "style_score": N, "style_reason": "what differs in style"}
         """
 
-        guard let vlm = FluxTextEncoders.shared.qwen35VLMForEvaluation else {
-            throw Flux2Error.modelNotLoaded("Qwen3.5 VLM not loaded")
+        guard vlm.isLoaded else {
+            throw Flux2Error.modelNotLoaded("\(vlm.displayName) not loaded")
         }
 
-        let compResult = try vlm.generateMultiImage(
-            images: [referenceImage, baselineImage],
-            prompt: "Compare these two images for LoRA training evaluation.",
+        let comparison = try await vlm.compareImagesForFlux(
+            reference: referenceImage,
+            generated: baselineImage,
             systemPrompt: comparisonSystemPrompt,
-            enableThinking: false,
-            maxTokens: 300,
-            temperature: 0
+            prompt: "Compare these two images for LoRA training evaluation."
         )
-
-        let comparison = FluxTextEncoders.shared.parseComparisonForEvaluation(compResult.text)
 
         onProgress?("  Scene: \(comparison.sceneScore)/100 — \(comparison.sceneReason)")
         onProgress?("  Style: \(comparison.styleScore)/100 — \(comparison.styleReason)")
 
         // Unload VLM
-        FluxTextEncoders.shared.unloadQwen35VLM()
+        await vlm.unload()
 
         // === Step 5: Generate recommendation ===
         onProgress?("[5/5] Generating training recommendation...")
@@ -302,8 +295,9 @@ public class LoRAEvaluator {
         let dopClass: String?
     }
 
-    /// Use LLM to analyze the LoRA context and suggest trigger word + DOP settings
-    private func analyzeLoRAContext(context: LoRAContext) throws -> ContextAnalysis {
+    /// Use the active VLM's text path to analyze the LoRA context and suggest
+    /// trigger word + DOP settings
+    private func analyzeLoRAContext(context: LoRAContext) async throws -> ContextAnalysis {
         let analysisPrompt = """
         TASK: Analyze this LoRA training description and provide recommendations.
 
@@ -321,15 +315,13 @@ public class LoRAEvaluator {
         {"trigger_word": "xyz_name", "dop_recommended": true, "dop_class": "cat"}
         """
 
-        let result = try FluxTextEncoders.shared.generateWithQwen35(
+        let text = try await FluxVLM.active.generate(
             prompt: analysisPrompt,
             systemPrompt: "You are a LoRA training configuration assistant. Output only valid JSON.",
-            maxTokens: 100,
-            temperature: 0
+            maxTokens: 100
         )
 
         // Parse JSON from response
-        let text = result.text
         if let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}") {
             let jsonStr = String(text[start...end])
             struct Analysis: Decodable {

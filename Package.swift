@@ -9,6 +9,9 @@ let package = Package(
         .library(name: "FluxTextEncoders", targets: ["FluxTextEncoders"]),
         .library(name: "Flux2Core", targets: ["Flux2Core"]),
         .library(name: "Flux2Chains", targets: ["Flux2Chains"]),
+        // Opt-in: link this to enrich prompts / score checkpoints with Gemma 4 E2B
+        // instead of the bundled Qwen3.5. Nothing else pulls it in.
+        .library(name: "FluxGemma4VLM", targets: ["FluxGemma4VLM"]),
         // CLI Tools
         .executable(name: "FluxEncodersCLI", targets: ["FluxEncodersCLI"]),
         .executable(name: "Flux2CLI", targets: ["Flux2CLI"]),
@@ -25,6 +28,11 @@ let package = Package(
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.3"),
         .package(url: "https://github.com/jpsim/Yams", from: "6.0.0"),
         .package(url: "https://github.com/VincentGourbin/swift-mlx-profiler", from: "1.4.0"),
+        // Optional VLM provider (target `FluxGemma4VLM` only): Gemma 4 E2B as an
+        // alternative to the bundled Qwen3.5 for prompt enrichment / scoring.
+        // Its mlx-swift range is 0.31.4..<0.32, compatible with the exact pin above;
+        // it brings mlx-swift-lm in, which is why it stays out of the base targets.
+        .package(url: "https://github.com/VincentGourbin/gemma-4-swift-mlx", from: "1.5.0"),
     ],
     targets: [
         // MARK: - Libraries
@@ -61,6 +69,14 @@ let package = Package(
                 .product(name: "MLXRandom", package: "mlx-swift"),
             ]
         ),
+        .target(
+            name: "FluxGemma4VLM",
+            dependencies: [
+                "FluxTextEncoders",  // FluxVLMProvider protocol + registry
+                .product(name: "Gemma4Swift", package: "gemma-4-swift-mlx"),
+                .product(name: "MLX", package: "mlx-swift"),
+            ]
+        ),
         // MARK: - CLI Tools
         .executableTarget(
             name: "FluxEncodersCLI",
@@ -74,6 +90,7 @@ let package = Package(
             dependencies: [
                 "Flux2Core",
                 "Flux2Chains",
+                "FluxGemma4VLM",  // --vlm-provider gemma4
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Yams", package: "Yams"),
@@ -88,6 +105,10 @@ let package = Package(
         .testTarget(
             name: "FluxTextEncodersTests",
             dependencies: ["FluxTextEncoders"]
+        ),
+        .testTarget(
+            name: "FluxGemma4VLMTests",
+            dependencies: ["FluxGemma4VLM", "FluxTextEncoders"]
         ),
         .testTarget(
             name: "Flux2CoreTests",

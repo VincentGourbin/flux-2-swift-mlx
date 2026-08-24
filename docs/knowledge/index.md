@@ -21,6 +21,7 @@ record what was measured and decided so it is never re-derived or re-litigated.
 
 * [Quantization verdicts for inference](decisions/quantization-verdicts.md) - qint8/mxfp8/int4 speed and quality, measured; quantization buys memory, not step time
 * [MLX.compile on the denoising forward: neutral, kept opt-in](decisions/compile-step-neutral.md) - why compiling the step wins nothing here, and the traps if it is ever revisited
+* [VLM enrichment behind a provider protocol](decisions/vlm-provider-abstraction.md) - one seat for the image-aware services, Qwen3.5 still the default, Gemma 4 E2B opt-in in its own target, and the constraints of each path
 
 # Pitfalls
 

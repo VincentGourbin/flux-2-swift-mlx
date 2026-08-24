@@ -484,6 +484,33 @@ public final class FluxTextEncoders: @unchecked Sendable {
         )
     }
 
+    /// Generate text with Qwen3.5 VLM from an arbitrary number of images.
+    ///
+    /// The N-image entry point the facade was missing: callers needing a
+    /// comparison used to reach for `qwen35VLMForEvaluation` and call
+    /// `generateMultiImage` on the model itself. `images: []` is the text-only
+    /// case, so ``Qwen35VLMProvider`` can serve every enrichment shape through
+    /// this one call.
+    public func generateWithQwen35(
+        images: [CGImage],
+        prompt: String,
+        systemPrompt: String? = nil,
+        enableThinking: Bool = true,
+        maxTokens: Int = 512,
+        temperature: Float = 0.7,
+        onToken: ((String) -> Bool)? = nil
+    ) throws -> GenerationResult {
+        guard let vlm = qwen35VLM else {
+            throw FluxEncoderError.invalidInput("Qwen3.5 VLM not loaded")
+        }
+        return try vlm.generateMultiImage(
+            images: images, prompt: prompt, systemPrompt: systemPrompt,
+            enableThinking: enableThinking,
+            maxTokens: maxTokens, temperature: temperature,
+            onToken: onToken
+        )
+    }
+
     // MARK: - FLUX.2 Image Description Service
 
     /// System prompt for describing images in FLUX.2-compatible style

@@ -16,6 +16,7 @@ import ImageIO
 import UniformTypeIdentifiers
 import Flux2Core
 import Flux2Chains
+import FluxTextEncoders  // FluxDebug
 
 struct Outpaint: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -56,8 +57,14 @@ struct Outpaint: AsyncParsableCommand {
     @Flag(name: .long, help: "Text-encoder-only prompt rewriting (Mistral/Klein-Qwen3). Does NOT look at the image. For image-aware rewriting that continues the source's lighting/materials into the new strips, use --enrich-prompt-with-vlm instead.")
     var upsamplePrompt: Bool = false
 
-    @Flag(name: .long, help: "Image-aware prompt rewriting via the bundled Qwen3.5 VLM. The VLM looks at --image and the requested extension sides, then assembles a 30-80 word BFL-style Flux 2 prompt that continues the kept region's materials, perspective, lighting and palette into the new strips. Strictly optional: if the VLM is not loaded, the chain falls back to --prompt verbatim with a warning. Load the VLM ahead of time via FluxEncodersCLI or the test-qwen35 command. When both --upsample-prompt and --enrich-prompt-with-vlm are set, the VLM wins.")
+    @Flag(name: .long, help: "Image-aware prompt rewriting via a VLM (--vlm-provider: bundled Qwen3.5 by default, or Gemma 4 E2B). The VLM looks at --image and the requested extension sides, then assembles a 30-80 word BFL-style Flux 2 prompt that continues the kept region's materials, perspective, lighting and palette into the new strips. Strictly optional: if no VLM is loaded, the chain falls back to --prompt verbatim with a warning. Pass --qwen35-variant/--qwen35-path (or --gemma4-variant/--gemma4-path) to have this command load one in-process. When both --upsample-prompt and --enrich-prompt-with-vlm are set, the VLM wins.")
     var enrichPromptWithVLM: Bool = false
+
+    /// `--vlm-provider`, `--qwen35-variant|-path`, `--gemma4-variant|-path`.
+    /// Until this existed, `--enrich-prompt-with-vlm` on this command was inert
+    /// unless something else in the process had already loaded a VLM.
+    @OptionGroup var vlmOptions: VLMProviderOptions
+
     @Option(name: .long, help: "Width of the soft transition band, in pixels of the keep region. Default 32.")
     var transitionPixels: Int = 32
     @Option(name: .long, help: "Cap on the total working pixel count. Defaults to 4 M; raise if you want larger canvases.")
@@ -81,6 +88,15 @@ struct Outpaint: AsyncParsableCommand {
         logErr("Prompt: \(prompt)")
 
         let modelChoice = try Flux2Model.parseCLI(fluxModel)
+
+        if enrichPromptWithVLM {
+            // Surface the VLM-built prompt so the user can audit what FLUX.2
+            // actually receives.
+            FluxDebug.isEnabled = true
+        }
+        try await vlmOptions.loadIfRequested(
+            enrichmentRequested: enrichPromptWithVLM, logErr: logErr
+        )
 
         let pipeline = Flux2Pipeline(
             model: modelChoice,

@@ -167,9 +167,10 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
     /// configuration.
     ///
     /// Cost: one extra VLM forward pass (~few seconds on M-series). The
-    /// caller is responsible for the VLM lifecycle — load it via
-    /// ``FluxTextEncoders/shared/loadQwen35VLM(from:)`` before
-    /// ``run()`` and unload when done. Default `false`.
+    /// caller is responsible for the VLM lifecycle — load ``FluxVLM/active``
+    /// (bundled Qwen3.5 via `FluxTextEncoders.shared.loadQwen35VLM(from:)`,
+    /// or Gemma 4 E2B via `FluxGemma4VLM.activate(...)`) before ``run()``
+    /// and unload when done. Default `false`.
     public let enrichPromptWithVLM: Bool
 
     /// Drives ``Flux2VLMPromptBuilder`` when ``enrichPromptWithVLM`` is
@@ -487,8 +488,8 @@ public struct Flux2MaskedInpaintingChain: Flux2Chain {
         guard enrichPromptWithVLM else {
             return (prompt, upsamplePrompt)
         }
-        guard FluxTextEncoders.shared.isQwen35VLMLoaded else {
-            FluxDebug.error("[Flux2MaskedInpaintingChain] enrichPromptWithVLM=true but Qwen3.5 VLM is not loaded. Falling back to caller's prompt. Load the VLM via FluxTextEncoders.shared.loadQwen35VLM(from:) before run() to enable image-aware prompt enrichment.")
+        guard FluxVLM.active.isLoaded else {
+            FluxDebug.error("[Flux2MaskedInpaintingChain] enrichPromptWithVLM=true but \(FluxVLM.active.displayName) is not loaded. Falling back to caller's prompt. Load a VLM before run() (FluxTextEncoders.shared.loadQwen35VLM(from:) for the bundled Qwen3.5, or FluxGemma4VLM.activate(...) for Gemma 4 E2B) to enable image-aware prompt enrichment.")
             return (prompt, upsamplePrompt)
         }
         if upsamplePrompt {

@@ -2088,12 +2088,11 @@ public final class SimpleLoRATrainer {
                 return nil
             }
 
-            // Load VLM
-            let downloader = TextEncoderModelDownloader()
-            let vlmPath = try await downloader.downloadQwen35(variant: .qwen35_4B_4bit)
-            try await FluxTextEncoders.shared.loadQwen35VLM(from: vlmPath.path)
-
-            guard let vlm = FluxTextEncoders.shared.qwen35VLMForEvaluation else {
+            // Load whichever VLM is active (bundled Qwen3.5 by default,
+            // Gemma 4 E2B when the process registered it)
+            let vlm = FluxVLM.active
+            try await vlm.ensureLoaded()
+            guard vlm.isLoaded else {
                 print("    Warning: VLM not available, skipping scoring")
                 return nil
             }
@@ -2126,7 +2125,7 @@ public final class SimpleLoRATrainer {
                 }
 
                 // Compare reference vs generated using VLM (0-100 scale)
-                let result = try vlm.generateMultiImage(
+                let result = try await vlm.generateText(
                     images: [refCG, valCG],
                     prompt: "Compare these two images for LoRA training evaluation.",
                     systemPrompt: Self.vlmTrainingScoringPrompt,
@@ -2136,9 +2135,9 @@ public final class SimpleLoRATrainer {
                 )
 
                 Flux2Debug.log("[VLM] ref=\(refImage.lastPathComponent) val=\(imageName)")
-                Flux2Debug.log("[VLM] response: \(result.text.prefix(200))")
+                Flux2Debug.log("[VLM] response: \(result.prefix(200))")
 
-                let (sceneScore, styleScore, sceneReason, styleReason) = parseVLMScores(result.text)
+                let (sceneScore, styleScore, sceneReason, styleReason) = parseVLMScores(result)
 
                 // Compare vs baseline if enabled
                 var baselineScene: Int? = nil
@@ -2150,7 +2149,7 @@ public final class SimpleLoRATrainer {
                     if FileManager.default.fileExists(atPath: baselinePath.path),
                        let blSource = CGImageSourceCreateWithURL(baselinePath as CFURL, nil),
                        let blCG = CGImageSourceCreateImageAtIndex(blSource, 0, nil) {
-                        let blResult = try vlm.generateMultiImage(
+                        let blResult = try await vlm.generateText(
                             images: [refCG, blCG],
                             prompt: "Compare these two images for LoRA training evaluation.",
                             systemPrompt: Self.vlmTrainingScoringPrompt,
@@ -2158,8 +2157,8 @@ public final class SimpleLoRATrainer {
                             maxTokens: 300,
                             temperature: 0
                         )
-                        Flux2Debug.log("[VLM] baseline response: \(blResult.text.prefix(200))")
-                        let (blScene, blStyle, _, _) = parseVLMScores(blResult.text)
+                        Flux2Debug.log("[VLM] baseline response: \(blResult.prefix(200))")
+                        let (blScene, blStyle, _, _) = parseVLMScores(blResult)
                         baselineScene = blScene
                         baselineStyle = blStyle
                     }
@@ -2178,7 +2177,7 @@ public final class SimpleLoRATrainer {
             }
 
             // Unload VLM and clear memory
-            FluxTextEncoders.shared.unloadQwen35VLM()
+            await vlm.unload()
             eval([])
             try await Task.sleep(nanoseconds: 500_000_000)
             MLX.Memory.clearCache()
@@ -2214,7 +2213,7 @@ public final class SimpleLoRATrainer {
         } catch {
             print("    Warning: VLM scoring failed: \(error.localizedDescription)")
             // Ensure VLM is unloaded even on error
-            FluxTextEncoders.shared.unloadQwen35VLM()
+            await FluxVLM.active.unload()
             MLX.Memory.clearCache()
             return nil
         }
