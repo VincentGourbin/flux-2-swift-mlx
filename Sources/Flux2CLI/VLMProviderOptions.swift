@@ -41,6 +41,22 @@ struct VLMProviderOptions: ParsableArguments {
     @Option(name: .long, help: "Override the local path to Gemma 4 weights (directory with config.json + safetensors + tokenizer.json). Takes precedence over --gemma4-variant.")
     var gemma4Path: String?
 
+    /// Parse `--qwen35-variant`. Returns `nil` for an unknown spelling.
+    private static func qwenVariant(named name: String) -> Qwen35Variant? {
+        switch name.lowercased() {
+        case "4bit": return .qwen35_4B_4bit
+        case "8bit": return .qwen35_4B_8bit
+        default: return nil
+        }
+    }
+
+    /// Provider for an explicitly requested Qwen variant. `nil` (an unknown
+    /// spelling, which `loadIfRequested` rejects right after, or no variant at
+    /// all) falls back to `Qwen35VLMProvider.shared` through the registry.
+    private static func qwenProvider(forVariant name: String) -> Qwen35VLMProvider? {
+        qwenVariant(named: name).map { Qwen35VLMProvider(variant: $0) }
+    }
+
     /// Load the selected provider and register it as `FluxVLM.active`.
     ///
     /// - Returns: `true` when a VLM is resident afterwards, `false` when the
@@ -53,6 +69,12 @@ struct VLMProviderOptions: ParsableArguments {
     ) async throws -> Bool {
         switch vlmProvider {
         case .qwen35:
+            // Make the flag authoritative rather than relying on whatever the
+            // process last registered: `--vlm-provider qwen35` must put the
+            // bundled Qwen3.5 in the seat, with the variant the user asked for
+            // (so a later `ensureLoaded()` fetches that one, not the default).
+            FluxVLM.register(qwen35Variant.flatMap(Self.qwenProvider(forVariant:)))
+
             if let qwen35Path {
                 logErr("Loading Qwen3.5 VLM from \(qwen35Path) ...")
                 try await FluxTextEncoders.shared.loadQwen35VLM(from: qwen35Path)
@@ -65,11 +87,8 @@ struct VLMProviderOptions: ParsableArguments {
                 }
                 return false
             }
-            let selectedVariant: Qwen35Variant
-            switch variantStr.lowercased() {
-            case "4bit": selectedVariant = .qwen35_4B_4bit
-            case "8bit": selectedVariant = .qwen35_4B_8bit
-            default: throw ValidationError("Unsupported --qwen35-variant '\(variantStr)' (use '8bit' or '4bit')")
+            guard let selectedVariant = Self.qwenVariant(named: variantStr) else {
+                throw ValidationError("Unsupported --qwen35-variant '\(variantStr)' (use '8bit' or '4bit')")
             }
             logErr("Downloading/loading Qwen3.5 VLM (\(selectedVariant.displayName)) ...")
             let downloader = TextEncoderModelDownloader()
