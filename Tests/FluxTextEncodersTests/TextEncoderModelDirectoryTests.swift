@@ -188,7 +188,7 @@ final class TextEncoderModelDirectoryTests: XCTestCase {
         XCTAssertTrue(found!.path.hasPrefix(tempDir.path))
     }
 
-    func testFindQwen3ModelPathTreatsDanglingWeightSymlinkAsMissing() throws {
+    func testFindQwen3ModelPathTreatsDanglingWeightSymlinkAsMissing() async throws {
         // A text encoder relocated to an external disk that is unplugged: the
         // weight is a dangling symlink and must not count as present-by-name.
         let tempDir = FileManager.default.temporaryDirectory
@@ -214,6 +214,20 @@ final class TextEncoderModelDirectoryTests: XCTestCase {
 
         XCTAssertFalse(TextEncoderModelDownloader.verifyShardedModel(at: modelDir).complete)
         XCTAssertNil(TextEncoderModelDownloader.findQwen3ModelPath(for: model))
+
+        // And downloading must refuse (before any network call) rather than
+        // let the Hub client replace the link with a local copy.
+        do {
+            _ = try await TextEncoderModelDownloader().downloadQwen3(model)
+            XCTFail("Expected downloadQwen3 to refuse a relocated model")
+        } catch let error as TextEncoderModelDownloaderError {
+            guard case .weightsRelocated(_, let files) = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+            XCTAssertEqual(files, ["model.safetensors"])
+        }
+        XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(
+            atPath: modelDir.appendingPathComponent("model.safetensors").path))
     }
 
     // MARK: - Multiple switches

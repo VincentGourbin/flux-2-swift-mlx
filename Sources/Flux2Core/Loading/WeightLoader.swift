@@ -14,7 +14,13 @@ public class Flux2WeightLoader {
     public static func loadWeights(from modelPath: String) throws -> [String: MLXArray] {
         let fm = FileManager.default
         let contents = try fm.contentsOfDirectory(atPath: modelPath)
-        let safetensorFiles = contents.filter { $0.hasSuffix(".safetensors") }.sorted()
+        // Same predicate as Flux2ModelDownloader.verifyModel: `._*` entries are
+        // AppleDouble sidecars (exFAT/NTFS), and a dangling symlink isn't a
+        // weight file — feeding either to loadArrays yields an opaque header error.
+        let safetensorFiles = contents.filter {
+            $0.hasSuffix(".safetensors") && !$0.hasPrefix("._")
+                && fm.fileExists(atPath: (modelPath as NSString).appendingPathComponent($0))
+        }.sorted()
 
         if safetensorFiles.isEmpty {
             throw Flux2WeightLoaderError.noWeightsFound(modelPath)
@@ -568,6 +574,8 @@ public class Flux2WeightLoader {
         _ weights: inout [String: MLXArray],
         to model: Flux2Transformer2DModel
     ) throws {
+        // mapTransformerWeights drains the inout dictionary; count first.
+        let loadedCount = weights.count
         let mapped = mapTransformerWeights(&weights)
 
         // Use MLX's built-in weight loading - flatten to get full paths
@@ -613,11 +621,14 @@ public class Flux2WeightLoader {
         // override) maps zero keys; loading it silently would produce noise.
         guard !updates.isEmpty else {
             throw Flux2Error.modelNotLoaded(
-                "None of the \(weights.count) loaded tensors match the transformer — the weight files belong to a different model or component")
+                "None of the \(loadedCount) loaded tensors match the transformer — the weight files belong to a different model or component")
         }
 
-        // Update model with new weights using the flattened format
-        _ = model.update(parameters: ModuleParameters.unflattened(updates))
+        // Update model with new weights using the flattened format. Shape
+        // verification turns a same-family wrong-variant directory (Klein 4B
+        // weights for a 9B config) into an error here instead of a Metal
+        // matmul abort at the first forward.
+        _ = try model.update(parameters: ModuleParameters.unflattened(updates), verify: .shapeMismatch)
 
         // Debug: print some weight shapes
         for (key, value) in updates.sorted(by: { $0.key < $1.key }).prefix(10) {
@@ -678,7 +689,7 @@ public class Flux2WeightLoader {
                 "None of the \(weights.count) loaded tensors match the VAE — the weight files belong to a different model or component")
         }
 
-        _ = model.update(parameters: ModuleParameters.unflattened(updates))
+        _ = try model.update(parameters: ModuleParameters.unflattened(updates), verify: .shapeMismatch)
 
         Flux2Debug.log("Applied \(updates.count) weights to VAE (\(notFound) not found)")
     }

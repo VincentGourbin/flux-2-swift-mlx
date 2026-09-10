@@ -73,14 +73,40 @@ public enum Flux2PrequantizedCheckpoint {
 
     /// Remove the export for this source/quantization pair (idempotent).
     /// Used by `export(force:)` to guarantee regeneration from the source.
+    /// A symlinked checkpoint (relocated to another disk) is left alone:
+    /// unlinking it would orphan the external copy and the subsequent save
+    /// would rebuild ~10 GB locally — `isSymlinked` lets the caller refuse.
     public static func remove(
         sourceModelPath: URL,
         quantization: TransformerQuantization,
         component: String = "transformer"
     ) {
+        guard !isSymlinked(sourceModelPath: sourceModelPath, quantization: quantization, component: component)
+        else { return }
         let url = weightsURL(
             sourceModelPath: sourceModelPath, quantization: quantization, component: component)
         try? FileManager.default.removeItem(at: url)
+    }
+
+    /// Whether the checkpoint file for this pair is a symlink (relocated).
+    public static func isSymlinked(
+        sourceModelPath: URL,
+        quantization: TransformerQuantization,
+        component: String = "transformer"
+    ) -> Bool {
+        let url = weightsURL(
+            sourceModelPath: sourceModelPath, quantization: quantization, component: component)
+        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return (attrs?[.type] as? FileAttributeType) == .typeSymbolicLink
+    }
+
+    /// stat-following size (a relocated checkpoint is a symlink; `URL`
+    /// resource values report the link's own length).
+    private static func fileSize(at url: URL) -> Int64? {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return nil }
+        let resolved = url.resolvingSymlinksInPath()
+        return (try? fm.attributesOfItem(atPath: resolved.path))?[.size] as? Int64
     }
 
     // MARK: - Source fingerprint
@@ -94,9 +120,13 @@ public enum Flux2PrequantizedCheckpoint {
         guard let entries = try? fm.contentsOfDirectory(atPath: sourceModelPath.path) else {
             return "unknown"
         }
-        let parts: [String] = entries.filter { $0.hasSuffix(".safetensors") }.sorted().map { name in
-            let attrs = try? fm.attributesOfItem(
-                atPath: sourceModelPath.appendingPathComponent(name).path)
+        let parts: [String] = entries.filter { $0.hasSuffix(".safetensors") && !$0.hasPrefix("._") }.sorted().map { name in
+            // Follow a relocation symlink: the fingerprint must track the
+            // real bytes, not the link's own constant size/mtime.
+            let path = sourceModelPath.appendingPathComponent(name).path
+            let statPath = fm.fileExists(atPath: path)
+                ? URL(fileURLWithPath: path).resolvingSymlinksInPath().path : path
+            let attrs = try? fm.attributesOfItem(atPath: statPath)
             let size = (attrs?[.size] as? NSNumber)?.int64Value ?? -1
             let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1
             return "\(name):\(size):\(Int(mtime))"
@@ -131,8 +161,7 @@ public enum Flux2PrequantizedCheckpoint {
             maxEnd = max(maxEnd, end)
         }
         let expectedSize = Int64(8) + Int64(headerLen) + maxEnd
-        let actualSize = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize)
-            .map(Int64.init) ?? -1
+        let actualSize = fileSize(at: url) ?? -1
         if actualSize != expectedSize {
             Flux2Debug.warning(
                 "Pre-quantized checkpoint payload is incomplete (\(actualSize) bytes on disk, header declares \(expectedSize)) — the file is truncated or corrupt: \(url.path)")
@@ -178,7 +207,6 @@ public enum Flux2PrequantizedCheckpoint {
             ("group_size", String(quantization.groupSize)),
             ("mode", quantization.mode.rawValue),
             ("component", component),
-            ("source", sourceModelPath.lastPathComponent),
         ]
         for (key, value) in expected where metadata[key] != value {
             Flux2Debug.warning(
@@ -190,6 +218,13 @@ public enum Flux2PrequantizedCheckpoint {
             Flux2Debug.warning(
                 "Pre-quantized checkpoint is stale (source weights changed since export — re-download or update?) — falling back to standard load. Re-run `flux2 export-quantized` with force to refresh: \(url.path)")
             return false
+        }
+        // The fingerprint is the identity; the directory name is informational
+        // only — a model directory moved wholesale under a path override keeps
+        // its checkpoint valid.
+        if let source = metadata["source"], source != sourceModelPath.lastPathComponent {
+            Flux2Debug.log(
+                "Pre-quantized checkpoint was exported under '\(source)', now loading from '\(sourceModelPath.lastPathComponent)' (same weights per fingerprint)")
         }
         return true
     }

@@ -24,9 +24,12 @@ final class ModelDownloaderSizeTests: XCTestCase {
             .appendingPathComponent("flux2-modelsize-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let previous = ModelRegistry.customModelsDirectory
+        let previousHub = Flux2ModelDownloader.legacyHubCacheDirectory
         ModelRegistry.customModelsDirectory = dir
+        Flux2ModelDownloader.legacyHubCacheDirectory = dir.appendingPathComponent("no-hub-cache")
         defer {
             ModelRegistry.customModelsDirectory = previous
+            Flux2ModelDownloader.legacyHubCacheDirectory = previousHub
             try? FileManager.default.removeItem(at: dir)
         }
         return try body(dir)
@@ -149,6 +152,31 @@ final class ModelDownloaderSizeTests: XCTestCase {
             try Data(repeating: 0x42, count: 8).write(to: link)
         }
         XCTAssertTrue(Flux2ModelDownloader.verifyModel(at: dir).complete)
+    }
+
+    func testVerifyModelSeriesAreGroupedByStemAndTotal() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("flux2-series-\(UUID().uuidString)")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        let write = { (name: String) in
+            try Data(repeating: 0x42, count: 8).write(to: dir.appendingPathComponent(name))
+        }
+
+        // A complete 2-shard series plus a leftover shard of a 7-shard series:
+        // complete, whatever order the listing yields.
+        try write("model-00001-of-00002.safetensors")
+        try write("model-00002-of-00002.safetensors")
+        try write("diffusion_pytorch_model-00001-of-00007.safetensors")
+        XCTAssertTrue(Flux2ModelDownloader.verifyModel(at: dir).complete)
+
+        // Two half series of different stems must not union into "complete".
+        try fm.removeItem(at: dir.appendingPathComponent("model-00001-of-00002.safetensors"))
+        try fm.removeItem(at: dir.appendingPathComponent("diffusion_pytorch_model-00001-of-00007.safetensors"))
+        try write("diffusion_pytorch_model-00001-of-00002.safetensors")
+        let result = Flux2ModelDownloader.verifyModel(at: dir)
+        XCTAssertFalse(result.complete)
+        XCTAssertEqual(result.missing.count, 1)
     }
 
     func testVerifyModelIgnoresAppleDoubleSidecars() throws {

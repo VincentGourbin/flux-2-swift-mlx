@@ -468,13 +468,6 @@ public enum ModelRegistry {
             case .textEncoder: return nil
             }
         }
-
-        public var component: ModelComponent {
-            switch self {
-            case .transformer(let v): return .transformer(v)
-            case .vae(let v): return .vae(v)
-            }
-        }
     }
 
     /// Set (or clear, with `nil`) an explicit location for a single component,
@@ -488,7 +481,9 @@ public enum ModelRegistry {
     /// "override if set, else layout".
     ///
     /// The URL must be a file URL (throws `invalidPathOverride` otherwise) and
-    /// is stored standardized as a directory URL. Under App Sandbox the
+    /// is stored as a lexically standardized directory URL (`.` / `..`
+    /// removed; symlinks such as `/private` are *not* resolved, so the stored
+    /// URL compares equal to what the caller passed). Under App Sandbox the
     /// directory must lie inside an active security-scoped resource: metadata
     /// calls succeed outside a scope but directory listing does not, which
     /// `download()` reports as `destinationUnreadable` rather than "not
@@ -503,7 +498,7 @@ public enum ModelRegistry {
             guard url.isFileURL else {
                 throw Flux2DownloadError.invalidPathOverride(url)
             }
-            stored = URL(fileURLWithPath: url.path, isDirectory: true).standardizedFileURL
+            stored = URL(fileURLWithPath: url.path, isDirectory: true).standardized
         }
         pathOverridesLock.lock()
         defer { pathOverridesLock.unlock() }

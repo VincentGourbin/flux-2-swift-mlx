@@ -129,6 +129,41 @@ public class TextEncoderModelDownloader {
         return nil
     }
 
+    /// Where `hubApi.snapshot(from: repoId)` writes: `{hubDownloadDirectory}/{org}/{repo}`.
+    static func hubDestination(repoId: String) -> URL {
+        var url = hubDownloadDirectory
+        for component in repoId.split(separator: "/") {
+            url = url.appendingPathComponent(String(component))
+        }
+        return url
+    }
+
+    /// `.safetensors` entries in `directory` that are symlinks (live or
+    /// dangling): the model was relocated per-file to another disk.
+    public static func symlinkedWeights(at directory: URL) -> [String] {
+        let fm = FileManager.default
+        let contents = (try? fm.contentsOfDirectory(atPath: directory.path)) ?? []
+        return contents.filter { name in
+            guard name.hasSuffix(".safetensors"), !name.hasPrefix("._") else { return false }
+            let attrs = try? fm.attributesOfItem(atPath: directory.appendingPathComponent(name).path)
+            return (attrs?[.type] as? FileAttributeType) == .typeSymbolicLink
+        }.sorted()
+    }
+
+    /// Refuse to let `hubApi.snapshot` write into a directory whose weights
+    /// are relocation symlinks. Once `verifyShardedModel` follows symlinks, a
+    /// relocated model with its disk unplugged reads "not downloaded"; the
+    /// Hub client would then unlink each dangling link and drop a local copy
+    /// in its place — silently undoing the relocation and orphaning the
+    /// external copy. Same for a live-but-incomplete series.
+    private static func refuseIfRelocated(repoId: String) throws {
+        let destination = hubDestination(repoId: repoId)
+        let links = symlinkedWeights(at: destination)
+        if !links.isEmpty {
+            throw TextEncoderModelDownloaderError.weightsRelocated(destination, links)
+        }
+    }
+
     /// Verify that a sharded model has all required safetensors files
     /// Note: Does NOT trust index.json as some HF repos have mismatched index files
     /// Instead, detects safetensors files and verifies the series is complete
@@ -218,6 +253,7 @@ public class TextEncoderModelDownloader {
                 print("Re-downloading...")
             }
         }
+        try Self.refuseIfRelocated(repoId: model.repoId)
 
         progress?(0.0, "Starting download of \(model.name)...")
         print("\nDownloading \(model.name) from HuggingFace...")
@@ -314,6 +350,7 @@ public class TextEncoderModelDownloader {
                 print("Re-downloading...")
             }
         }
+        try Self.refuseIfRelocated(repoId: model.repoId)
 
         progress?(0.0, "Starting download of \(model.name)...")
         print("\nDownloading \(model.name) from HuggingFace...")
@@ -475,6 +512,7 @@ public class TextEncoderModelDownloader {
                 print("Re-downloading...")
             }
         }
+        try Self.refuseIfRelocated(repoId: model.repoId)
 
         progress?(0.0, "Starting download of \(model.name)...")
         print("\nDownloading \(model.name) from HuggingFace...")
@@ -591,6 +629,7 @@ public class TextEncoderModelDownloader {
                 return existingPath
             }
         }
+        try Self.refuseIfRelocated(repoId: model.repoId)
 
         progress?(0.0, "Starting download of \(model.name)...")
         print("\nDownloading \(model.name) from HuggingFace...")
@@ -656,6 +695,7 @@ public class TextEncoderModelDownloader {
         _ repoId: String,
         progress: TextEncoderDownloadProgressCallback? = nil
     ) async throws -> URL {
+        try Self.refuseIfRelocated(repoId: repoId)
         progress?(0.0, "Starting download...")
         print("\nDownloading from HuggingFace: \(repoId)")
 
@@ -719,9 +759,12 @@ public enum TextEncoderModelDownloaderError: LocalizedError {
     case qwen35ModelNotFound
     case downloadFailed(String)
     case invalidToken
+    case weightsRelocated(URL, [String])
 
     public var errorDescription: String? {
         switch self {
+        case .weightsRelocated(let url, let files):
+            return "\(url.path) holds relocated weight files (symlinks: \(files.prefix(3).joined(separator: ", "))) that are missing or unreachable — connect the disk or restore them at the relocation target; downloading here would replace the links with local copies."
         case .modelNotFound:
             return "Model not found"
         case .qwen3ModelNotFound:

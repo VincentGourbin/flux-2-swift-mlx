@@ -12,10 +12,22 @@ import XCTest
 final class ModelPathOverrideTests: XCTestCase {
 
     private let fm = FileManager.default
+    private var savedHubCache: URL!
+
+    override func setUp() {
+        super.setUp()
+        // The last-resort tier searches ~/.cache/huggingface/hub; point it at
+        // nothing so a snapshot on the developer's machine can't satisfy a
+        // "not downloaded" assertion.
+        savedHubCache = Flux2ModelDownloader.legacyHubCacheDirectory
+        Flux2ModelDownloader.legacyHubCacheDirectory = fm.temporaryDirectory
+            .appendingPathComponent("flux2-no-hub-\(UUID().uuidString)")
+    }
 
     override func tearDown() {
         ModelRegistry.clearPathOverrides()
         ModelRegistry.customModelsDirectory = nil
+        Flux2ModelDownloader.legacyHubCacheDirectory = savedHubCache
         super.tearDown()
     }
 
@@ -156,12 +168,65 @@ final class ModelPathOverrideTests: XCTestCase {
             _ = try await Flux2ModelDownloader().download(.vae(.standard))
             XCTFail("Expected download() to refuse an unmounted override volume")
         } catch let error as Flux2DownloadError {
-            guard case .overrideVolumeUnavailable = error else {
+            guard case .destinationVolumeUnavailable = error else {
                 return XCTFail("Unexpected error: \(error)")
             }
         }
         XCTAssertFalse(fm.fileExists(atPath: override.deletingLastPathComponent().deletingLastPathComponent().path))
         XCTAssertNotNil(Flux2ModelDownloader.unavailableReason(for: .vae(.standard)))
+    }
+
+    func testDownloadRefusesUnmountedCatalogRootWithoutOverride() async throws {
+        // `--models-dir /Volumes/<unplugged>/models`: same precise error as
+        // for an override, not a raw permission failure from mkdir.
+        ModelRegistry.customModelsDirectory = URL(fileURLWithPath: "/Volumes/flux2-test-\(UUID().uuidString)/models")
+
+        do {
+            _ = try await Flux2ModelDownloader().download(.vae(.standard))
+            XCTFail("Expected download() to refuse an unmounted catalog root")
+        } catch let error as Flux2DownloadError {
+            guard case .destinationVolumeUnavailable = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+        XCTAssertNotNil(Flux2ModelDownloader.unavailableReason(for: .vae(.standard)))
+    }
+
+    func testDownloadRefusesIncompleteRelocatedSeriesWithLiveLinks() async throws {
+        // Disk mounted, shards 1/3/4 are live links, shard 2's link is missing
+        // (interrupted relocation). Downloading here would replace the live
+        // links with local copies; the model must be repaired at the target.
+        let customDir = try makeTempDir("relocated")
+        defer { try? fm.removeItem(at: customDir) }
+        ModelRegistry.customModelsDirectory = customDir
+        let modelDir = ModelRegistry.localPath(for: .vae(.standard))
+        let external = customDir.appendingPathComponent("external")
+        try fm.createDirectory(at: modelDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: external, withIntermediateDirectories: true)
+        try "{}".write(to: modelDir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+        for i in [1, 3, 4] {
+            let name = "diffusion_pytorch_model-0000\(i)-of-00004.safetensors"
+            try Data(repeating: 0x42, count: 8).write(to: external.appendingPathComponent(name))
+            try fm.createSymbolicLink(at: modelDir.appendingPathComponent(name), withDestinationURL: external.appendingPathComponent(name))
+        }
+
+        XCTAssertNil(Flux2ModelDownloader.findModelPath(for: .vae(.standard)))
+        XCTAssertTrue(Flux2ModelDownloader.unreachableWeights(at: modelDir).isEmpty)
+        XCTAssertEqual(Flux2ModelDownloader.symlinkedWeights(at: modelDir).count, 3)
+        let reason = try XCTUnwrap(Flux2ModelDownloader.unavailableReason(for: .vae(.standard)))
+        XCTAssertTrue(reason.contains("00002-of-00004"), reason)
+
+        do {
+            _ = try await Flux2ModelDownloader().download(.vae(.standard))
+            XCTFail("Expected download() to refuse a relocated, incomplete series")
+        } catch let error as Flux2DownloadError {
+            guard case .weightsRelocated(_, _, let files) = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+            XCTAssertEqual(files.count, 3)
+        }
+        // Every live link is still a link.
+        XCTAssertEqual(Flux2ModelDownloader.symlinkedWeights(at: modelDir).count, 3)
     }
 
     func testDownloadRefusesDanglingWeightSymlinksInDefaultLayout() async throws {
@@ -218,8 +283,10 @@ final class ModelPathOverrideTests: XCTestCase {
     func testUnmountedVolumeDetection() throws {
         XCTAssertTrue(Flux2ModelDownloader.isOnUnmountedVolume(
             URL(fileURLWithPath: "/Volumes/flux2-nope-\(UUID().uuidString)/a/b/c")))
-        XCTAssertTrue(Flux2ModelDownloader.isOnUnmountedVolume(
-            URL(fileURLWithPath: "/volumes/flux2-nope-\(UUID().uuidString)")))
+        if fm.fileExists(atPath: "/volumes") {  // case-insensitive root filesystem only
+            XCTAssertTrue(Flux2ModelDownloader.isOnUnmountedVolume(
+                URL(fileURLWithPath: "/volumes/flux2-nope-\(UUID().uuidString)")))
+        }
 
         // A missing subfolder under an existing directory is not "unmounted".
         let existing = try makeTempDir("mounted")

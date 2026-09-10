@@ -545,10 +545,18 @@ public class Flux2Pipeline: @unchecked Sendable {
             // Load weights with explicit memory management
             // For large models (Dev), this can temporarily use 2x memory during mapping
             Flux2Debug.log("Loading transformer weights from disk...")
-            var weights = try Flux2WeightLoader.loadWeights(from: modelPath)
-
-            Flux2Debug.log("Applying weights to model...")
-            try Flux2WeightLoader.applyTransformerWeights(&weights, to: transformer!)
+            var weights: [String: MLXArray]
+            do {
+                weights = try Flux2WeightLoader.loadWeights(from: modelPath)
+                Flux2Debug.log("Applying weights to model...")
+                try Flux2WeightLoader.applyTransformerWeights(&weights, to: transformer!)
+            } catch {
+                // `transformer` was assigned above; leaving a randomly
+                // initialised instance resident would make every later call
+                // short-circuit `guard transformer == nil` and produce noise.
+                unloadTransformer()
+                throw error
+            }
 
             // Explicitly release the raw weights dictionary to free memory
             // This is important for Dev model where weights can be ~32GB
@@ -721,14 +729,20 @@ public class Flux2Pipeline: @unchecked Sendable {
         // Load weights — prefer diffusion_pytorch_model.safetensors (standard diffusers file)
         // to avoid conflicts when directory contains multiple safetensors files
         let standardWeightsFile = weightsPath.appendingPathComponent("diffusion_pytorch_model.safetensors")
-        let weights: [String: MLXArray]
-        if FileManager.default.fileExists(atPath: standardWeightsFile.path) {
-            Flux2Debug.log("Loading VAE weights from diffusion_pytorch_model.safetensors")
-            weights = try Flux2WeightLoader.loadWeights(from: standardWeightsFile)
-        } else {
-            weights = try Flux2WeightLoader.loadWeights(from: weightsPath)
+        do {
+            let weights: [String: MLXArray]
+            if FileManager.default.fileExists(atPath: standardWeightsFile.path) {
+                Flux2Debug.log("Loading VAE weights from diffusion_pytorch_model.safetensors")
+                weights = try Flux2WeightLoader.loadWeights(from: standardWeightsFile)
+            } else {
+                weights = try Flux2WeightLoader.loadWeights(from: weightsPath)
+            }
+            try Flux2WeightLoader.applyVAEWeights(weights, to: vae!)
+        } catch {
+            // Don't leave a randomly initialised VAE resident (see loadTransformer).
+            vae = nil
+            throw error
         }
-        try Flux2WeightLoader.applyVAEWeights(weights, to: vae!)
 
         // Ensure weights are evaluated
         eval(vae!.parameters())
@@ -806,8 +820,23 @@ public class Flux2Pipeline: @unchecked Sendable {
         // transformer loaded from a *different* directory (a path override
         // set or cleared since the load): the exists/remove decision above was
         // made against `sourcePath`, and the save must write there too.
+        if transformerSourcePath != sourcePath, transformerHasMergedLoRAs {
+            // The reload from `sourcePath` could only warn: the LoRA matrices
+            // were consumed by the fusion, so the session would silently
+            // continue base-only while `hasLoRA` still says true.
+            throw Flux2Error.invalidConfiguration(
+                "The resident transformer has merged LoRA weights and was loaded from \(transformerSourcePath?.path ?? "?"), but the export resolves to \(sourcePath.path) — unload the LoRAs (or reload them after the export) before exporting.")
+        }
         if transformerLoadedFromPrequantized || transformerSourcePath != sourcePath {
             unloadTransformer()
+        }
+        if Flux2PrequantizedCheckpoint.isSymlinked(
+            sourceModelPath: sourcePath, quantization: quantization.transformer)
+        {
+            // remove() left the link alone; saving would replace it with a
+            // local file and silently undo the relocation.
+            throw Flux2Error.invalidConfiguration(
+                "The existing pre-quantized checkpoint under \(sourcePath.path) is a symlink (relocated to another disk) — regenerate it at the relocation target, or remove the link, before exporting here.")
         }
         skipPrequantizedCheckpoint = true
         defer { skipPrequantizedCheckpoint = false }

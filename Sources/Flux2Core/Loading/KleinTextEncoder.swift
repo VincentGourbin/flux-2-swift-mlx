@@ -102,6 +102,12 @@ public class KleinTextEncoder: @unchecked Sendable {
 
         for candidate in candidates {
             if TextEncoderModelDownloader.isQwen3ModelDownloaded(variant: candidate) {
+                if candidate != candidates.first {
+                    // Visible at the default log level: the preferred variant
+                    // may be present but unreachable (relocated, disk unplugged).
+                    Flux2Debug.warning(
+                        "Qwen3 \(candidates[0].rawValue) not available (missing, or relocated to a disk that isn't connected) — using \(candidate.rawValue) instead")
+                }
                 return candidate
             }
         }

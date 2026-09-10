@@ -60,17 +60,49 @@ public class Flux2ModelDownloader: @unchecked Sendable {
     public static func unavailableReason(for component: ModelRegistry.ModelComponent) -> String? {
         let location = location(for: component)
         guard findModelPath(for: component, at: location) == nil else { return nil }
-        let unreachable = unreachableWeights(at: location.url)
-        if location.isOverride {
-            if isOnUnmountedVolume(location.url) || !unreachable.isEmpty {
-                return "Its path override (\(location.url.path)) is on a disk that isn't connected — connect it and retry."
-            }
-            return "Its path override (\(location.url.path)) holds no complete model — restore the files there or clear the override."
+        let dir = location.url
+        let where_ = location.isOverride ? "Its path override (\(dir.path))" : "Its directory (\(dir.path))"
+
+        if isDirectoryUnreadable(dir) {
+            return "\(where_) exists but can't be listed — under App Sandbox it must lie inside an active security-scoped resource."
         }
+        if isOnUnmountedVolume(dir) {
+            return "\(where_) is on a disk that isn't connected — connect it and retry."
+        }
+        let unreachable = unreachableWeights(at: dir)
         if !unreachable.isEmpty {
-            return "Its weight files are symlinks to a disk that isn't connected (\(unreachable.prefix(3).joined(separator: ", "))) — connect it and retry."
+            return "\(where_) has weight files that are symlinks to a disk that isn't connected (\(unreachable.prefix(3).joined(separator: ", "))) — connect it and retry."
+        }
+        let relocated = symlinkedWeights(at: dir)
+        if !relocated.isEmpty {
+            let missing = verifyModel(at: dir).missing.prefix(3).joined(separator: ", ")
+            return "\(where_) holds relocated weights (symlinks) but is incomplete (\(missing)) — restore the missing files at the relocation target; re-downloading here would replace the links with local copies."
+        }
+        if location.isOverride {
+            return "\(where_) holds no complete model — restore the files there or clear the override."
         }
         return nil
+    }
+
+    /// The directory exists (`stat` works) but can't be listed — under App
+    /// Sandbox that is a missing security scope, not an empty model.
+    static func isDirectoryUnreadable(_ directory: URL) -> Bool {
+        let fm = FileManager.default
+        return fm.fileExists(atPath: directory.path)
+            && (try? fm.contentsOfDirectory(atPath: directory.path)) == nil
+    }
+
+    /// Every `.safetensors` entry in `directory` that is a symlink, live or
+    /// dangling: the model was relocated, and `download()` must not write
+    /// into it (it would replace the links with local copies).
+    public static func symlinkedWeights(at directory: URL) -> [String] {
+        let fm = FileManager.default
+        let contents = (try? fm.contentsOfDirectory(atPath: directory.path)) ?? []
+        return contents.filter { name in
+            guard name.hasSuffix(".safetensors"), !name.hasPrefix("._") else { return false }
+            let attrs = try? fm.attributesOfItem(atPath: directory.appendingPathComponent(name).path)
+            return (attrs?[.type] as? FileAttributeType) == .typeSymbolicLink
+        }.sorted()
     }
 
     /// `.safetensors` entries in `directory` that exist as symlinks but whose
@@ -89,6 +121,15 @@ public class Flux2ModelDownloader: @unchecked Sendable {
             return !fm.fileExists(atPath: path)
         }.sorted()
     }
+
+    /// The legacy `huggingface_hub`-style cache searched as a last resort
+    /// (`~/.cache/huggingface/hub`). Overridable so tests don't depend on
+    /// whatever snapshots the current user has lying around.
+    nonisolated(unsafe) public static var legacyHubCacheDirectory: URL =
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache")
+            .appendingPathComponent("huggingface")
+            .appendingPathComponent("hub")
 
     /// Find local path for a model component
     public static func findModelPath(for component: ModelRegistry.ModelComponent) -> URL? {
@@ -121,11 +162,7 @@ public class Flux2ModelDownloader: @unchecked Sendable {
         }
 
         // Check legacy HuggingFace cache
-        let homeDir = FileManager.default.homeDirectoryForCurrentUser
-        let hubCache = homeDir
-            .appendingPathComponent(".cache")
-            .appendingPathComponent("huggingface")
-            .appendingPathComponent("hub")
+        let hubCache = legacyHubCacheDirectory
 
         let modelFolder = "models--\(repoId.replacingOccurrences(of: "/", with: "--"))"
         let snapshotsDir = hubCache.appendingPathComponent(modelFolder).appendingPathComponent("snapshots")
@@ -231,39 +268,38 @@ public class Flux2ModelDownloader: @unchecked Sendable {
             return (false, ["No safetensors files found"])
         }
 
-        // Parse sharded pattern: <stem>-NNNNN-of-MMMMM.safetensors
-        var stem: String?
-        var totalShards: Int?
-        var foundIndices: Set<Int> = []
-
+        // Parse sharded pattern: <stem>-NNNNN-of-MMMMM.safetensors. Series are
+        // grouped by (stem, total) so a leftover shard of another series (a
+        // previous naming, an interrupted attempt) can neither complete nor
+        // break this one, whatever order the directory listing comes in.
+        struct Series: Hashable { let stem: String; let total: Int }
+        var found: [Series: Set<Int>] = [:]
         for file in safetensorsFiles {
             guard let shard = shardComponents(of: file) else { continue }
-            if totalShards == nil {
-                totalShards = shard.total
-                stem = shard.stem
-            }
-            foundIndices.insert(shard.index)
+            found[Series(stem: shard.stem, total: shard.total), default: []].insert(shard.index)
         }
 
-        if let total = totalShards, let stem {
-            let expectedIndices = Set(1...total)
-            let missing = expectedIndices.subtracting(foundIndices)
+        guard !found.isEmpty else { return (true, []) }
 
-            if missing.isEmpty {
-                return (true, [])
-            } else {
-                let missingFiles = missing.sorted().map {
-                    "\(stem)-\(String(format: "%05d", $0))-of-\(String(format: "%05d", total)).safetensors"
-                }
-                return (false, missingFiles)
+        // Complete if any one series is whole; otherwise report the missing
+        // shards of the series closest to completion.
+        var bestMissing: (series: Series, missing: [Int])?
+        for (series, indices) in found {
+            let missing = Set(1...series.total).subtracting(indices).sorted()
+            if missing.isEmpty { return (true, []) }
+            if bestMissing == nil || missing.count < bestMissing!.missing.count {
+                bestMissing = (series, missing)
             }
         }
-
-        return (true, [])
+        let best = bestMissing!
+        return (false, best.missing.map {
+            "\(best.series.stem)-\(String(format: "%05d", $0))-of-\(String(format: "%05d", best.series.total)).safetensors"
+        })
     }
 
     /// Splits `<stem>-NNNNN-of-MMMMM.safetensors` into its parts; `nil` for any
-    /// other name.
+    /// other name (or an implausible series: no real checkpoint has more than
+    /// a few hundred shards, and `Set(1...total)` must stay small).
     private static func shardComponents(of file: String) -> (stem: String, index: Int, total: Int)? {
         guard file.hasSuffix(".safetensors") else { return nil }
         let name = String(file.dropLast(".safetensors".count))
@@ -272,7 +308,7 @@ public class Flux2ModelDownloader: @unchecked Sendable {
               parts[parts.count - 2] == "of",
               let index = Int(parts[parts.count - 3]),
               let total = Int(parts[parts.count - 1]),
-              total > 0, index >= 1, index <= total else {
+              total > 0, total <= 10_000, index >= 1, index <= total else {
             return nil
         }
         return (parts.dropLast(3).joined(separator: "-"), index, total)
@@ -306,27 +342,39 @@ public class Flux2ModelDownloader: @unchecked Sendable {
         // re-downloading over the dangling links would silently undo the
         // relocation and orphan the external copy. Applies to the default
         // layout too — that is exactly how the consumer app relocates.
+        // Under App Sandbox, `stat` works everywhere but listing a directory
+        // outside an active security scope fails with EPERM. verifyModel
+        // swallows that into "no weights"; here it must not become a download.
+        if Self.isDirectoryUnreadable(destDir) {
+            throw Flux2DownloadError.destinationUnreadable(component.displayName, destDir)
+        }
+
         let unreachable = Self.unreachableWeights(at: destDir)
         if !unreachable.isEmpty {
             throw Flux2DownloadError.weightsUnreachable(component.displayName, destDir, unreachable)
         }
 
-        // An override normally points at removable storage. If its volume
-        // isn't mounted, `createDirectory(withIntermediateDirectories:)` would
-        // rebuild the whole missing tree on the boot volume and download into it.
-        if location.isOverride, Self.isOnUnmountedVolume(destDir) {
-            throw Flux2DownloadError.overrideVolumeUnavailable(component.displayName, destDir)
+        // Live links with a shard missing (interrupted relocation): downloading
+        // here would replace every live link with a local copy — the model
+        // must be repaired at the relocation target instead.
+        let relocated = Self.symlinkedWeights(at: destDir)
+        if !relocated.isEmpty {
+            throw Flux2DownloadError.weightsRelocated(component.displayName, destDir, relocated)
         }
 
-        // Under App Sandbox, `stat` works everywhere but listing a directory
-        // outside an active security scope fails with EPERM. verifyModel
-        // swallows that into "no weights"; here it must not become a download.
-        if fm.fileExists(atPath: destDir.path), (try? fm.contentsOfDirectory(atPath: destDir.path)) == nil {
-            throw Flux2DownloadError.destinationUnreadable(component.displayName, destDir)
+        // If the destination's volume isn't mounted, `createDirectory(
+        // withIntermediateDirectories:)` would rebuild the whole missing tree
+        // on the boot volume and download into it. Applies to a catalog root
+        // on removable storage (`--models-dir`) as much as to an override.
+        if Self.isOnUnmountedVolume(destDir) {
+            throw Flux2DownloadError.destinationVolumeUnavailable(component.displayName, destDir)
         }
 
         // Read-only volumes (NTFS by default, a dirty exFAT remounted read-only)
-        // pass every check above; probe writability before transferring.
+        // pass every check above; probe writability before transferring. The
+        // directory is created for the probe, and removed again if nothing
+        // gets downloaded into it (403 without a licence, offline, …).
+        let existedBefore = fm.fileExists(atPath: destDir.path)
         try fm.createDirectory(at: destDir, withIntermediateDirectories: true)
         guard fm.isWritableFile(atPath: destDir.path) else {
             throw Flux2DownloadError.destinationNotWritable(component.displayName, destDir)
@@ -338,23 +386,31 @@ public class Flux2ModelDownloader: @unchecked Sendable {
 
         Flux2Debug.log("Downloading \(component.displayName) from \(repoId)")
 
-        // Get file list from HuggingFace API
-        let files = try await fetchFileList(repoId: repoId, subfolder: subfolder)
+        let filesToDownload: [String]
+        do {
+            // Get file list from HuggingFace API
+            let files = try await fetchFileList(repoId: repoId, subfolder: subfolder)
 
-        // Filter to only necessary files. Small metadata first: if a write is
-        // still going to fail for a reason no probe can catch, it fails on a
-        // kilobyte of JSON rather than after a multi-gigabyte weight transfer.
-        let filesToDownload = files.filter { file in
-            file.hasSuffix(".safetensors") ||
-            file.hasSuffix(".json") ||
-            file == "tokenizer.model"
-        }.sorted { a, b in
-            let aWeight = a.hasSuffix(".safetensors"), bWeight = b.hasSuffix(".safetensors")
-            return aWeight == bWeight ? a < b : !aWeight
-        }
+            // Filter to only necessary files. Small metadata first: if a write
+            // is still going to fail for a reason no probe can catch, it fails
+            // on a kilobyte of JSON rather than after a multi-gigabyte weight.
+            filesToDownload = files.filter { file in
+                file.hasSuffix(".safetensors") ||
+                file.hasSuffix(".json") ||
+                file == "tokenizer.model"
+            }.sorted { a, b in
+                let aWeight = a.hasSuffix(".safetensors"), bWeight = b.hasSuffix(".safetensors")
+                return aWeight == bWeight ? a < b : !aWeight
+            }
 
-        guard !filesToDownload.isEmpty else {
-            throw Flux2DownloadError.modelNotFound("No model files found in \(repoId)")
+            guard !filesToDownload.isEmpty else {
+                throw Flux2DownloadError.modelNotFound("No model files found in \(repoId)")
+            }
+        } catch {
+            if !existedBefore, ((try? fm.contentsOfDirectory(atPath: destDir.path)) ?? []).isEmpty {
+                try? fm.removeItem(at: destDir)
+            }
+            throw error
         }
 
         // Download each file
@@ -640,8 +696,9 @@ public enum Flux2DownloadError: LocalizedError {
     case insufficientSpace(required: Int64, available: Int64)
     case invalidPathOverride(URL)
     case deletionRefusedForOverride(String)
-    case overrideVolumeUnavailable(String, URL)
+    case destinationVolumeUnavailable(String, URL)
     case weightsUnreachable(String, URL, [String])
+    case weightsRelocated(String, URL, [String])
     case destinationUnreadable(String, URL)
     case destinationNotWritable(String, URL)
 
@@ -665,8 +722,10 @@ public enum Flux2DownloadError: LocalizedError {
             return "\(name)'s directory (\(url.path)) is not writable — is the volume mounted read-only?"
         case .deletionRefusedForOverride(let name):
             return "\(name) has a path override and was not deleted — that location may be its only copy (e.g. an external disk). Clear the override or remove the files manually."
-        case .overrideVolumeUnavailable(let name, let url):
-            return "\(name)'s path override (\(url.path)) is on a volume that isn't mounted — connect the external disk and retry."
+        case .destinationVolumeUnavailable(let name, let url):
+            return "\(name)'s directory (\(url.path)) is on a volume that isn't mounted — connect the external disk and retry."
+        case .weightsRelocated(let name, let url, let files):
+            return "\(name) at \(url.path) holds relocated weight files (symlinks: \(files.prefix(3).joined(separator: ", "))) but is incomplete — restore the missing files at the relocation target; downloading here would replace the links with local copies."
         }
     }
 }
