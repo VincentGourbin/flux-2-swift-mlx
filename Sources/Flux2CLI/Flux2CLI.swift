@@ -775,7 +775,6 @@ struct Download: AsyncParsableCommand {
         }
 
         let downloader = Flux2ModelDownloader(hfToken: token)
-        var downloadedComponents: [ModelRegistry.ModelComponent] = []
 
         if vaeOnly {
             print("Downloading \(vaeVar.displayName)...")
@@ -790,7 +789,6 @@ struct Download: AsyncParsableCommand {
             for variant in variants {
                 let component = ModelRegistry.ModelComponent.transformer(variant)
                 try await downloadComponent(downloader, component)
-                downloadedComponents.append(component)
             }
         } else {
             // Parse quantization and get the right variant for this model type
@@ -800,23 +798,16 @@ struct Download: AsyncParsableCommand {
             print("Downloading \(modelVariant.displayName) Transformer (\(variant.rawValue))...")
             let component = ModelRegistry.ModelComponent.transformer(variant)
             try await downloadComponent(downloader, component)
-            downloadedComponents.append(component)
         }
 
         // Always download VAE
         print("Downloading \(vaeVar.displayName)...")
         let vaeComponent = ModelRegistry.ModelComponent.vae(vaeVar)
         try await downloadComponent(downloader, vaeComponent)
-        downloadedComponents.append(vaeComponent)
 
         print()
         print("✅ Download complete!")
-        // Print each component's actual resolved location rather than the generic
-        // modelsDirectory: a component with a ModelRegistry.pathOverrides entry
-        // downloads to that override, not the default models directory.
-        for component in downloadedComponents {
-            print("   \(component.displayName) stored in: \(ModelRegistry.localPath(for: component).path)")
-        }
+        print("   Models stored in: \(ModelRegistry.modelsDirectory.path)")
 
         // Text encoder info
         switch modelVariant {

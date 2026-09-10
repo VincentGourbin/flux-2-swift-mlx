@@ -35,8 +35,7 @@ public class Flux2ModelDownloader: @unchecked Sendable {
 
     /// Find local path for a model component
     public static func findModelPath(for component: ModelRegistry.ModelComponent) -> URL? {
-        // Check our local models directory (localPath(for:) already returns a
-        // pathOverrides entry unconditionally when one is set for this component)
+        // Check our local models directory
         let localPath = ModelRegistry.localPath(for: component)
 
         // Check for config.json OR model_index.json (Klein models use the latter)
@@ -48,13 +47,6 @@ public class Flux2ModelDownloader: @unchecked Sendable {
             if verification.complete {
                 return localPath
             }
-        }
-
-        // An explicit per-component override is authoritative: never fall back
-        // to the legacy cache-search locations below just because they happen
-        // to hold an unrelated, independently-valid copy of the same component.
-        if ModelRegistry.pathOverrides[component] != nil {
-            return nil
         }
 
         // Check configured models directory
@@ -195,21 +187,6 @@ public class Flux2ModelDownloader: @unchecked Sendable {
             }
         }
 
-        // A path override typically points at removable/external storage. Fail
-        // fast, before any network activity, if its parent directory is
-        // missing: only the override's own leaf directory gets created below,
-        // never its missing parents — silently recreating a whole missing tree
-        // would just as happily build it on the boot volume if the external
-        // disk isn't actually connected, masking that mistake instead of
-        // surfacing it.
-        let destDir = ModelRegistry.localPath(for: component)
-        if ModelRegistry.pathOverrides[component] != nil,
-           !FileManager.default.fileExists(atPath: destDir.deletingLastPathComponent().path) {
-            throw Flux2DownloadError.downloadFailed(
-                "\(component.displayName)'s path override (\(destDir.path)) has a missing parent directory — is the external disk connected?"
-            )
-        }
-
         let repoId = Self.repoId(for: component)
         let subfolder = Self.subfolder(for: component)
         progress?(0.0, "Fetching file list for \(component.displayName)...")
@@ -231,6 +208,7 @@ public class Flux2ModelDownloader: @unchecked Sendable {
         }
 
         // Create destination directory
+        let destDir = ModelRegistry.localPath(for: component)
         try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
 
         // Download each file
@@ -392,17 +370,7 @@ public class Flux2ModelDownloader: @unchecked Sendable {
     }
 
     /// Delete a downloaded model
-    ///
-    /// Refuses to delete a component that has an active `ModelRegistry.pathOverrides`
-    /// entry: unlike the default cache locations (always a re-downloadable copy),
-    /// an override may point directly at a component's only copy — e.g. one
-    /// relocated wholesale to an external disk rather than left behind a local
-    /// symlink. Deleting it here would be permanent data loss, not cache cleanup.
     public static func delete(_ component: ModelRegistry.ModelComponent) throws {
-        if ModelRegistry.pathOverrides[component] != nil {
-            throw Flux2DownloadError.deletionRefusedForOverride(component.displayName)
-        }
-
         guard let path = findModelPath(for: component) else {
             return
         }
@@ -441,7 +409,7 @@ public class Flux2ModelDownloader: @unchecked Sendable {
     /// (`downloadedSize()` here, and Flux2App's Model Manager screen) so the fix
     /// below lives in exactly one place.
     public static func directorySize(at url: URL) -> Int64 {
-        sizeOfItem(atPath: url.path, symlinkHopsRemaining: 40)
+        sizeOfItem(atPath: url.path, symlinkHopsRemaining: 40, visitedDirectories: [])
     }
 
     /// Size of a single filesystem entry, following symlinks (including chains
@@ -451,30 +419,46 @@ public class Flux2ModelDownloader: @unchecked Sendable {
     /// Each symlink is resolved via `destinationOfSymbolicLink(atPath:)` (a raw
     /// `readlink`) rather than `resolvingSymlinksInPath()`, which silently no-ops
     /// and leaks the symlink's own near-zero size when the target is missing
-    /// (e.g. an unmounted external disk); a broken symlink contributes 0.
-    /// `symlinkHopsRemaining` bounds symlink-chain traversal (not directory
-    /// recursion depth) so a cyclic chain can't loop forever.
-    private static func sizeOfItem(atPath path: String, symlinkHopsRemaining: Int) -> Int64 {
+    /// (e.g. an unmounted external disk); a broken symlink — including one with
+    /// an empty stored target, which makes a naive relative-path join a no-op —
+    /// contributes 0. `symlinkHopsRemaining` bounds symlink-chain length.
+    /// `visitedDirectories` (keyed by device+inode, not path string, so it
+    /// still works across symlink indirection) additionally guards against a
+    /// symlink pointing at an ancestor directory, which would otherwise
+    /// re-sum that ancestor's contents on every hop.
+    private static func sizeOfItem(atPath path: String, symlinkHopsRemaining: Int, visitedDirectories: Set<String>) -> Int64 {
         let fm = FileManager.default
         guard let attrs = try? fm.attributesOfItem(atPath: path) else { return 0 }
 
         switch attrs[.type] as? FileAttributeType {
         case .typeSymbolicLink:
             guard symlinkHopsRemaining > 0,
-                  let rawTarget = try? fm.destinationOfSymbolicLink(atPath: path) else {
+                  let rawTarget = try? fm.destinationOfSymbolicLink(atPath: path),
+                  !rawTarget.isEmpty else {
                 return 0
             }
             let targetPath = rawTarget.hasPrefix("/")
                 ? rawTarget
                 : URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent(rawTarget).path
-            return sizeOfItem(atPath: targetPath, symlinkHopsRemaining: symlinkHopsRemaining - 1)
+            return sizeOfItem(
+                atPath: targetPath,
+                symlinkHopsRemaining: symlinkHopsRemaining - 1,
+                visitedDirectories: visitedDirectories
+            )
 
         case .typeDirectory:
+            let inode = (attrs[.systemFileNumber] as? Int) ?? 0
+            let device = (attrs[.systemNumber] as? Int) ?? 0
+            let identity = "\(device):\(inode)"
+            guard !visitedDirectories.contains(identity) else { return 0 }
+
             guard let children = try? fm.contentsOfDirectory(atPath: path) else { return 0 }
+            let nextVisited = visitedDirectories.union([identity])
             return children.reduce(Int64(0)) { total, name in
                 total + sizeOfItem(
                     atPath: (path as NSString).appendingPathComponent(name),
-                    symlinkHopsRemaining: symlinkHopsRemaining
+                    symlinkHopsRemaining: symlinkHopsRemaining,
+                    visitedDirectories: nextVisited
                 )
             }
 
@@ -491,7 +475,6 @@ public enum Flux2DownloadError: LocalizedError {
     case downloadFailed(String)
     case verificationFailed([String])
     case insufficientSpace(required: Int64, available: Int64)
-    case deletionRefusedForOverride(String)
 
     public var errorDescription: String? {
         switch self {
@@ -503,8 +486,6 @@ public enum Flux2DownloadError: LocalizedError {
             return "Verification failed, missing files: \(missing.joined(separator: ", "))"
         case .insufficientSpace(let required, let available):
             return "Insufficient disk space: need \(Flux2ModelDownloader.formatSize(required)), have \(Flux2ModelDownloader.formatSize(available))"
-        case .deletionRefusedForOverride(let name):
-            return "\(name) has a path override in place and was not deleted — it may be its only copy (e.g. relocated to an external disk). Remove the override or delete the files manually if you're sure."
         }
     }
 }

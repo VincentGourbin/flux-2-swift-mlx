@@ -122,4 +122,41 @@ final class ModelDownloaderSizeTests: XCTestCase {
 
         XCTAssertEqual(Flux2ModelDownloader.directorySize(at: modelDir), 10_000)
     }
+
+    func testDirectorySizeIgnoresSymlinkCycleThroughAncestorDirectory() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("flux2-cycle-\(UUID().uuidString)")
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let modelDir = root.appendingPathComponent("model")
+        try fm.createDirectory(at: modelDir, withIntermediateDirectories: true)
+        try Data(repeating: 0x41, count: 10_000).write(to: modelDir.appendingPathComponent("weights.safetensors"))
+
+        // A stray symlink pointing back at the model directory itself. Without
+        // cycle detection this would cause weights.safetensors to be re-summed
+        // on every hop instead of the cycle being recognized.
+        let selfLink = modelDir.appendingPathComponent("self-link")
+        try fm.createSymbolicLink(at: selfLink, withDestinationURL: modelDir)
+
+        XCTAssertEqual(Flux2ModelDownloader.directorySize(at: modelDir), 10_000)
+    }
+
+    func testDirectorySizeEmptySymlinkTargetContributesZero() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("flux2-emptytarget-\(UUID().uuidString)")
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        try Data(repeating: 0x41, count: 500).write(to: root.appendingPathComponent("config.json"))
+
+        // A malformed symlink with an empty stored target (readlink() succeeds
+        // and returns ""). Foundation's createSymbolicLink API always stores a
+        // non-empty destination, so this needs the raw POSIX call.
+        let brokenLink = root.appendingPathComponent("model.safetensors")
+        let result = brokenLink.path.withCString { symlink("", $0) }
+        try XCTSkipIf(result != 0, "This filesystem doesn't allow an empty symlink target")
+
+        XCTAssertEqual(Flux2ModelDownloader.directorySize(at: root), 500)
+    }
 }

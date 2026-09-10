@@ -437,40 +437,6 @@ public enum ModelRegistry {
     /// Set this before any download/check call to redirect model storage.
     nonisolated(unsafe) public static var customModelsDirectory: URL?
 
-    /// Per-component path overrides, consulted before the computed default path.
-    /// Lets a caller redirect a single component (e.g. one relocated to an
-    /// external disk) without moving the rest of the catalog under
-    /// `customModelsDirectory`. When a component has an override, it is
-    /// authoritative: `localPath(for:)` returns it unconditionally, and
-    /// `Flux2ModelDownloader.findModelPath(for:)` checks only that path rather
-    /// than falling back to the legacy cache-search locations.
-    ///
-    /// Loading only consults this for `.transformer` and `.vae` components:
-    /// `.textEncoder` loading goes through `TextEncoderModelDownloader`
-    /// (`FluxTextEncoders`), a separate downloader with its own
-    /// `customModelsDirectory` that does not read this dictionary — setting an
-    /// override for a `.textEncoder` case only affects status/size queries that
-    /// go through `ModelRegistry`/`Flux2ModelDownloader`, not actual encoder loading.
-    ///
-    /// Lock-protected (unlike the plain `customModelsDirectory` above) because
-    /// a `Dictionary` mutation can trigger a buffer reallocation/rehash, making
-    /// an unguarded concurrent read genuinely unsafe rather than just stale.
-    public static var pathOverrides: [ModelComponent: URL] {
-        get {
-            pathOverridesLock.lock()
-            defer { pathOverridesLock.unlock() }
-            return _pathOverrides
-        }
-        set {
-            pathOverridesLock.lock()
-            defer { pathOverridesLock.unlock() }
-            _pathOverrides = newValue
-        }
-    }
-
-    private static let pathOverridesLock = NSLock()
-    nonisolated(unsafe) private static var _pathOverrides: [ModelComponent: URL] = [:]
-
     /// Base directory for model storage.
     /// Uses customModelsDirectory if set, otherwise falls back to ~/Library/Caches/models
     public static var modelsDirectory: URL {
@@ -483,10 +449,6 @@ public enum ModelRegistry {
 
     /// Get the local path for a model component
     public static func localPath(for component: ModelComponent) -> URL {
-        if let override = pathOverrides[component] {
-            return override
-        }
-
         switch component {
         case .transformer(let variant):
             let modelName: String
