@@ -444,7 +444,32 @@ public enum ModelRegistry {
     /// authoritative: `localPath(for:)` returns it unconditionally, and
     /// `Flux2ModelDownloader.findModelPath(for:)` checks only that path rather
     /// than falling back to the legacy cache-search locations.
-    nonisolated(unsafe) public static var pathOverrides: [ModelComponent: URL] = [:]
+    ///
+    /// Loading only consults this for `.transformer` and `.vae` components:
+    /// `.textEncoder` loading goes through `TextEncoderModelDownloader`
+    /// (`FluxTextEncoders`), a separate downloader with its own
+    /// `customModelsDirectory` that does not read this dictionary — setting an
+    /// override for a `.textEncoder` case only affects status/size queries that
+    /// go through `ModelRegistry`/`Flux2ModelDownloader`, not actual encoder loading.
+    ///
+    /// Lock-protected (unlike the plain `customModelsDirectory` above) because
+    /// a `Dictionary` mutation can trigger a buffer reallocation/rehash, making
+    /// an unguarded concurrent read genuinely unsafe rather than just stale.
+    public static var pathOverrides: [ModelComponent: URL] {
+        get {
+            pathOverridesLock.lock()
+            defer { pathOverridesLock.unlock() }
+            return _pathOverrides
+        }
+        set {
+            pathOverridesLock.lock()
+            defer { pathOverridesLock.unlock() }
+            _pathOverrides = newValue
+        }
+    }
+
+    private static let pathOverridesLock = NSLock()
+    nonisolated(unsafe) private static var _pathOverrides: [ModelComponent: URL] = [:]
 
     /// Base directory for model storage.
     /// Uses customModelsDirectory if set, otherwise falls back to ~/Library/Caches/models

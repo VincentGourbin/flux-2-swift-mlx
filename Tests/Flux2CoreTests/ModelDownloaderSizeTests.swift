@@ -77,4 +77,49 @@ final class ModelDownloaderSizeTests: XCTestCase {
             XCTAssertEqual(size, Int64(configData.count))
         }
     }
+
+    // MARK: - directorySize(at:) edge cases (multi-hop chains, symlinked directories)
+
+    func testDirectorySizeFollowsMultiHopSymlinkChain() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("flux2-chain-\(UUID().uuidString)")
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let real = root.appendingPathComponent("real.safetensors")
+        try Data(repeating: 0x41, count: 10_000).write(to: real)
+
+        let link1 = root.appendingPathComponent("link1.safetensors")
+        try fm.createSymbolicLink(at: link1, withDestinationURL: real)
+        let link2 = root.appendingPathComponent("link2.safetensors")
+        try fm.createSymbolicLink(at: link2, withDestinationURL: link1)
+
+        // Only link2 sits in the model dir; it must resolve through link1 to
+        // real.safetensors's actual size, not link1's own tiny symlink size.
+        let modelDir = root.appendingPathComponent("model")
+        try fm.createDirectory(at: modelDir, withIntermediateDirectories: true)
+        let chainedLink = modelDir.appendingPathComponent("model.safetensors")
+        try fm.createSymbolicLink(at: chainedLink, withDestinationURL: link2)
+
+        XCTAssertEqual(Flux2ModelDownloader.directorySize(at: modelDir), 10_000)
+    }
+
+    func testDirectorySizeFollowsSymlinkedSubdirectory() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("flux2-dirlink-\(UUID().uuidString)")
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let realDir = root.appendingPathComponent("real-weights")
+        try fm.createDirectory(at: realDir, withIntermediateDirectories: true)
+        try Data(repeating: 0x41, count: 4_000).write(to: realDir.appendingPathComponent("shard1.safetensors"))
+        try Data(repeating: 0x42, count: 6_000).write(to: realDir.appendingPathComponent("shard2.safetensors"))
+
+        let modelDir = root.appendingPathComponent("model")
+        try fm.createDirectory(at: modelDir, withIntermediateDirectories: true)
+        let dirLink = modelDir.appendingPathComponent("weights")
+        try fm.createSymbolicLink(at: dirLink, withDestinationURL: realDir)
+
+        XCTAssertEqual(Flux2ModelDownloader.directorySize(at: modelDir), 10_000)
+    }
 }

@@ -76,4 +76,49 @@ final class ModelPathOverrideTests: XCTestCase {
 
         XCTAssertNil(Flux2ModelDownloader.findModelPath(for: .vae(.standard)))
     }
+
+    /// An override may be a component's only copy (e.g. relocated wholesale to
+    /// an external disk, not left behind a local symlink) — delete() must refuse
+    /// rather than silently doing what would be safe cache cleanup for the
+    /// default location.
+    func testDeleteRefusesComponentWithActiveOverride() throws {
+        let fm = FileManager.default
+        let overrideDir = fm.temporaryDirectory
+            .appendingPathComponent("flux2-override-delete-\(UUID().uuidString)")
+        try fm.createDirectory(at: overrideDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: overrideDir) }
+
+        try "{}".write(to: overrideDir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+        try Data().write(to: overrideDir.appendingPathComponent("model.safetensors"))
+
+        ModelRegistry.pathOverrides[.vae(.standard)] = overrideDir
+
+        XCTAssertThrowsError(try Flux2ModelDownloader.delete(.vae(.standard)))
+
+        // The override's files must survive the refused deletion.
+        XCTAssertTrue(fm.fileExists(atPath: overrideDir.appendingPathComponent("model.safetensors").path))
+    }
+
+    /// If an override's parent directory doesn't exist (e.g. an external disk's
+    /// mount point isn't present), download() must fail loudly rather than
+    /// silently recreating the whole missing tree on the boot volume.
+    func testDownloadRefusesOverrideWithMissingParent() async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("flux2-download-override-\(UUID().uuidString)")
+        // Deliberately do NOT create `root` — it stands in for an unmounted disk.
+        let override = root.appendingPathComponent("not-mounted").appendingPathComponent("flux2-vae")
+        defer { try? fm.removeItem(at: root) }
+
+        ModelRegistry.pathOverrides[.vae(.standard)] = override
+
+        let downloader = Flux2ModelDownloader()
+        do {
+            _ = try await downloader.download(.vae(.standard))
+            XCTFail("Expected download() to throw when the override's parent directory is missing")
+        } catch {
+            // Expected: any thrown error is fine, as long as nothing got created.
+        }
+
+        XCTAssertFalse(fm.fileExists(atPath: override.path))
+    }
 }
