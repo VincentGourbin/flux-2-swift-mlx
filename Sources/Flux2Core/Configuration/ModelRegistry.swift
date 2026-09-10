@@ -447,8 +447,58 @@ public enum ModelRegistry {
         return cacheDir.appendingPathComponent("models", isDirectory: true)
     }
 
-    /// Get the local path for a model component
+    // MARK: Per-component path overrides
+
+    /// Set (or clear, with `nil`) an explicit location for a single component,
+    /// e.g. one relocated wholesale to an external disk while the rest of the
+    /// catalog stays under `customModelsDirectory`. An override is authoritative:
+    /// `localPath(for:)` returns it, and `Flux2ModelDownloader` checks only that
+    /// location — never the default cache-search tiers — for that component.
+    ///
+    /// Only `.transformer` and `.vae` are supported: `.textEncoder` loading goes
+    /// through `TextEncoderModelDownloader` (FluxTextEncoders), which does not
+    /// consult this registry, so accepting an override there would be silently
+    /// inert. It throws instead.
+    ///
+    /// Overrides are deliberately not exposed as a mutable dictionary: each call
+    /// is one atomic update under a lock, so concurrent writers to different
+    /// components can't lose each other's entries.
+    public static func setPathOverride(_ url: URL?, for component: ModelComponent) throws {
+        if case .textEncoder = component {
+            throw Flux2DownloadError.pathOverrideUnsupported(component.displayName)
+        }
+        pathOverridesLock.lock()
+        defer { pathOverridesLock.unlock() }
+        _pathOverrides[component] = url
+    }
+
+    /// The explicit location set via `setPathOverride(_:for:)`, if any.
+    public static func pathOverride(for component: ModelComponent) -> URL? {
+        pathOverridesLock.lock()
+        defer { pathOverridesLock.unlock() }
+        return _pathOverrides[component]
+    }
+
+    /// Remove every override (mainly for tests and app reset flows).
+    public static func clearPathOverrides() {
+        pathOverridesLock.lock()
+        defer { pathOverridesLock.unlock() }
+        _pathOverrides.removeAll()
+    }
+
+    private static let pathOverridesLock = NSLock()
+    nonisolated(unsafe) private static var _pathOverrides: [ModelComponent: URL] = [:]
+
+    /// Get the local path for a model component: its override if one is set,
+    /// otherwise the computed default under `modelsDirectory`.
     public static func localPath(for component: ModelComponent) -> URL {
+        pathOverride(for: component) ?? defaultLocalPath(for: component)
+    }
+
+    /// The computed default location under `modelsDirectory`, ignoring any
+    /// override. Pure: reads no override state, so a caller that has already
+    /// taken an override snapshot can use it without a second read.
+    public static func defaultLocalPath(for component: ModelComponent) -> URL {
         switch component {
         case .transformer(let variant):
             let modelName: String
@@ -489,17 +539,14 @@ public enum ModelRegistry {
         }
     }
 
-    /// Check if a model component is downloaded
-    /// Note: This delegates to Flux2ModelDownloader which checks multiple cache locations
+    /// Check if a model component is downloaded *and complete*.
+    ///
+    /// Delegates entirely to `Flux2ModelDownloader` so this and
+    /// `Flux2ModelDownloader.isDownloaded` can never disagree: an existing but
+    /// empty/partial directory (or one whose weights are broken symlinks) is
+    /// not "downloaded" here either.
     public static func isDownloaded(_ component: ModelComponent) -> Bool {
-        // First check our local path
-        let path = localPath(for: component)
-        if FileManager.default.fileExists(atPath: path.path) {
-            return true
-        }
-
-        // Also check HuggingFace cache via Flux2ModelDownloader
-        return Flux2ModelDownloader.isDownloaded(component)
+        Flux2ModelDownloader.isDownloaded(component)
     }
 
     // MARK: - Configuration Files

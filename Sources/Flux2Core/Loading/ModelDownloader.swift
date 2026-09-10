@@ -33,20 +33,41 @@ public class Flux2ModelDownloader: @unchecked Sendable {
         findModelPath(for: component) != nil
     }
 
+    /// Where a component lives, captured from exactly one read of
+    /// `ModelRegistry.pathOverride(for:)`.
+    ///
+    /// Every public operation resolves this once up front and threads it
+    /// through, so a guard ("is this an override?") and the action it guards
+    /// ("delete what findModelPath returns") can never observe two different
+    /// override states within the same call.
+    struct Location {
+        let url: URL
+        let isOverride: Bool
+    }
+
+    static func location(for component: ModelRegistry.ModelComponent) -> Location {
+        if let override = ModelRegistry.pathOverride(for: component) {
+            return Location(url: override, isOverride: true)
+        }
+        return Location(url: ModelRegistry.defaultLocalPath(for: component), isOverride: false)
+    }
+
     /// Find local path for a model component
     public static func findModelPath(for component: ModelRegistry.ModelComponent) -> URL? {
+        findModelPath(for: component, at: location(for: component))
+    }
+
+    static func findModelPath(for component: ModelRegistry.ModelComponent, at location: Location) -> URL? {
+        // An override is authoritative: it's the only place we look. Never fall
+        // back to the cache-search tiers below just because one of them happens
+        // to hold an unrelated, independently-valid copy of the same component.
+        if location.isOverride {
+            return isCompleteModel(at: location.url) ? location.url : nil
+        }
+
         // Check our local models directory
-        let localPath = ModelRegistry.localPath(for: component)
-
-        // Check for config.json OR model_index.json (Klein models use the latter)
-        let hasConfig = FileManager.default.fileExists(atPath: localPath.appendingPathComponent("config.json").path)
-        let hasModelIndex = FileManager.default.fileExists(atPath: localPath.appendingPathComponent("model_index.json").path)
-
-        if hasConfig || hasModelIndex {
-            let verification = verifyModel(at: localPath)
-            if verification.complete {
-                return localPath
-            }
+        if isCompleteModel(at: location.url) {
+            return location.url
         }
 
         // Check configured models directory
@@ -57,14 +78,8 @@ public class Flux2ModelDownloader: @unchecked Sendable {
             path = path.appendingPathComponent(String(part))
         }
 
-        let cacheHasConfig = FileManager.default.fileExists(atPath: path.appendingPathComponent("config.json").path)
-        let cacheHasModelIndex = FileManager.default.fileExists(atPath: path.appendingPathComponent("model_index.json").path)
-
-        if cacheHasConfig || cacheHasModelIndex {
-            let verification = verifyModel(at: path)
-            if verification.complete {
-                return path
-            }
+        if isCompleteModel(at: path) {
+            return path
         }
 
         // Check legacy HuggingFace cache
@@ -83,19 +98,34 @@ public class Flux2ModelDownloader: @unchecked Sendable {
         }
 
         let modelPath = snapshotsDir.appendingPathComponent(latestSnapshot)
-        let configPath = modelPath.appendingPathComponent("config.json")
-        let modelIndexPath = modelPath.appendingPathComponent("model_index.json")
+        return isCompleteModel(at: modelPath) ? modelPath : nil
+    }
 
-        if FileManager.default.fileExists(atPath: configPath.path) ||
-           FileManager.default.fileExists(atPath: modelIndexPath.path) {
-            // Verify safetensors files are complete
-            let verification = verifyModel(at: modelPath)
-            if verification.complete {
-                return modelPath
-            }
+    /// True when `url` sits under a `/Volumes/<disk>` mount point that doesn't
+    /// currently exist. Walks up to the nearest existing ancestor: if that is
+    /// `/Volumes` itself, the disk isn't mounted. A missing *subfolder* on a
+    /// mounted disk (nearest ancestor is `/Volumes/<disk>` or deeper) is fine —
+    /// `createDirectory(withIntermediateDirectories:)` handles that normally.
+    static func isOnUnmountedVolume(_ url: URL) -> Bool {
+        let fm = FileManager.default
+        var ancestor = url.standardizedFileURL
+        while !fm.fileExists(atPath: ancestor.path) {
+            let parent = ancestor.deletingLastPathComponent()
+            if parent.path == ancestor.path { return false }
+            ancestor = parent
         }
+        return ancestor.path == "/Volumes"
+    }
 
-        return nil
+    /// A model directory counts as present when it has a `config.json` or
+    /// `model_index.json` (Klein models use the latter) and `verifyModel`
+    /// finds its weights complete.
+    private static func isCompleteModel(at path: URL) -> Bool {
+        let fm = FileManager.default
+        let hasConfig = fm.fileExists(atPath: path.appendingPathComponent("config.json").path)
+        let hasModelIndex = fm.fileExists(atPath: path.appendingPathComponent("model_index.json").path)
+        guard hasConfig || hasModelIndex else { return false }
+        return verifyModel(at: path).complete
     }
 
     /// Get HuggingFace repo ID for a component
@@ -111,10 +141,19 @@ public class Flux2ModelDownloader: @unchecked Sendable {
         }
     }
 
-    /// Verify model files are complete
+    /// Verify model files are complete.
+    ///
+    /// A `.safetensors` entry only counts if its bytes are actually reachable:
+    /// the directory listing is filtered through `fileExists(atPath:)`, which is
+    /// `stat`-based and follows symlinks, so a weight file relocated to an
+    /// external disk that is currently unmounted (a dangling symlink) is
+    /// reported as missing rather than counted by name.
     public static func verifyModel(at path: URL) -> (complete: Bool, missing: [String]) {
-        let contents = (try? FileManager.default.contentsOfDirectory(atPath: path.path)) ?? []
-        let safetensorsFiles = contents.filter { $0.hasSuffix(".safetensors") }
+        let fm = FileManager.default
+        let contents = (try? fm.contentsOfDirectory(atPath: path.path)) ?? []
+        let safetensorsFiles = contents.filter {
+            $0.hasSuffix(".safetensors") && fm.fileExists(atPath: path.appendingPathComponent($0).path)
+        }
 
         // Single file model (various naming conventions)
         if safetensorsFiles.contains("model.safetensors") ||
@@ -178,13 +217,24 @@ public class Flux2ModelDownloader: @unchecked Sendable {
         _ component: ModelRegistry.ModelComponent,
         progress: Flux2DownloadProgressCallback? = nil
     ) async throws -> URL {
+        // One override snapshot for the whole operation: the already-downloaded
+        // check and the write destination below must agree on where this
+        // component lives, even if an override is set/cleared mid-download.
+        let location = Self.location(for: component)
+
         // Check if already downloaded
-        if let existingPath = Self.findModelPath(for: component) {
-            let verification = Self.verifyModel(at: existingPath)
-            if verification.complete {
-                progress?(1.0, "Model already downloaded")
-                return existingPath
-            }
+        if let existingPath = Self.findModelPath(for: component, at: location) {
+            progress?(1.0, "Model already downloaded")
+            return existingPath
+        }
+
+        // An override normally points at removable storage. Refuse before any
+        // network activity if its volume isn't there: `createDirectory(
+        // withIntermediateDirectories:)` would otherwise happily rebuild the
+        // whole missing tree on the boot volume and download into it.
+        let destDir = location.url
+        if location.isOverride, Self.isOnUnmountedVolume(destDir) {
+            throw Flux2DownloadError.overrideVolumeUnavailable(component.displayName, destDir)
         }
 
         let repoId = Self.repoId(for: component)
@@ -208,7 +258,6 @@ public class Flux2ModelDownloader: @unchecked Sendable {
         }
 
         // Create destination directory
-        let destDir = ModelRegistry.localPath(for: component)
         try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
 
         // Download each file
@@ -370,8 +419,19 @@ public class Flux2ModelDownloader: @unchecked Sendable {
     }
 
     /// Delete a downloaded model
+    ///
+    /// Refuses to delete a component that has a path override: the default
+    /// locations are re-downloadable cache copies, but an override may be the
+    /// component's only copy (relocated wholesale to an external disk).
+    /// Removing it would be data loss, not cache cleanup. The guard and the
+    /// lookup share one override snapshot, so the guard can't be bypassed by an
+    /// override set between the two.
     public static func delete(_ component: ModelRegistry.ModelComponent) throws {
-        guard let path = findModelPath(for: component) else {
+        let location = location(for: component)
+        if location.isOverride {
+            throw Flux2DownloadError.deletionRefusedForOverride(component.displayName)
+        }
+        guard let path = findModelPath(for: component, at: location) else {
             return
         }
 
@@ -475,6 +535,9 @@ public enum Flux2DownloadError: LocalizedError {
     case downloadFailed(String)
     case verificationFailed([String])
     case insufficientSpace(required: Int64, available: Int64)
+    case pathOverrideUnsupported(String)
+    case deletionRefusedForOverride(String)
+    case overrideVolumeUnavailable(String, URL)
 
     public var errorDescription: String? {
         switch self {
@@ -486,6 +549,12 @@ public enum Flux2DownloadError: LocalizedError {
             return "Verification failed, missing files: \(missing.joined(separator: ", "))"
         case .insufficientSpace(let required, let available):
             return "Insufficient disk space: need \(Flux2ModelDownloader.formatSize(required)), have \(Flux2ModelDownloader.formatSize(available))"
+        case .pathOverrideUnsupported(let name):
+            return "\(name) does not support a path override: it is loaded by TextEncoderModelDownloader, which has its own customModelsDirectory."
+        case .deletionRefusedForOverride(let name):
+            return "\(name) has a path override and was not deleted — that location may be its only copy (e.g. an external disk). Clear the override or remove the files manually."
+        case .overrideVolumeUnavailable(let name, let url):
+            return "\(name)'s path override (\(url.path)) is on a volume that isn't mounted — connect the external disk and retry."
         }
     }
 }

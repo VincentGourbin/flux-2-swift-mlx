@@ -72,9 +72,48 @@ final class ModelDownloaderSizeTests: XCTestCase {
             let symlinkURL = modelDir.appendingPathComponent("model.safetensors")
             try fm.createSymbolicLink(at: symlinkURL, withDestinationURL: missingTarget)
 
-            let size = Flux2ModelDownloader.downloadedSize()
+            // The walk itself: the dangling link adds 0, not its own lstat size.
+            XCTAssertEqual(Flux2ModelDownloader.directorySize(at: modelDir), Int64(configData.count))
 
-            XCTAssertEqual(size, Int64(configData.count))
+            // And at the API level the model is no longer "downloaded" at all
+            // (verifyModel follows symlinks), so it contributes nothing.
+            XCTAssertEqual(Flux2ModelDownloader.downloadedSize(), 0)
+        }
+    }
+
+    // MARK: - verifyModel follows symlinks
+
+    func testVerifyModelCountsSymlinkedWeightWhoseTargetExists() throws {
+        try withSandbox { customDir in
+            let fm = FileManager.default
+            let modelDir = ModelRegistry.localPath(for: .vae(.standard))
+            let externalDir = customDir.appendingPathComponent("external")
+            try fm.createDirectory(at: modelDir, withIntermediateDirectories: true)
+            try fm.createDirectory(at: externalDir, withIntermediateDirectories: true)
+            try "{}".write(to: modelDir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+
+            let target = externalDir.appendingPathComponent("model.safetensors")
+            try Data(repeating: 0x42, count: 64).write(to: target)
+            try fm.createSymbolicLink(at: modelDir.appendingPathComponent("model.safetensors"), withDestinationURL: target)
+
+            XCTAssertTrue(Flux2ModelDownloader.verifyModel(at: modelDir).complete)
+            XCTAssertNotNil(Flux2ModelDownloader.findModelPath(for: .vae(.standard)))
+        }
+    }
+
+    func testVerifyModelTreatsBrokenSymlinkedWeightAsMissing() throws {
+        try withSandbox { customDir in
+            let fm = FileManager.default
+            let modelDir = ModelRegistry.localPath(for: .vae(.standard))
+            try fm.createDirectory(at: modelDir, withIntermediateDirectories: true)
+            try "{}".write(to: modelDir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+
+            // Unplugged external disk: the weight file's symlink dangles.
+            let missingTarget = customDir.appendingPathComponent("not-mounted/model.safetensors")
+            try fm.createSymbolicLink(at: modelDir.appendingPathComponent("model.safetensors"), withDestinationURL: missingTarget)
+
+            XCTAssertFalse(Flux2ModelDownloader.verifyModel(at: modelDir).complete)
+            XCTAssertNil(Flux2ModelDownloader.findModelPath(for: .vae(.standard)))
         }
     }
 

@@ -2265,11 +2265,26 @@ struct DiffusionModelsSection: View {
         .alert("Delete Transformer", isPresented: $showDeleteAlert, presenting: transformerToDelete) { variant in
             Button("Cancel", role: .cancel) { }
             Button("Delete", role: .destructive) {
-                try? modelManager.deleteTransformer(variant)
+                do {
+                    try modelManager.deleteTransformer(variant)
+                } catch {
+                    modelManager.errorMessage = error.localizedDescription
+                }
             }
         } message: { variant in
             let info = modelManager.transformerDisplayInfo(variant)
             Text("Are you sure you want to delete \(info.name)? This cannot be undone.")
+        }
+        .alert(
+            "Model Error",
+            isPresented: Binding(
+                get: { modelManager.errorMessage != nil },
+                set: { if !$0 { modelManager.errorMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(modelManager.errorMessage ?? "")
         }
     }
 }
@@ -2401,7 +2416,11 @@ struct VAESection: View {
         .alert("Delete VAE", isPresented: $showDeleteAlert) {
             Button("Cancel", role: .cancel) { }
             Button("Delete", role: .destructive) {
-                try? modelManager.deleteVAE()
+                do {
+                    try modelManager.deleteVAE()
+                } catch {
+                    modelManager.errorMessage = error.localizedDescription
+                }
             }
         } message: {
             Text("Are you sure you want to delete the VAE? This cannot be undone.")
