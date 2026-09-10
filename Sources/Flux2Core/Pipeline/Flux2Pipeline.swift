@@ -503,7 +503,8 @@ public class Flux2Pipeline: @unchecked Sendable {
             case .klein9BKV:
                 downloadCmd = "flux2 download --model klein-9b-kv"
             }
-            throw Flux2Error.modelNotLoaded("\(model.displayName) transformer weights not found. Run: \(downloadCmd)")
+            let hint = Flux2ModelDownloader.unavailableReason(for: .transformer(variant)) ?? "Run: \(downloadCmd)"
+            throw Flux2Error.modelNotLoaded("\(model.displayName) transformer weights not found. \(hint)")
         }
 
         // Create model with appropriate config and memory optimization
@@ -695,7 +696,8 @@ public class Flux2Pipeline: @unchecked Sendable {
         Flux2Debug.log("Loading VAE (\(vaeVariant.displayName))...")
 
         guard let modelPath = Flux2ModelDownloader.findModelPath(for: .vae(vaeVariant)) else {
-            throw Flux2Error.modelNotLoaded("VAE weights not found for variant: \(vaeVariant.rawValue)")
+            let hint = Flux2ModelDownloader.unavailableReason(for: .vae(vaeVariant)).map { " \($0)" } ?? ""
+            throw Flux2Error.modelNotLoaded("VAE weights not found for variant: \(vaeVariant.rawValue).\(hint)")
         }
 
         // VAE files may be in 'vae' subdirectory (standard variant from Klein 4B repo)
@@ -773,8 +775,9 @@ public class Flux2Pipeline: @unchecked Sendable {
         let variant = ModelRegistry.TransformerVariant.variant(
             for: model, quantization: quantization.transformer)
         guard let sourcePath = Flux2ModelDownloader.findModelPath(for: .transformer(variant)) else {
-            throw Flux2Error.modelNotLoaded(
-                "\(model.displayName) transformer weights not found — download the model before exporting")
+            let hint = Flux2ModelDownloader.unavailableReason(for: .transformer(variant))
+                ?? "download the model before exporting"
+            throw Flux2Error.modelNotLoaded("\(model.displayName) transformer weights not found — \(hint)")
         }
 
         if Flux2PrequantizedCheckpoint.exists(
@@ -799,8 +802,11 @@ public class Flux2Pipeline: @unchecked Sendable {
 
         // The export must derive from the SOURCE weights, never from a
         // previous export: drop a checkpoint-loaded resident transformer and
-        // disable the fast path for the (re)load below.
-        if transformerLoadedFromPrequantized {
+        // disable the fast path for the (re)load below. Also drop a resident
+        // transformer loaded from a *different* directory (a path override
+        // set or cleared since the load): the exists/remove decision above was
+        // made against `sourcePath`, and the save must write there too.
+        if transformerLoadedFromPrequantized || transformerSourcePath != sourcePath {
             unloadTransformer()
         }
         skipPrequantizedCheckpoint = true
@@ -832,6 +838,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         compiledForward = nil
         compiledForwardKey = nil
         transformer = nil
+        transformerSourcePath = nil
         transformerHasMergedLoRAs = false
         transformerLoadedFromPrequantized = false
         memoryManager.clearCache()

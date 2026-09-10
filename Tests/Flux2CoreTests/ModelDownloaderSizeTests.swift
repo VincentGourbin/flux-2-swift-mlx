@@ -117,6 +117,52 @@ final class ModelDownloaderSizeTests: XCTestCase {
         }
     }
 
+    func testVerifyModelDiffusersShardsRequireTheWholeReachableSeries() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("flux2-shards-\(UUID().uuidString)")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        try "{}".write(to: dir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+
+        // Shards 3-4 local, 1-2 dangling (partially unplugged relocation).
+        for i in 3...4 {
+            try Data(repeating: 0x42, count: 8).write(
+                to: dir.appendingPathComponent("diffusion_pytorch_model-0000\(i)-of-00004.safetensors"))
+        }
+        for i in 1...2 {
+            try fm.createSymbolicLink(
+                at: dir.appendingPathComponent("diffusion_pytorch_model-0000\(i)-of-00004.safetensors"),
+                withDestinationURL: dir.appendingPathComponent("unplugged/\(i).safetensors"))
+        }
+
+        let result = Flux2ModelDownloader.verifyModel(at: dir)
+        XCTAssertFalse(result.complete)
+        XCTAssertEqual(result.missing, [
+            "diffusion_pytorch_model-00001-of-00004.safetensors",
+            "diffusion_pytorch_model-00002-of-00004.safetensors",
+        ])
+
+        // Complete the series and it verifies.
+        for i in 1...2 {
+            let link = dir.appendingPathComponent("diffusion_pytorch_model-0000\(i)-of-00004.safetensors")
+            try fm.removeItem(at: link)
+            try Data(repeating: 0x42, count: 8).write(to: link)
+        }
+        XCTAssertTrue(Flux2ModelDownloader.verifyModel(at: dir).complete)
+    }
+
+    func testVerifyModelIgnoresAppleDoubleSidecars() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("flux2-sidecar-\(UUID().uuidString)")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        try "{}".write(to: dir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+        // Only the exFAT sidecar is left after the real weight went away.
+        try Data(repeating: 0, count: 4).write(to: dir.appendingPathComponent("._flux-2-klein-4b.safetensors"))
+
+        XCTAssertFalse(Flux2ModelDownloader.verifyModel(at: dir).complete)
+    }
+
     // MARK: - directorySize(at:) edge cases (multi-hop chains, symlinked directories)
 
     func testDirectorySizeFollowsMultiHopSymlinkChain() throws {

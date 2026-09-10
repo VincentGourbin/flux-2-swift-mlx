@@ -2206,6 +2206,7 @@ struct DiffusionModelsSection: View {
     @EnvironmentObject var modelManager: ModelManager
     @State private var transformerToDelete: ModelRegistry.TransformerVariant?
     @State private var showDeleteAlert = false
+    @State private var deleteError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -2268,7 +2269,7 @@ struct DiffusionModelsSection: View {
                 do {
                     try modelManager.deleteTransformer(variant)
                 } catch {
-                    modelManager.errorMessage = error.localizedDescription
+                    deleteError = error.localizedDescription
                 }
             }
         } message: { variant in
@@ -2276,15 +2277,12 @@ struct DiffusionModelsSection: View {
             Text("Are you sure you want to delete \(info.name)? This cannot be undone.")
         }
         .alert(
-            "Model Error",
-            isPresented: Binding(
-                get: { modelManager.errorMessage != nil },
-                set: { if !$0 { modelManager.errorMessage = nil } }
-            )
+            "Could Not Delete",
+            isPresented: Binding(get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })
         ) {
             Button("OK", role: .cancel) { }
         } message: {
-            Text(modelManager.errorMessage ?? "")
+            Text(deleteError ?? "")
         }
     }
 }
@@ -2331,7 +2329,13 @@ struct TransformerSection: View {
 
                     Spacer()
 
-                    if isDownloaded {
+                    if isDownloaded, ModelRegistry.pathOverride(for: .transformer(variant)) != nil {
+                        // An overridden location may be the only copy; the
+                        // framework refuses to delete it, so don't offer to.
+                        Image(systemName: "externaldrive")
+                            .foregroundStyle(.secondary)
+                            .help("Loaded from a custom location — manage it there")
+                    } else if isDownloaded {
                         Button(action: {
                             transformerToDelete = variant
                             showDeleteAlert = true
@@ -2362,6 +2366,7 @@ struct TransformerSection: View {
 struct VAESection: View {
     @EnvironmentObject var modelManager: ModelManager
     @State private var showDeleteAlert = false
+    @State private var deleteError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -2392,7 +2397,11 @@ struct VAESection: View {
 
                 Spacer()
 
-                if modelManager.isVAEDownloaded {
+                if modelManager.isVAEDownloaded, ModelRegistry.pathOverride(for: .vae(.standard)) != nil {
+                    Image(systemName: "externaldrive")
+                        .foregroundStyle(.secondary)
+                        .help("Loaded from a custom location — manage it there")
+                } else if modelManager.isVAEDownloaded {
                     Button(action: { showDeleteAlert = true }) {
                         Image(systemName: "trash")
                             .foregroundStyle(.red)
@@ -2419,11 +2428,19 @@ struct VAESection: View {
                 do {
                     try modelManager.deleteVAE()
                 } catch {
-                    modelManager.errorMessage = error.localizedDescription
+                    deleteError = error.localizedDescription
                 }
             }
         } message: {
             Text("Are you sure you want to delete the VAE? This cannot be undone.")
+        }
+        .alert(
+            "Could Not Delete",
+            isPresented: Binding(get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })
+        ) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(deleteError ?? "")
         }
     }
 }

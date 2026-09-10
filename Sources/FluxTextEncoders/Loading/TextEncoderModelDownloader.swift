@@ -133,8 +133,16 @@ public class TextEncoderModelDownloader {
     /// Note: Does NOT trust index.json as some HF repos have mismatched index files
     /// Instead, detects safetensors files and verifies the series is complete
     public static func verifyShardedModel(at path: URL) -> (complete: Bool, missing: [String]) {
-        let contents = (try? FileManager.default.contentsOfDirectory(atPath: path.path)) ?? []
-        let safetensorsFiles = contents.filter { $0.hasSuffix(".safetensors") }
+        let fm = FileManager.default
+        let contents = (try? fm.contentsOfDirectory(atPath: path.path)) ?? []
+        // Only weights whose bytes are reachable count: `fileExists` is
+        // stat-based and follows symlinks, so a weight relocated to an
+        // external disk that is unplugged (dangling link) is missing, not
+        // present-by-name. `._` entries are AppleDouble sidecars on exFAT.
+        let safetensorsFiles = contents.filter {
+            $0.hasSuffix(".safetensors") && !$0.hasPrefix("._")
+                && fm.fileExists(atPath: path.appendingPathComponent($0).path)
+        }
 
         // Single file model
         if safetensorsFiles.contains("model.safetensors") {

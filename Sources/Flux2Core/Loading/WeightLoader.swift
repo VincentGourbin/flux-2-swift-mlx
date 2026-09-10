@@ -608,6 +608,14 @@ public class Flux2WeightLoader {
             Flux2Debug.log("... and \(notFound - 10) more missing parameters")
         }
 
+        // A directory that verified as "a model" but holds another component's
+        // weights (e.g. a VAE-only folder handed to the transformer via a path
+        // override) maps zero keys; loading it silently would produce noise.
+        guard !updates.isEmpty else {
+            throw Flux2Error.modelNotLoaded(
+                "None of the \(weights.count) loaded tensors match the transformer — the weight files belong to a different model or component")
+        }
+
         // Update model with new weights using the flattened format
         _ = model.update(parameters: ModuleParameters.unflattened(updates))
 
@@ -663,6 +671,11 @@ public class Flux2WeightLoader {
 
         if notFound > 10 {
             Flux2Debug.log("... and \(notFound - 10) more missing VAE parameters")
+        }
+
+        guard !updates.isEmpty else {
+            throw Flux2Error.modelNotLoaded(
+                "None of the \(weights.count) loaded tensors match the VAE — the weight files belong to a different model or component")
         }
 
         _ = model.update(parameters: ModuleParameters.unflattened(updates))

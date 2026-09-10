@@ -188,6 +188,34 @@ final class TextEncoderModelDirectoryTests: XCTestCase {
         XCTAssertTrue(found!.path.hasPrefix(tempDir.path))
     }
 
+    func testFindQwen3ModelPathTreatsDanglingWeightSymlinkAsMissing() throws {
+        // A text encoder relocated to an external disk that is unplugged: the
+        // weight is a dangling symlink and must not count as present-by-name.
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("flux2-te-dangling-\(UUID().uuidString)")
+            .appendingPathComponent("models")
+        let model = Qwen3ModelInfo(
+            id: "test-qwen-dangling",
+            repoId: "test-org/qwen3-dangling",
+            name: "Qwen3 Test",
+            description: "Test Qwen3 model",
+            variant: .qwen3_4B_8bit,
+            parameters: "4B"
+        )
+        let modelDir = tempDir.appendingPathComponent("test-org").appendingPathComponent("qwen3-dangling")
+        try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
+        try "{}".write(to: modelDir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(
+            at: modelDir.appendingPathComponent("model.safetensors"),
+            withDestinationURL: tempDir.appendingPathComponent("unplugged/model.safetensors"))
+        defer { try? FileManager.default.removeItem(at: tempDir.deletingLastPathComponent()) }
+
+        TextEncoderModelDownloader.customModelsDirectory = tempDir
+
+        XCTAssertFalse(TextEncoderModelDownloader.verifyShardedModel(at: modelDir).complete)
+        XCTAssertNil(TextEncoderModelDownloader.findQwen3ModelPath(for: model))
+    }
+
     // MARK: - Multiple switches
 
     func testSwitchingCustomDirectories() {

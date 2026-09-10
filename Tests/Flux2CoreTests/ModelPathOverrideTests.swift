@@ -1,9 +1,9 @@
 // ModelPathOverrideTests.swift - Tests for ModelRegistry per-component path overrides
 // Copyright 2025 Vincent Gourbin
 //
-// Lets a caller redirect a single model component to an arbitrary URL (e.g.
-// one relocated to an external disk) without moving the rest of the catalog
-// under customModelsDirectory. See
+// Lets a caller redirect a single model component to an arbitrary directory
+// (e.g. one relocated to an external disk) without moving the rest of the
+// catalog under customModelsDirectory. See
 // Fluxforge Studio/docs/FRAMEWORK_ASKS_STORAGE.md ask #2.
 
 import XCTest
@@ -32,25 +32,24 @@ final class ModelPathOverrideTests: XCTestCase {
 
     // MARK: - Registry API
 
-    func testLocalPathReturnsOverrideWhenSet() throws {
-        let override = URL(fileURLWithPath: "/Volumes/External/flux2-vae")
+    func testResolvedPathReturnsOverrideWhileLocalPathStaysPure() throws {
+        let override = URL(fileURLWithPath: "/Volumes/External/flux2-vae", isDirectory: true)
         try ModelRegistry.setPathOverride(override, for: .vae(.standard))
 
-        XCTAssertEqual(ModelRegistry.localPath(for: .vae(.standard)), override)
+        XCTAssertEqual(ModelRegistry.resolvedPath(for: .vae(.standard)), override)
         XCTAssertEqual(ModelRegistry.pathOverride(for: .vae(.standard)), override)
-    }
-
-    func testDefaultLocalPathIgnoresOverride() throws {
-        try ModelRegistry.setPathOverride(URL(fileURLWithPath: "/Volumes/External/flux2-vae"), for: .vae(.standard))
-
-        XCTAssertFalse(ModelRegistry.defaultLocalPath(for: .vae(.standard)).path.hasPrefix("/Volumes/External"))
+        XCTAssertEqual(ModelRegistry.pathOverride(forComponent: .vae(.standard)), override)
+        // localPath is the catalog layout consumers derive relative paths from.
+        XCTAssertFalse(ModelRegistry.localPath(for: .vae(.standard)).path.hasPrefix("/Volumes/External"))
     }
 
     func testOverrideOnlyAffectsItsOwnComponent() throws {
         try ModelRegistry.setPathOverride(URL(fileURLWithPath: "/Volumes/External/flux2-vae"), for: .vae(.standard))
 
-        XCTAssertFalse(ModelRegistry.localPath(for: .transformer(.klein4B_bf16)).path.hasPrefix("/Volumes/External"))
         XCTAssertNil(ModelRegistry.pathOverride(for: .transformer(.klein4B_bf16)))
+        XCTAssertEqual(
+            ModelRegistry.resolvedPath(for: .transformer(.klein4B_bf16)),
+            ModelRegistry.localPath(for: .transformer(.klein4B_bf16)))
     }
 
     func testSettingNilClearsOverride() throws {
@@ -58,14 +57,27 @@ final class ModelPathOverrideTests: XCTestCase {
         try ModelRegistry.setPathOverride(nil, for: .vae(.standard))
 
         XCTAssertNil(ModelRegistry.pathOverride(for: .vae(.standard)))
-        XCTAssertEqual(ModelRegistry.localPath(for: .vae(.standard)), ModelRegistry.defaultLocalPath(for: .vae(.standard)))
     }
 
-    func testTextEncoderOverrideIsRejectedNotSilentlyInert() {
-        XCTAssertThrowsError(
-            try ModelRegistry.setPathOverride(URL(fileURLWithPath: "/Volumes/External/mistral"), for: .textEncoder(.mlx8bit))
-        )
-        XCTAssertNil(ModelRegistry.pathOverride(for: .textEncoder(.mlx8bit)))
+    func testNonFileURLIsRejected() {
+        XCTAssertThrowsError(try ModelRegistry.setPathOverride(URL(string: "https://example.com/vae")!, for: .vae(.standard)))
+        XCTAssertThrowsError(try ModelRegistry.setPathOverride(URL(string: "/Volumes/External/vae")!, for: .vae(.standard)))
+        XCTAssertNil(ModelRegistry.pathOverride(for: .vae(.standard)))
+    }
+
+    func testStoredOverrideIsStandardizedDirectoryURL() throws {
+        try ModelRegistry.setPathOverride(URL(fileURLWithPath: "/Volumes/External/./x/../flux2-vae"), for: .vae(.standard))
+
+        let stored = try XCTUnwrap(ModelRegistry.pathOverride(for: .vae(.standard)))
+        XCTAssertEqual(stored.path, "/Volumes/External/flux2-vae")
+        XCTAssertTrue(stored.hasDirectoryPath)
+    }
+
+    func testTextEncoderOverrideIsUnrepresentable() {
+        // `.textEncoder` is not an OverridableComponent; the ModelComponent
+        // read side simply never has an override for it.
+        XCTAssertNil(ModelRegistry.OverridableComponent(.textEncoder(.mlx8bit)))
+        XCTAssertNil(ModelRegistry.pathOverride(forComponent: .textEncoder(.mlx8bit)))
     }
 
     // MARK: - findModelPath / isDownloaded
@@ -80,6 +92,7 @@ final class ModelPathOverrideTests: XCTestCase {
         let found = Flux2ModelDownloader.findModelPath(for: .vae(.standard))
         XCTAssertEqual(found?.standardizedFileURL.path, overrideDir.standardizedFileURL.path)
         XCTAssertTrue(ModelRegistry.isDownloaded(.vae(.standard)))
+        XCTAssertNil(Flux2ModelDownloader.unavailableReason(for: .vae(.standard)))
     }
 
     func testFindModelPathDoesNotFallBackWhenOverrideIsIncomplete() throws {
@@ -92,7 +105,7 @@ final class ModelPathOverrideTests: XCTestCase {
             try? fm.removeItem(at: customDir)
         }
         ModelRegistry.customModelsDirectory = customDir
-        let defaultModelDir = ModelRegistry.defaultLocalPath(for: .vae(.standard))
+        let defaultModelDir = ModelRegistry.localPath(for: .vae(.standard))
         try fm.createDirectory(at: defaultModelDir, withIntermediateDirectories: true)
         try writeCompleteModel(at: defaultModelDir)
 
@@ -100,6 +113,7 @@ final class ModelPathOverrideTests: XCTestCase {
 
         XCTAssertNil(Flux2ModelDownloader.findModelPath(for: .vae(.standard)))
         XCTAssertFalse(ModelRegistry.isDownloaded(.vae(.standard)))
+        XCTAssertNotNil(Flux2ModelDownloader.unavailableReason(for: .vae(.standard)))
     }
 
     func testRegistryAndDownloaderAgreeOnExistingButEmptyDirectory() throws {
@@ -108,7 +122,7 @@ final class ModelPathOverrideTests: XCTestCase {
         let customDir = try makeTempDir("agree")
         defer { try? fm.removeItem(at: customDir) }
         ModelRegistry.customModelsDirectory = customDir
-        try fm.createDirectory(at: ModelRegistry.defaultLocalPath(for: .vae(.standard)), withIntermediateDirectories: true)
+        try fm.createDirectory(at: ModelRegistry.localPath(for: .vae(.standard)), withIntermediateDirectories: true)
 
         XCTAssertFalse(ModelRegistry.isDownloaded(.vae(.standard)))
         XCTAssertEqual(ModelRegistry.isDownloaded(.vae(.standard)), Flux2ModelDownloader.isDownloaded(.vae(.standard)))
@@ -147,11 +161,65 @@ final class ModelPathOverrideTests: XCTestCase {
             }
         }
         XCTAssertFalse(fm.fileExists(atPath: override.deletingLastPathComponent().deletingLastPathComponent().path))
+        XCTAssertNotNil(Flux2ModelDownloader.unavailableReason(for: .vae(.standard)))
     }
 
-    func testUnmountedVolumeDetectionOnlyTriggersForMissingMountPoint() throws {
+    func testDownloadRefusesDanglingWeightSymlinksInDefaultLayout() async throws {
+        // The consumer's shipped relocation: default directory, weights are
+        // absolute symlinks to the external disk, disk unplugged. This must not
+        // become a re-download (which would overwrite the links and orphan the
+        // external copy), and must fail before any network call.
+        let customDir = try makeTempDir("dangling")
+        defer { try? fm.removeItem(at: customDir) }
+        ModelRegistry.customModelsDirectory = customDir
+        let modelDir = ModelRegistry.localPath(for: .vae(.standard))
+        try fm.createDirectory(at: modelDir, withIntermediateDirectories: true)
+        try "{}".write(to: modelDir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+        let link = modelDir.appendingPathComponent("model.safetensors")
+        try fm.createSymbolicLink(at: link, withDestinationURL: customDir.appendingPathComponent("unplugged/model.safetensors"))
+
+        XCTAssertEqual(Flux2ModelDownloader.unreachableWeights(at: modelDir), ["model.safetensors"])
+        XCTAssertNil(Flux2ModelDownloader.findModelPath(for: .vae(.standard)))
+        XCTAssertNotNil(Flux2ModelDownloader.unavailableReason(for: .vae(.standard)))
+
+        do {
+            _ = try await Flux2ModelDownloader().download(.vae(.standard))
+            XCTFail("Expected download() to refuse dangling weight symlinks")
+        } catch let error as Flux2DownloadError {
+            guard case .weightsUnreachable(_, _, let files) = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+            XCTAssertEqual(files, ["model.safetensors"])
+        }
+        // The symlink is untouched.
+        XCTAssertNotNil(try? fm.destinationOfSymbolicLink(atPath: link.path))
+    }
+
+    func testDownloadRefusesReadOnlyDestinationBeforeAnyNetworkCall() async throws {
+        let overrideDir = try makeTempDir("readonly")
+        defer {
+            try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: overrideDir.path)
+            try? fm.removeItem(at: overrideDir)
+        }
+        try fm.setAttributes([.posixPermissions: 0o555], ofItemAtPath: overrideDir.path)
+        try XCTSkipIf(fm.isWritableFile(atPath: overrideDir.path), "Running as a user that ignores permission bits")
+        try ModelRegistry.setPathOverride(overrideDir, for: .vae(.standard))
+
+        do {
+            _ = try await Flux2ModelDownloader().download(.vae(.standard))
+            XCTFail("Expected download() to refuse a read-only destination")
+        } catch let error as Flux2DownloadError {
+            guard case .destinationNotWritable = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+    }
+
+    func testUnmountedVolumeDetection() throws {
         XCTAssertTrue(Flux2ModelDownloader.isOnUnmountedVolume(
             URL(fileURLWithPath: "/Volumes/flux2-nope-\(UUID().uuidString)/a/b/c")))
+        XCTAssertTrue(Flux2ModelDownloader.isOnUnmountedVolume(
+            URL(fileURLWithPath: "/volumes/flux2-nope-\(UUID().uuidString)")))
 
         // A missing subfolder under an existing directory is not "unmounted".
         let existing = try makeTempDir("mounted")

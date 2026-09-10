@@ -449,34 +449,79 @@ public enum ModelRegistry {
 
     // MARK: Per-component path overrides
 
+    /// The components whose location can be overridden individually.
+    ///
+    /// `.textEncoder` is deliberately absent: Mistral/Qwen3 loading goes through
+    /// `TextEncoderModelDownloader` (FluxTextEncoders), which has its own
+    /// `customModelsDirectory` and never consults this registry, so an override
+    /// there could only ever be silently inert. Making it unrepresentable beats
+    /// rejecting it at runtime. Spelled like `ModelComponent` so call sites read
+    /// the same (`.vae(.standard)`, `.transformer(.klein9B_bf16)`).
+    public enum OverridableComponent: Hashable, Sendable {
+        case transformer(TransformerVariant)
+        case vae(VAEVariant)
+
+        public init?(_ component: ModelComponent) {
+            switch component {
+            case .transformer(let v): self = .transformer(v)
+            case .vae(let v): self = .vae(v)
+            case .textEncoder: return nil
+            }
+        }
+
+        public var component: ModelComponent {
+            switch self {
+            case .transformer(let v): return .transformer(v)
+            case .vae(let v): return .vae(v)
+            }
+        }
+    }
+
     /// Set (or clear, with `nil`) an explicit location for a single component,
     /// e.g. one relocated wholesale to an external disk while the rest of the
-    /// catalog stays under `customModelsDirectory`. An override is authoritative:
-    /// `localPath(for:)` returns it, and `Flux2ModelDownloader` checks only that
-    /// location — never the default cache-search tiers — for that component.
+    /// catalog stays under `customModelsDirectory`.
     ///
-    /// Only `.transformer` and `.vae` are supported: `.textEncoder` loading goes
-    /// through `TextEncoderModelDownloader` (FluxTextEncoders), which does not
-    /// consult this registry, so accepting an override there would be silently
-    /// inert. It throws instead.
+    /// An override is authoritative for `Flux2ModelDownloader`: it checks only
+    /// that directory for the component — never the default cache-search tiers
+    /// — and `download()` writes there. `localPath(for:)` is unaffected (it
+    /// stays the pure catalog layout); use `resolvedPath(for:)` for
+    /// "override if set, else layout".
     ///
-    /// Overrides are deliberately not exposed as a mutable dictionary: each call
-    /// is one atomic update under a lock, so concurrent writers to different
+    /// The URL must be a file URL (throws `invalidPathOverride` otherwise) and
+    /// is stored standardized as a directory URL. Under App Sandbox the
+    /// directory must lie inside an active security-scoped resource: metadata
+    /// calls succeed outside a scope but directory listing does not, which
+    /// `download()` reports as `destinationUnreadable` rather than "not
+    /// downloaded".
+    ///
+    /// Overrides are not exposed as a mutable dictionary: each call is one
+    /// atomic update under a lock, so concurrent writers to different
     /// components can't lose each other's entries.
-    public static func setPathOverride(_ url: URL?, for component: ModelComponent) throws {
-        if case .textEncoder = component {
-            throw Flux2DownloadError.pathOverrideUnsupported(component.displayName)
+    public static func setPathOverride(_ url: URL?, for component: OverridableComponent) throws {
+        var stored: URL?
+        if let url {
+            guard url.isFileURL else {
+                throw Flux2DownloadError.invalidPathOverride(url)
+            }
+            stored = URL(fileURLWithPath: url.path, isDirectory: true).standardizedFileURL
         }
         pathOverridesLock.lock()
         defer { pathOverridesLock.unlock() }
-        _pathOverrides[component] = url
+        _pathOverrides[component] = stored
     }
 
     /// The explicit location set via `setPathOverride(_:for:)`, if any.
-    public static func pathOverride(for component: ModelComponent) -> URL? {
+    public static func pathOverride(for component: OverridableComponent) -> URL? {
         pathOverridesLock.lock()
         defer { pathOverridesLock.unlock() }
         return _pathOverrides[component]
+    }
+
+    /// Same, keyed by `ModelComponent`; always `nil` for `.textEncoder`.
+    /// (Distinct label: both enums spell their cases identically, so a shared
+    /// `for:` overload would make `.vae(.standard)` ambiguous at call sites.)
+    public static func pathOverride(forComponent component: ModelComponent) -> URL? {
+        OverridableComponent(component).flatMap { pathOverride(for: $0) }
     }
 
     /// Remove every override (mainly for tests and app reset flows).
@@ -487,18 +532,20 @@ public enum ModelRegistry {
     }
 
     private static let pathOverridesLock = NSLock()
-    nonisolated(unsafe) private static var _pathOverrides: [ModelComponent: URL] = [:]
+    nonisolated(unsafe) private static var _pathOverrides: [OverridableComponent: URL] = [:]
 
-    /// Get the local path for a model component: its override if one is set,
-    /// otherwise the computed default under `modelsDirectory`.
-    public static func localPath(for component: ModelComponent) -> URL {
-        pathOverride(for: component) ?? defaultLocalPath(for: component)
+    /// Where the component is actually looked up: its override if one is set,
+    /// otherwise `localPath(for:)`.
+    public static func resolvedPath(for component: ModelComponent) -> URL {
+        pathOverride(forComponent: component) ?? localPath(for: component)
     }
 
-    /// The computed default location under `modelsDirectory`, ignoring any
-    /// override. Pure: reads no override state, so a caller that has already
-    /// taken an override snapshot can use it without a second read.
-    public static func defaultLocalPath(for component: ModelComponent) -> URL {
+    /// The catalog layout location of a component under `modelsDirectory`.
+    ///
+    /// Pure and override-agnostic on purpose: consumers use it to derive
+    /// paths *relative to* `modelsDirectory` (their own relocation bookkeeping
+    /// depends on it staying under that root). See `resolvedPath(for:)`.
+    public static func localPath(for component: ModelComponent) -> URL {
         switch component {
         case .transformer(let variant):
             let modelName: String
