@@ -398,21 +398,73 @@ public class Flux2ModelDownloader: @unchecked Sendable {
         return total
     }
 
-    private static func directorySize(at url: URL) -> Int64 {
+    /// Calculate directory size recursively.
+    ///
+    /// Walks with `atPath:` APIs (not the `URL`-based family) because a relocated
+    /// model's large weight files are replaced with file symlinks to an external
+    /// disk: the `URL`-based enumerator/`resourceValues`/`attributesOfItem(atPath:)`
+    /// combo reports a symlink's own size (a few bytes), not its target's.
+    ///
+    /// Shared by every "how big is this model on disk" call site in the package
+    /// (`downloadedSize()` here, and Flux2App's Model Manager screen) so the fix
+    /// below lives in exactly one place.
+    public static func directorySize(at url: URL) -> Int64 {
+        sizeOfItem(atPath: url.path, symlinkHopsRemaining: 40, visitedDirectories: [])
+    }
+
+    /// Size of a single filesystem entry, following symlinks (including chains
+    /// and symlinked subdirectories) to their real target rather than reporting
+    /// the link's own few-byte size.
+    ///
+    /// Each symlink is resolved via `destinationOfSymbolicLink(atPath:)` (a raw
+    /// `readlink`) rather than `resolvingSymlinksInPath()`, which silently no-ops
+    /// and leaks the symlink's own near-zero size when the target is missing
+    /// (e.g. an unmounted external disk); a broken symlink — including one with
+    /// an empty stored target, which makes a naive relative-path join a no-op —
+    /// contributes 0. `symlinkHopsRemaining` bounds symlink-chain length.
+    /// `visitedDirectories` (keyed by device+inode, not path string, so it
+    /// still works across symlink indirection) additionally guards against a
+    /// symlink pointing at an ancestor directory, which would otherwise
+    /// re-sum that ancestor's contents on every hop.
+    private static func sizeOfItem(atPath path: String, symlinkHopsRemaining: Int, visitedDirectories: Set<String>) -> Int64 {
         let fm = FileManager.default
-        guard let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey]) else {
-            return 0
-        }
+        guard let attrs = try? fm.attributesOfItem(atPath: path) else { return 0 }
 
-        var total: Int64 = 0
-        for case let fileURL as URL in enumerator {
-            if let attrs = try? fm.attributesOfItem(atPath: fileURL.path),
-               let size = attrs[.size] as? Int64 {
-                total += size
+        switch attrs[.type] as? FileAttributeType {
+        case .typeSymbolicLink:
+            guard symlinkHopsRemaining > 0,
+                  let rawTarget = try? fm.destinationOfSymbolicLink(atPath: path),
+                  !rawTarget.isEmpty else {
+                return 0
             }
-        }
+            let targetPath = rawTarget.hasPrefix("/")
+                ? rawTarget
+                : URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent(rawTarget).path
+            return sizeOfItem(
+                atPath: targetPath,
+                symlinkHopsRemaining: symlinkHopsRemaining - 1,
+                visitedDirectories: visitedDirectories
+            )
 
-        return total
+        case .typeDirectory:
+            let inode = (attrs[.systemFileNumber] as? Int) ?? 0
+            let device = (attrs[.systemNumber] as? Int) ?? 0
+            let identity = "\(device):\(inode)"
+            guard !visitedDirectories.contains(identity) else { return 0 }
+
+            guard let children = try? fm.contentsOfDirectory(atPath: path) else { return 0 }
+            let nextVisited = visitedDirectories.union([identity])
+            return children.reduce(Int64(0)) { total, name in
+                total + sizeOfItem(
+                    atPath: (path as NSString).appendingPathComponent(name),
+                    symlinkHopsRemaining: symlinkHopsRemaining,
+                    visitedDirectories: nextVisited
+                )
+            }
+
+        default:
+            return (attrs[.size] as? Int64) ?? 0
+        }
     }
 }
 

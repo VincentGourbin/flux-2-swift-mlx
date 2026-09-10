@@ -142,19 +142,11 @@ class ModelManager: ObservableObject {
         memoryStats = MemoryStats.current
     }
 
+    /// Delegates to `Flux2ModelDownloader.directorySize(at:)`, which follows
+    /// symlinked weight files to their real size instead of reporting a few
+    /// bytes for a model relocated to an external disk.
     private func calculateDirectorySize(at url: URL) -> Int64 {
-        let fileManager = FileManager.default
-        guard let enumerator = fileManager.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey]) else {
-            return 0
-        }
-
-        var totalSize: Int64 = 0
-        for case let fileURL as URL in enumerator {
-            if let fileSize = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize {
-                totalSize += Int64(fileSize)
-            }
-        }
-        return totalSize
+        Flux2ModelDownloader.directorySize(at: url)
     }
 
     // MARK: - Refresh Qwen3 Models
