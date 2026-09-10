@@ -437,6 +437,15 @@ public enum ModelRegistry {
     /// Set this before any download/check call to redirect model storage.
     nonisolated(unsafe) public static var customModelsDirectory: URL?
 
+    /// Per-component path overrides, consulted before the computed default path.
+    /// Lets a caller redirect a single component (e.g. one relocated to an
+    /// external disk) without moving the rest of the catalog under
+    /// `customModelsDirectory`. When a component has an override, it is
+    /// authoritative: `localPath(for:)` returns it unconditionally, and
+    /// `Flux2ModelDownloader.findModelPath(for:)` checks only that path rather
+    /// than falling back to the legacy cache-search locations.
+    nonisolated(unsafe) public static var pathOverrides: [ModelComponent: URL] = [:]
+
     /// Base directory for model storage.
     /// Uses customModelsDirectory if set, otherwise falls back to ~/Library/Caches/models
     public static var modelsDirectory: URL {
@@ -449,6 +458,10 @@ public enum ModelRegistry {
 
     /// Get the local path for a model component
     public static func localPath(for component: ModelComponent) -> URL {
+        if let override = pathOverrides[component] {
+            return override
+        }
+
         switch component {
         case .transformer(let variant):
             let modelName: String
