@@ -447,7 +447,99 @@ public enum ModelRegistry {
         return cacheDir.appendingPathComponent("models", isDirectory: true)
     }
 
-    /// Get the local path for a model component
+    // MARK: Per-component path overrides
+
+    /// The components whose location can be overridden individually.
+    ///
+    /// `.textEncoder` is deliberately absent: Mistral/Qwen3 loading goes through
+    /// `TextEncoderModelDownloader` (FluxTextEncoders), which has its own
+    /// `customModelsDirectory` and never consults this registry, so an override
+    /// there could only ever be silently inert. Making it unrepresentable beats
+    /// rejecting it at runtime. Spelled like `ModelComponent` so call sites read
+    /// the same (`.vae(.standard)`, `.transformer(.klein9B_bf16)`).
+    public enum OverridableComponent: Hashable, Sendable {
+        case transformer(TransformerVariant)
+        case vae(VAEVariant)
+
+        public init?(_ component: ModelComponent) {
+            switch component {
+            case .transformer(let v): self = .transformer(v)
+            case .vae(let v): self = .vae(v)
+            case .textEncoder: return nil
+            }
+        }
+    }
+
+    /// Set (or clear, with `nil`) an explicit location for a single component,
+    /// e.g. one relocated wholesale to an external disk while the rest of the
+    /// catalog stays under `customModelsDirectory`.
+    ///
+    /// An override is authoritative for `Flux2ModelDownloader`: it checks only
+    /// that directory for the component — never the default cache-search tiers
+    /// — and `download()` writes there. `localPath(for:)` is unaffected (it
+    /// stays the pure catalog layout); use `resolvedPath(for:)` for
+    /// "override if set, else layout".
+    ///
+    /// The URL must be a file URL (throws `invalidPathOverride` otherwise) and
+    /// is stored as a lexically standardized directory URL (`.` / `..`
+    /// removed; symlinks such as `/private` are *not* resolved, so the stored
+    /// URL compares equal to what the caller passed). Under App Sandbox the
+    /// directory must lie inside an active security-scoped resource: metadata
+    /// calls succeed outside a scope but directory listing does not, which
+    /// `download()` reports as `destinationUnreadable` rather than "not
+    /// downloaded".
+    ///
+    /// Overrides are not exposed as a mutable dictionary: each call is one
+    /// atomic update under a lock, so concurrent writers to different
+    /// components can't lose each other's entries.
+    public static func setPathOverride(_ url: URL?, for component: OverridableComponent) throws {
+        var stored: URL?
+        if let url {
+            guard url.isFileURL else {
+                throw Flux2DownloadError.invalidPathOverride(url)
+            }
+            stored = URL(fileURLWithPath: url.path, isDirectory: true).standardized
+        }
+        pathOverridesLock.lock()
+        defer { pathOverridesLock.unlock() }
+        _pathOverrides[component] = stored
+    }
+
+    /// The explicit location set via `setPathOverride(_:for:)`, if any.
+    public static func pathOverride(for component: OverridableComponent) -> URL? {
+        pathOverridesLock.lock()
+        defer { pathOverridesLock.unlock() }
+        return _pathOverrides[component]
+    }
+
+    /// Same, keyed by `ModelComponent`; always `nil` for `.textEncoder`.
+    /// (Distinct label: both enums spell their cases identically, so a shared
+    /// `for:` overload would make `.vae(.standard)` ambiguous at call sites.)
+    public static func pathOverride(forComponent component: ModelComponent) -> URL? {
+        OverridableComponent(component).flatMap { pathOverride(for: $0) }
+    }
+
+    /// Remove every override (mainly for tests and app reset flows).
+    public static func clearPathOverrides() {
+        pathOverridesLock.lock()
+        defer { pathOverridesLock.unlock() }
+        _pathOverrides.removeAll()
+    }
+
+    private static let pathOverridesLock = NSLock()
+    nonisolated(unsafe) private static var _pathOverrides: [OverridableComponent: URL] = [:]
+
+    /// Where the component is actually looked up: its override if one is set,
+    /// otherwise `localPath(for:)`.
+    public static func resolvedPath(for component: ModelComponent) -> URL {
+        pathOverride(forComponent: component) ?? localPath(for: component)
+    }
+
+    /// The catalog layout location of a component under `modelsDirectory`.
+    ///
+    /// Pure and override-agnostic on purpose: consumers use it to derive
+    /// paths *relative to* `modelsDirectory` (their own relocation bookkeeping
+    /// depends on it staying under that root). See `resolvedPath(for:)`.
     public static func localPath(for component: ModelComponent) -> URL {
         switch component {
         case .transformer(let variant):
@@ -489,17 +581,14 @@ public enum ModelRegistry {
         }
     }
 
-    /// Check if a model component is downloaded
-    /// Note: This delegates to Flux2ModelDownloader which checks multiple cache locations
+    /// Check if a model component is downloaded *and complete*.
+    ///
+    /// Delegates entirely to `Flux2ModelDownloader` so this and
+    /// `Flux2ModelDownloader.isDownloaded` can never disagree: an existing but
+    /// empty/partial directory (or one whose weights are broken symlinks) is
+    /// not "downloaded" here either.
     public static func isDownloaded(_ component: ModelComponent) -> Bool {
-        // First check our local path
-        let path = localPath(for: component)
-        if FileManager.default.fileExists(atPath: path.path) {
-            return true
-        }
-
-        // Also check HuggingFace cache via Flux2ModelDownloader
-        return Flux2ModelDownloader.isDownloaded(component)
+        Flux2ModelDownloader.isDownloaded(component)
     }
 
     // MARK: - Configuration Files

@@ -129,67 +129,76 @@ public class TextEncoderModelDownloader {
         return nil
     }
 
+    /// Every directory a `hubApi.snapshot(from: repoId)` could land in.
+    ///
+    /// `makeHubApi` passes `downloadBase = customModelsDirectory.deletingLastPathComponent()`
+    /// and `HubApi` then appends its repo-type component (`models`) plus the
+    /// repo id, so the real write location only coincides with
+    /// `hubDownloadDirectory` — what `hubCachePath` looks up — when the
+    /// configured directory is itself named `models`. Guarding both covers
+    /// either naming.
+    static func hubDestinations(repoId: String) -> [URL] {
+        let repoComponents = repoId.split(separator: "/").map(String.init)
+        func appendRepo(to base: URL) -> URL {
+            repoComponents.reduce(base) { $0.appendingPathComponent($1) }
+        }
+        let lookupBase = hubDownloadDirectory
+        let writeBase = (customModelsDirectory?.deletingLastPathComponent()
+            ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!)
+            .appendingPathComponent("models")
+        var destinations = [appendRepo(to: lookupBase)]
+        let writeDestination = appendRepo(to: writeBase)
+        if writeDestination.standardized != destinations[0].standardized {
+            destinations.append(writeDestination)
+        }
+        return destinations
+    }
+
+    /// `.safetensors` entries in `directory` that are symlinks (live or
+    /// dangling): the model was relocated per-file to another disk.
+    public static func symlinkedWeights(at directory: URL) -> [String] {
+        SafetensorsDirectory.symlinkedWeights(at: directory)
+    }
+
+    /// Refuse to let `hubApi.snapshot` write into a directory that isn't a
+    /// safe destination — checked before any network activity, same
+    /// precedence Flux2Core's `destinationProblem` uses, so the two
+    /// downloaders fail the same way for the same causes:
+    ///
+    /// 1. Unreadable (App Sandbox: `stat` works outside an active security
+    ///    scope, `contentsOfDirectory` doesn't) — must not read as "empty".
+    /// 2. On an unmounted `/Volumes` disk — `HubApi`'s own
+    ///    `createDirectory(withIntermediateDirectories:)` has no such check,
+    ///    so without this it silently rebuilds the path on the boot volume.
+    /// 3. Relocation symlinks. Once `verifyShardedModel` follows symlinks, a
+    ///    relocated model with its disk unplugged reads "not downloaded"; the
+    ///    Hub client would then unlink each dangling link and drop a local
+    ///    copy in its place — silently undoing the relocation and orphaning
+    ///    the external copy. Same for a live-but-incomplete series, where the
+    ///    fix is to restore the missing shards at the relocation target.
+    private static func refuseIfRelocated(repoId: String) throws {
+        for destination in hubDestinations(repoId: repoId) {
+            if SafetensorsDirectory.isDirectoryUnreadable(destination) {
+                throw TextEncoderModelDownloaderError.destinationUnreadable(destination)
+            }
+            if SafetensorsDirectory.isOnUnmountedVolume(destination) {
+                throw TextEncoderModelDownloaderError.destinationVolumeUnavailable(destination)
+            }
+            let links = SafetensorsDirectory.symlinkedWeights(at: destination)
+            guard !links.isEmpty else { continue }
+            let unreachable = SafetensorsDirectory.unreachableWeights(at: destination)
+            throw unreachable.isEmpty
+                ? TextEncoderModelDownloaderError.weightsRelocated(
+                    destination, missing: SafetensorsDirectory.verifySeries(at: destination).missing)
+                : TextEncoderModelDownloaderError.weightsUnreachable(destination, unreachable)
+        }
+    }
+
     /// Verify that a sharded model has all required safetensors files
     /// Note: Does NOT trust index.json as some HF repos have mismatched index files
     /// Instead, detects safetensors files and verifies the series is complete
     public static func verifyShardedModel(at path: URL) -> (complete: Bool, missing: [String]) {
-        let contents = (try? FileManager.default.contentsOfDirectory(atPath: path.path)) ?? []
-        let safetensorsFiles = contents.filter { $0.hasSuffix(".safetensors") }
-
-        // Single file model
-        if safetensorsFiles.contains("model.safetensors") {
-            return (true, [])
-        }
-
-        // No safetensors files at all
-        guard !safetensorsFiles.isEmpty else {
-            return (false, ["No safetensors files found"])
-        }
-
-        // Parse sharded file pattern: model-XXXXX-of-YYYYY.safetensors
-        // Example: model-00001-of-00003.safetensors
-        var totalShards: Int?
-        var foundIndices: Set<Int> = []
-
-        for file in safetensorsFiles {
-            // Parse filename like "model-00001-of-00003.safetensors"
-            let name = file.replacingOccurrences(of: ".safetensors", with: "")
-            let parts = name.split(separator: "-")
-            // Expected: ["model", "00001", "of", "00003"]
-            guard parts.count == 4,
-                  parts[0] == "model",
-                  parts[2] == "of",
-                  let index = Int(parts[1]),
-                  let total = Int(parts[3]) else {
-                continue
-            }
-
-            if totalShards == nil {
-                totalShards = total
-            } else if totalShards != total {
-                // Inconsistent totals - mixed files
-                return (false, ["Inconsistent shard totals: \(totalShards!) vs \(total)"])
-            }
-
-            foundIndices.insert(index)
-        }
-
-        // If we found sharded files, verify all parts are present
-        if let total = totalShards {
-            let expectedIndices = Set(1...total)
-            let missing = expectedIndices.subtracting(foundIndices)
-
-            if missing.isEmpty {
-                return (true, [])
-            } else {
-                let missingFiles = missing.sorted().map { "model-\(String(format: "%05d", $0))-of-\(String(format: "%05d", total)).safetensors" }
-                return (false, missingFiles)
-            }
-        }
-
-        // Has some safetensors files but not in standard sharded format
-        // Consider it complete if there are any safetensors files
-        return (true, [])
+        SafetensorsDirectory.verifySeries(at: path, singleFileNames: ["model.safetensors"])
     }
 
     /// Download a model using Hub API
@@ -210,6 +219,7 @@ public class TextEncoderModelDownloader {
                 print("Re-downloading...")
             }
         }
+        try Self.refuseIfRelocated(repoId: model.repoId)
 
         progress?(0.0, "Starting download of \(model.name)...")
         print("\nDownloading \(model.name) from HuggingFace...")
@@ -306,6 +316,7 @@ public class TextEncoderModelDownloader {
                 print("Re-downloading...")
             }
         }
+        try Self.refuseIfRelocated(repoId: model.repoId)
 
         progress?(0.0, "Starting download of \(model.name)...")
         print("\nDownloading \(model.name) from HuggingFace...")
@@ -467,6 +478,7 @@ public class TextEncoderModelDownloader {
                 print("Re-downloading...")
             }
         }
+        try Self.refuseIfRelocated(repoId: model.repoId)
 
         progress?(0.0, "Starting download of \(model.name)...")
         print("\nDownloading \(model.name) from HuggingFace...")
@@ -583,6 +595,7 @@ public class TextEncoderModelDownloader {
                 return existingPath
             }
         }
+        try Self.refuseIfRelocated(repoId: model.repoId)
 
         progress?(0.0, "Starting download of \(model.name)...")
         print("\nDownloading \(model.name) from HuggingFace...")
@@ -648,6 +661,7 @@ public class TextEncoderModelDownloader {
         _ repoId: String,
         progress: TextEncoderDownloadProgressCallback? = nil
     ) async throws -> URL {
+        try Self.refuseIfRelocated(repoId: repoId)
         progress?(0.0, "Starting download...")
         print("\nDownloading from HuggingFace: \(repoId)")
 
@@ -711,9 +725,21 @@ public enum TextEncoderModelDownloaderError: LocalizedError {
     case qwen35ModelNotFound
     case downloadFailed(String)
     case invalidToken
+    case weightsRelocated(URL, missing: [String])
+    case weightsUnreachable(URL, [String])
+    case destinationUnreadable(URL)
+    case destinationVolumeUnavailable(URL)
 
     public var errorDescription: String? {
         switch self {
+        case .weightsUnreachable(let url, let files):
+            return "\(url.path) has weight files that are symlinks to a disk that isn't connected (\(files.prefix(3).joined(separator: ", "))) — connect it and retry; downloading here would replace the links with local copies."
+        case .weightsRelocated(let url, let missing):
+            return "\(url.path) holds relocated weight files (symlinks) but is incomplete (\(missing.prefix(3).joined(separator: ", "))) — restore the missing shards at the relocation target; downloading here would replace the live links with local copies."
+        case .destinationUnreadable(let url):
+            return "\(url.path) exists but can't be listed — under App Sandbox it must lie inside an active security-scoped resource."
+        case .destinationVolumeUnavailable(let url):
+            return "\(url.path) is on a volume that isn't mounted — connect the external disk and retry."
         case .modelNotFound:
             return "Model not found"
         case .qwen3ModelNotFound:

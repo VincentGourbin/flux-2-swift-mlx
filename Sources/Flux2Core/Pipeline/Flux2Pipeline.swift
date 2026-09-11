@@ -503,7 +503,8 @@ public class Flux2Pipeline: @unchecked Sendable {
             case .klein9BKV:
                 downloadCmd = "flux2 download --model klein-9b-kv"
             }
-            throw Flux2Error.modelNotLoaded("\(model.displayName) transformer weights not found. Run: \(downloadCmd)")
+            let hint = Flux2ModelDownloader.unavailableReason(for: .transformer(variant)) ?? "Run: \(downloadCmd)"
+            throw Flux2Error.modelNotLoaded("\(model.displayName) transformer weights not found. \(hint)")
         }
 
         // Create model with appropriate config and memory optimization
@@ -544,10 +545,18 @@ public class Flux2Pipeline: @unchecked Sendable {
             // Load weights with explicit memory management
             // For large models (Dev), this can temporarily use 2x memory during mapping
             Flux2Debug.log("Loading transformer weights from disk...")
-            var weights = try Flux2WeightLoader.loadWeights(from: modelPath)
-
-            Flux2Debug.log("Applying weights to model...")
-            try Flux2WeightLoader.applyTransformerWeights(&weights, to: transformer!)
+            var weights: [String: MLXArray]
+            do {
+                weights = try Flux2WeightLoader.loadWeights(from: modelPath)
+                Flux2Debug.log("Applying weights to model...")
+                try Flux2WeightLoader.applyTransformerWeights(&weights, to: transformer!)
+            } catch {
+                // `transformer` was assigned above; leaving a randomly
+                // initialised instance resident would make every later call
+                // short-circuit `guard transformer == nil` and produce noise.
+                unloadTransformer()
+                throw error
+            }
 
             // Explicitly release the raw weights dictionary to free memory
             // This is important for Dev model where weights can be ~32GB
@@ -695,7 +704,8 @@ public class Flux2Pipeline: @unchecked Sendable {
         Flux2Debug.log("Loading VAE (\(vaeVariant.displayName))...")
 
         guard let modelPath = Flux2ModelDownloader.findModelPath(for: .vae(vaeVariant)) else {
-            throw Flux2Error.modelNotLoaded("VAE weights not found for variant: \(vaeVariant.rawValue)")
+            let hint = Flux2ModelDownloader.unavailableReason(for: .vae(vaeVariant)).map { " \($0)" } ?? ""
+            throw Flux2Error.modelNotLoaded("VAE weights not found for variant: \(vaeVariant.rawValue).\(hint)")
         }
 
         // VAE files may be in 'vae' subdirectory (standard variant from Klein 4B repo)
@@ -719,14 +729,20 @@ public class Flux2Pipeline: @unchecked Sendable {
         // Load weights — prefer diffusion_pytorch_model.safetensors (standard diffusers file)
         // to avoid conflicts when directory contains multiple safetensors files
         let standardWeightsFile = weightsPath.appendingPathComponent("diffusion_pytorch_model.safetensors")
-        let weights: [String: MLXArray]
-        if FileManager.default.fileExists(atPath: standardWeightsFile.path) {
-            Flux2Debug.log("Loading VAE weights from diffusion_pytorch_model.safetensors")
-            weights = try Flux2WeightLoader.loadWeights(from: standardWeightsFile)
-        } else {
-            weights = try Flux2WeightLoader.loadWeights(from: weightsPath)
+        do {
+            let weights: [String: MLXArray]
+            if FileManager.default.fileExists(atPath: standardWeightsFile.path) {
+                Flux2Debug.log("Loading VAE weights from diffusion_pytorch_model.safetensors")
+                weights = try Flux2WeightLoader.loadWeights(from: standardWeightsFile)
+            } else {
+                weights = try Flux2WeightLoader.loadWeights(from: weightsPath)
+            }
+            try Flux2WeightLoader.applyVAEWeights(weights, to: vae!)
+        } catch {
+            // Don't leave a randomly initialised VAE resident (see loadTransformer).
+            vae = nil
+            throw error
         }
-        try Flux2WeightLoader.applyVAEWeights(weights, to: vae!)
 
         // Ensure weights are evaluated
         eval(vae!.parameters())
@@ -773,34 +789,66 @@ public class Flux2Pipeline: @unchecked Sendable {
         let variant = ModelRegistry.TransformerVariant.variant(
             for: model, quantization: quantization.transformer)
         guard let sourcePath = Flux2ModelDownloader.findModelPath(for: .transformer(variant)) else {
-            throw Flux2Error.modelNotLoaded(
-                "\(model.displayName) transformer weights not found — download the model before exporting")
+            let hint = Flux2ModelDownloader.unavailableReason(for: .transformer(variant))
+                ?? "download the model before exporting"
+            throw Flux2Error.modelNotLoaded("\(model.displayName) transformer weights not found — \(hint)")
         }
 
-        if Flux2PrequantizedCheckpoint.exists(
+        let checkpointExists = Flux2PrequantizedCheckpoint.exists(
+            sourceModelPath: sourcePath, quantization: quantization.transformer)
+
+        // Without force, only a VALID existing checkpoint is a no-op; an
+        // invalid/stale squatter is regenerated (the load-side warning tells
+        // users to re-run the export — that advice must work).
+        if checkpointExists, !force,
+           Flux2PrequantizedCheckpoint.isValid(
+               sourceModelPath: sourcePath, quantization: quantization.transformer)
+        {
+            let url = Flux2PrequantizedCheckpoint.weightsURL(
+                sourceModelPath: sourcePath, quantization: quantization.transformer)
+            Flux2Debug.log(
+                "Pre-quantized checkpoint already exists and is valid — nothing to do (pass force to regenerate from the source weights): \(url.path)")
+            return url
+        }
+
+        // Every reason to refuse is a pure predicate, so all of them run BEFORE
+        // anything is mutated: an export that aborts must not have deleted the
+        // user's existing checkpoint (`force` makes that ~10 GB irreversible)
+        // nor evicted a resident multi-GB transformer.
+
+        // The export must derive from the SOURCE weights, never from a previous
+        // export, so a checkpoint-loaded resident transformer has to be
+        // reloaded — as does one loaded from a *different* directory (a path
+        // override set or cleared since the load), since the decisions here are
+        // all made against `sourcePath` and the save must write there too.
+        // That reload discards LoRA matrices fusion already consumed: it can
+        // only warn, and the session would silently continue base-only while
+        // `hasLoRA` still says true. Guard on exactly the predicate that
+        // triggers the unload, or the check misses the case it was written for
+        // (resident checkpoint load, unchanged source path).
+        let mustReload = transformerLoadedFromPrequantized || transformerSourcePath != sourcePath
+        if mustReload, transformerHasMergedLoRAs {
+            throw Flux2Error.invalidConfiguration(
+                "The resident transformer has merged LoRA weights (loaded from \(transformerSourcePath?.path ?? "?")) and this export has to reload it from \(sourcePath.path) — the merged matrices cannot be recovered. Unload the LoRAs, or reload them after the export.")
+        }
+        if Flux2PrequantizedCheckpoint.isSymlinked(
             sourceModelPath: sourcePath, quantization: quantization.transformer)
         {
-            // Without force, only a VALID existing checkpoint is a no-op; an
-            // invalid/stale squatter is regenerated (the load-side warning
-            // tells users to re-run the export — that advice must work).
-            if !force,
-               Flux2PrequantizedCheckpoint.isValid(
-                   sourceModelPath: sourcePath, quantization: quantization.transformer)
-            {
-                let url = Flux2PrequantizedCheckpoint.weightsURL(
-                    sourceModelPath: sourcePath, quantization: quantization.transformer)
-                Flux2Debug.log(
-                    "Pre-quantized checkpoint already exists and is valid — nothing to do (pass force to regenerate from the source weights): \(url.path)")
-                return url
-            }
-            Flux2PrequantizedCheckpoint.remove(
-                sourceModelPath: sourcePath, quantization: quantization.transformer)
+            // Saving would replace the link with a local file and silently undo
+            // the relocation (`remove()` refuses to unlink it for the same
+            // reason), so refuse before touching anything.
+            throw Flux2Error.invalidConfiguration(
+                "The existing pre-quantized checkpoint under \(sourcePath.path) is a symlink (relocated to another disk) — regenerate it at the relocation target, or remove the link, before exporting here.")
         }
 
-        // The export must derive from the SOURCE weights, never from a
-        // previous export: drop a checkpoint-loaded resident transformer and
-        // disable the fast path for the (re)load below.
-        if transformerLoadedFromPrequantized {
+        // Past this point the export mutates state — but not the existing
+        // checkpoint file: `save()` below writes to a temp file and replaces
+        // it atomically, so there is no need to (and must not) delete it
+        // ahead of the fallible reload/quantize/save that follows. Deleting
+        // it here would leave the user with NEITHER checkpoint if that reload
+        // then failed (disk I/O, OOM, a shape mismatch) — `force` regenerating
+        // from source is not worth losing the current file over.
+        if mustReload {
             unloadTransformer()
         }
         skipPrequantizedCheckpoint = true
@@ -809,6 +857,14 @@ public class Flux2Pipeline: @unchecked Sendable {
 
         guard let transformer, let loadedSourcePath = transformerSourcePath else {
             throw Flux2Error.modelNotLoaded("Transformer not loaded — cannot export")
+        }
+        // `loadTransformer()` resolves the source path again internally. If a
+        // path override changed during the load (it blocks on multi-GB I/O),
+        // every decision above — exists/isValid/remove/isSymlinked — was made
+        // against a different directory than the one the save would write to.
+        guard loadedSourcePath == sourcePath else {
+            throw Flux2Error.invalidConfiguration(
+                "The transformer's location changed during the export (checked \(sourcePath.path), loaded \(loadedSourcePath.path)) — a path override was set or cleared mid-run. Retry the export.")
         }
         // Bake check AFTER the load, against the instance actually being
         // saved: `transformerHasMergedLoRAs` survives unloadLoRA (merged
@@ -832,6 +888,7 @@ public class Flux2Pipeline: @unchecked Sendable {
         compiledForward = nil
         compiledForwardKey = nil
         transformer = nil
+        transformerSourcePath = nil
         transformerHasMergedLoRAs = false
         transformerLoadedFromPrequantized = false
         memoryManager.clearCache()

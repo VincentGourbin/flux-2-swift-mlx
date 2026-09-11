@@ -2206,6 +2206,7 @@ struct DiffusionModelsSection: View {
     @EnvironmentObject var modelManager: ModelManager
     @State private var transformerToDelete: ModelRegistry.TransformerVariant?
     @State private var showDeleteAlert = false
+    @State private var deleteError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -2265,11 +2266,27 @@ struct DiffusionModelsSection: View {
         .alert("Delete Transformer", isPresented: $showDeleteAlert, presenting: transformerToDelete) { variant in
             Button("Cancel", role: .cancel) { }
             Button("Delete", role: .destructive) {
-                try? modelManager.deleteTransformer(variant)
+                do {
+                    try modelManager.deleteTransformer(variant)
+                } catch {
+                    // Presenting a second alert while the first is still
+                    // dismissing can be dropped by SwiftUI; hand it to the
+                    // next runloop so the message actually shows.
+                    let message = error.localizedDescription
+                    Task { @MainActor in deleteError = message }
+                }
             }
         } message: { variant in
             let info = modelManager.transformerDisplayInfo(variant)
             Text("Are you sure you want to delete \(info.name)? This cannot be undone.")
+        }
+        .alert(
+            "Could Not Delete",
+            isPresented: Binding(get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })
+        ) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(deleteError ?? "")
         }
     }
 }
@@ -2316,7 +2333,14 @@ struct TransformerSection: View {
 
                     Spacer()
 
-                    if isDownloaded {
+                    if isDownloaded, Flux2ModelDownloader.isRelocated(.transformer(variant)) {
+                        // A path override, or weights symlinked in place, may
+                        // be the only copy; the framework refuses to delete
+                        // either, so don't offer to.
+                        Image(systemName: "externaldrive")
+                            .foregroundStyle(.secondary)
+                            .help("Relocated to another disk — manage it there")
+                    } else if isDownloaded {
                         Button(action: {
                             transformerToDelete = variant
                             showDeleteAlert = true
@@ -2347,6 +2371,7 @@ struct TransformerSection: View {
 struct VAESection: View {
     @EnvironmentObject var modelManager: ModelManager
     @State private var showDeleteAlert = false
+    @State private var deleteError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -2377,7 +2402,11 @@ struct VAESection: View {
 
                 Spacer()
 
-                if modelManager.isVAEDownloaded {
+                if modelManager.isVAEDownloaded, Flux2ModelDownloader.isRelocated(.vae(.standard)) {
+                    Image(systemName: "externaldrive")
+                        .foregroundStyle(.secondary)
+                        .help("Relocated to another disk — manage it there")
+                } else if modelManager.isVAEDownloaded {
                     Button(action: { showDeleteAlert = true }) {
                         Image(systemName: "trash")
                             .foregroundStyle(.red)
@@ -2401,10 +2430,26 @@ struct VAESection: View {
         .alert("Delete VAE", isPresented: $showDeleteAlert) {
             Button("Cancel", role: .cancel) { }
             Button("Delete", role: .destructive) {
-                try? modelManager.deleteVAE()
+                do {
+                    try modelManager.deleteVAE()
+                } catch {
+                    // Presenting a second alert while the first is still
+                    // dismissing can be dropped by SwiftUI; hand it to the
+                    // next runloop so the message actually shows.
+                    let message = error.localizedDescription
+                    Task { @MainActor in deleteError = message }
+                }
             }
         } message: {
             Text("Are you sure you want to delete the VAE? This cannot be undone.")
+        }
+        .alert(
+            "Could Not Delete",
+            isPresented: Binding(get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })
+        ) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(deleteError ?? "")
         }
     }
 }

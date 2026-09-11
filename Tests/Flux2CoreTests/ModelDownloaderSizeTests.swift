@@ -9,6 +9,7 @@
 
 import XCTest
 @testable import Flux2Core
+import FluxTextEncoders
 
 final class ModelDownloaderSizeTests: XCTestCase {
 
@@ -24,9 +25,12 @@ final class ModelDownloaderSizeTests: XCTestCase {
             .appendingPathComponent("flux2-modelsize-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let previous = ModelRegistry.customModelsDirectory
+        let previousHub = Flux2ModelDownloader.legacyHubCacheDirectory
         ModelRegistry.customModelsDirectory = dir
+        Flux2ModelDownloader.legacyHubCacheDirectory = dir.appendingPathComponent("no-hub-cache")
         defer {
             ModelRegistry.customModelsDirectory = previous
+            Flux2ModelDownloader.legacyHubCacheDirectory = previousHub
             try? FileManager.default.removeItem(at: dir)
         }
         return try body(dir)
@@ -72,10 +76,160 @@ final class ModelDownloaderSizeTests: XCTestCase {
             let symlinkURL = modelDir.appendingPathComponent("model.safetensors")
             try fm.createSymbolicLink(at: symlinkURL, withDestinationURL: missingTarget)
 
-            let size = Flux2ModelDownloader.downloadedSize()
+            // The walk itself: the dangling link adds 0, not its own lstat size.
+            XCTAssertEqual(Flux2ModelDownloader.directorySize(at: modelDir), Int64(configData.count))
 
-            XCTAssertEqual(size, Int64(configData.count))
+            // And at the API level the model is no longer "downloaded" at all
+            // (verifyModel follows symlinks), so it contributes nothing.
+            XCTAssertEqual(Flux2ModelDownloader.downloadedSize(), 0)
         }
+    }
+
+    // MARK: - verifyModel follows symlinks
+
+    func testVerifyModelCountsSymlinkedWeightWhoseTargetExists() throws {
+        try withSandbox { customDir in
+            let fm = FileManager.default
+            let modelDir = ModelRegistry.localPath(for: .vae(.standard))
+            let externalDir = customDir.appendingPathComponent("external")
+            try fm.createDirectory(at: modelDir, withIntermediateDirectories: true)
+            try fm.createDirectory(at: externalDir, withIntermediateDirectories: true)
+            try "{}".write(to: modelDir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+
+            let target = externalDir.appendingPathComponent("model.safetensors")
+            try Data(repeating: 0x42, count: 64).write(to: target)
+            try fm.createSymbolicLink(at: modelDir.appendingPathComponent("model.safetensors"), withDestinationURL: target)
+
+            XCTAssertTrue(Flux2ModelDownloader.verifyModel(at: modelDir).complete)
+            XCTAssertNotNil(Flux2ModelDownloader.findModelPath(for: .vae(.standard)))
+        }
+    }
+
+    func testVerifyModelTreatsBrokenSymlinkedWeightAsMissing() throws {
+        try withSandbox { customDir in
+            let fm = FileManager.default
+            let modelDir = ModelRegistry.localPath(for: .vae(.standard))
+            try fm.createDirectory(at: modelDir, withIntermediateDirectories: true)
+            try "{}".write(to: modelDir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+
+            // Unplugged external disk: the weight file's symlink dangles.
+            let missingTarget = customDir.appendingPathComponent("not-mounted/model.safetensors")
+            try fm.createSymbolicLink(at: modelDir.appendingPathComponent("model.safetensors"), withDestinationURL: missingTarget)
+
+            XCTAssertFalse(Flux2ModelDownloader.verifyModel(at: modelDir).complete)
+            XCTAssertNil(Flux2ModelDownloader.findModelPath(for: .vae(.standard)))
+        }
+    }
+
+    func testVerifyModelDiffusersShardsRequireTheWholeReachableSeries() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("flux2-shards-\(UUID().uuidString)")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        try "{}".write(to: dir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+
+        // Shards 3-4 local, 1-2 dangling (partially unplugged relocation).
+        for i in 3...4 {
+            try Data(repeating: 0x42, count: 8).write(
+                to: dir.appendingPathComponent("diffusion_pytorch_model-0000\(i)-of-00004.safetensors"))
+        }
+        for i in 1...2 {
+            try fm.createSymbolicLink(
+                at: dir.appendingPathComponent("diffusion_pytorch_model-0000\(i)-of-00004.safetensors"),
+                withDestinationURL: dir.appendingPathComponent("unplugged/\(i).safetensors"))
+        }
+
+        let result = Flux2ModelDownloader.verifyModel(at: dir)
+        XCTAssertFalse(result.complete)
+        XCTAssertEqual(result.missing, [
+            "diffusion_pytorch_model-00001-of-00004.safetensors",
+            "diffusion_pytorch_model-00002-of-00004.safetensors",
+        ])
+
+        // Complete the series and it verifies.
+        for i in 1...2 {
+            let link = dir.appendingPathComponent("diffusion_pytorch_model-0000\(i)-of-00004.safetensors")
+            try fm.removeItem(at: link)
+            try Data(repeating: 0x42, count: 8).write(to: link)
+        }
+        XCTAssertTrue(Flux2ModelDownloader.verifyModel(at: dir).complete)
+    }
+
+    func testVerifyModelSeriesAreGroupedByStemAndTotal() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("flux2-series-\(UUID().uuidString)")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        let write = { (name: String) in
+            try Data(repeating: 0x42, count: 8).write(to: dir.appendingPathComponent(name))
+        }
+
+        // A complete 2-shard series plus a leftover shard of a 7-shard series:
+        // complete, whatever order the listing yields.
+        try write("model-00001-of-00002.safetensors")
+        try write("model-00002-of-00002.safetensors")
+        try write("diffusion_pytorch_model-00001-of-00007.safetensors")
+        XCTAssertTrue(Flux2ModelDownloader.verifyModel(at: dir).complete)
+
+        // Two half series of different stems must not union into "complete".
+        try fm.removeItem(at: dir.appendingPathComponent("model-00001-of-00002.safetensors"))
+        try fm.removeItem(at: dir.appendingPathComponent("diffusion_pytorch_model-00001-of-00007.safetensors"))
+        try write("diffusion_pytorch_model-00001-of-00002.safetensors")
+        let result = Flux2ModelDownloader.verifyModel(at: dir)
+        XCTAssertFalse(result.complete)
+        XCTAssertEqual(result.missing.count, 1)
+    }
+
+    func testFilesToLoadExcludesLeftoverShardOfADifferentSeries() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("flux2-filestoload-\(UUID().uuidString)")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+
+        // A complete 2-shard series (the real, current model)...
+        try Data(repeating: 0x41, count: 8).write(to: dir.appendingPathComponent("model-00001-of-00002.safetensors"))
+        try Data(repeating: 0x42, count: 8).write(to: dir.appendingPathComponent("model-00002-of-00002.safetensors"))
+        // ...plus a leftover shard of an unrelated 5-shard series (a stale
+        // download from a different HF revision).
+        try Data(repeating: 0x43, count: 8).write(to: dir.appendingPathComponent("model-00001-of-00005.safetensors"))
+
+        // Verification is still complete (a real series is whole)...
+        XCTAssertTrue(SafetensorsDirectory.verifySeries(at: dir).complete)
+        // ...but loading must not pull the stale leftover's tensors in too.
+        let files = SafetensorsDirectory.filesToLoad(at: dir)
+        XCTAssertEqual(files, ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"])
+    }
+
+    func testFilesToLoadIsDeterministicBetweenTwoCompleteSeries() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("flux2-tiebreak-\(UUID().uuidString)")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+
+        // Two independently-complete series (e.g. a stale one an upstream
+        // re-shard left behind). `Dictionary` iteration order is randomized
+        // per process, so without an explicit tiebreak this would pick either
+        // one at random on different runs.
+        try Data(repeating: 0x41, count: 8).write(to: dir.appendingPathComponent("a-00001-of-00001.safetensors"))
+        try Data(repeating: 0x42, count: 8).write(to: dir.appendingPathComponent("z-00001-of-00001.safetensors"))
+
+        // Repeat the call several times: a non-deterministic implementation
+        // would be very likely to disagree with itself across all of them.
+        let results = (0..<20).map { _ in SafetensorsDirectory.filesToLoad(at: dir) }
+        XCTAssertTrue(results.allSatisfy { $0 == results[0] })
+        XCTAssertEqual(results[0], ["a-00001-of-00001.safetensors"])
+    }
+
+    func testVerifyModelIgnoresAppleDoubleSidecars() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("flux2-sidecar-\(UUID().uuidString)")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        try "{}".write(to: dir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+        // Only the exFAT sidecar is left after the real weight went away.
+        try Data(repeating: 0, count: 4).write(to: dir.appendingPathComponent("._flux-2-klein-4b.safetensors"))
+
+        XCTAssertFalse(Flux2ModelDownloader.verifyModel(at: dir).complete)
     }
 
     // MARK: - directorySize(at:) edge cases (multi-hop chains, symlinked directories)

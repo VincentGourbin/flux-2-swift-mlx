@@ -290,9 +290,12 @@ extension MistralForCausalLM {
         }
 
         // Find safetensors files
-        let fm = FileManager.default
-        let contents = try fm.contentsOfDirectory(atPath: modelPath)
-        let safetensorFiles = contents.filter { $0.hasSuffix(".safetensors") }.sorted()
+        // Same series the verifier confirmed complete — not every reachable
+        // .safetensors file, so a stray leftover shard from an earlier
+        // download/revision can't silently merge its tensors into the result.
+        // Excludes AppleDouble `._*` sidecars and dangling relocation symlinks.
+        let safetensorFiles = SafetensorsDirectory.filesToLoad(
+            at: URL(fileURLWithPath: modelPath, isDirectory: true))
 
         if safetensorFiles.isEmpty {
             throw MistralModelError.noWeightsFound
