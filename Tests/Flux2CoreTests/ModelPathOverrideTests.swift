@@ -294,4 +294,46 @@ final class ModelPathOverrideTests: XCTestCase {
         XCTAssertFalse(Flux2ModelDownloader.isOnUnmountedVolume(existing.appendingPathComponent("not/yet/created")))
         XCTAssertFalse(Flux2ModelDownloader.isOnUnmountedVolume(existing))
     }
+
+    // MARK: - delete() also refuses in-place relocation (no override needed)
+
+    func testDeleteRefusesInPlaceRelocatedWeightsWithoutAnOverride() throws {
+        // The consumer app's actual relocation workflow: default directory
+        // left in place, big weight files replaced with symlinks — no
+        // ModelRegistry.pathOverride involved at all.
+        let customDir = try makeTempDir("inplace")
+        let externalDir = customDir.appendingPathComponent("external")
+        defer { try? fm.removeItem(at: customDir) }
+        ModelRegistry.customModelsDirectory = customDir
+        try fm.createDirectory(at: externalDir, withIntermediateDirectories: true)
+        let modelDir = ModelRegistry.localPath(for: .vae(.standard))
+        try fm.createDirectory(at: modelDir, withIntermediateDirectories: true)
+        try "{}".write(to: modelDir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+        let target = externalDir.appendingPathComponent("model.safetensors")
+        try Data(repeating: 0x42, count: 64).write(to: target)
+        try fm.createSymbolicLink(at: modelDir.appendingPathComponent("model.safetensors"), withDestinationURL: target)
+
+        XCTAssertTrue(Flux2ModelDownloader.isRelocated(.vae(.standard)))
+
+        XCTAssertThrowsError(try Flux2ModelDownloader.delete(.vae(.standard))) { error in
+            guard case Flux2DownloadError.deletionRefusedForRelocatedWeights = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+        // The symlink (and its external target) must survive the refusal.
+        XCTAssertNotNil(try? fm.destinationOfSymbolicLink(atPath: modelDir.appendingPathComponent("model.safetensors").path))
+        XCTAssertTrue(fm.fileExists(atPath: target.path))
+    }
+
+    func testIsRelocatedFalseForAnOrdinaryDownload() throws {
+        let customDir = try makeTempDir("ordinary")
+        defer { try? fm.removeItem(at: customDir) }
+        ModelRegistry.customModelsDirectory = customDir
+        let modelDir = ModelRegistry.localPath(for: .vae(.standard))
+        try fm.createDirectory(at: modelDir, withIntermediateDirectories: true)
+        try writeCompleteModel(at: modelDir)
+
+        XCTAssertFalse(Flux2ModelDownloader.isRelocated(.vae(.standard)))
+        XCTAssertNoThrow(try Flux2ModelDownloader.delete(.vae(.standard)))
+    }
 }

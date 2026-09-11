@@ -112,14 +112,10 @@ public class Flux2ModelDownloader: @unchecked Sendable {
 
     /// The path exists (`stat` works) but can't be listed as a directory —
     /// under App Sandbox a missing security scope, otherwise a plain file
-    /// sitting where the model directory belongs.
+    /// sitting where the model directory belongs. Shared with
+    /// TextEncoderModelDownloader via `SafetensorsDirectory`.
     static func isDirectoryUnreadable(_ directory: URL) -> Bool {
-        let fm = FileManager.default
-        var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: directory.path, isDirectory: &isDir), isDir.boolValue else {
-            return false
-        }
-        return (try? fm.contentsOfDirectory(atPath: directory.path)) == nil
+        SafetensorsDirectory.isDirectoryUnreadable(directory)
     }
 
     /// `.safetensors` entries that are symlinks, live or dangling: the model
@@ -189,37 +185,13 @@ public class Flux2ModelDownloader: @unchecked Sendable {
         return isCompleteModel(at: modelPath) ? modelPath : nil
     }
 
-    /// True when `url` lives under `/Volumes` but not on a mounted volume: its
-    /// nearest existing ancestor is on the *boot* volume (same volume
-    /// identifier as `/`). That covers both an absent mount point (ancestor is
-    /// `/Volumes`) and a ghost mount-point directory left behind on the boot
-    /// volume after an unclean unmount. A missing subfolder on a mounted disk
-    /// resolves to an ancestor on that disk and is fine.
-    ///
-    /// Mounts outside `/Volumes` (`hdiutil -mountpoint`, sshfs under `$HOME`)
-    /// can't be told apart from a plain directory this way and are not
-    /// detected; the guard's job is a clear error *before* any network
-    /// transfer, not a complete mount oracle.
+    /// True when `url` lives under `/Volumes` but not on a mounted volume.
+    /// Shared with TextEncoderModelDownloader via `SafetensorsDirectory`,
+    /// which documents the exact rule.
     static func isOnUnmountedVolume(_ url: URL) -> Bool {
-        let fm = FileManager.default
-        var ancestor = url.standardizedFileURL
-        while !fm.fileExists(atPath: ancestor.path) {
-            let parent = ancestor.deletingLastPathComponent()
-            if parent.path == ancestor.path { return false }
-            ancestor = parent
-        }
-        // The ancestor exists, so resolving is safe (the pitfall of
-        // resolvingSymlinksInPath only concerns dangling links).
-        let resolved = ancestor.resolvingSymlinksInPath()
-        let components = resolved.pathComponents
-        guard components.count >= 2, components[1].caseInsensitiveCompare("Volumes") == .orderedSame else {
-            return false
-        }
-        guard let ancestorVolume = try? resolved.resourceValues(forKeys: [.volumeIdentifierKey]).volumeIdentifier,
-              let rootVolume = try? URL(fileURLWithPath: "/").resourceValues(forKeys: [.volumeIdentifierKey]).volumeIdentifier
-        else { return components.count == 2 }
-        return ancestorVolume.isEqual(rootVolume)
+        SafetensorsDirectory.isOnUnmountedVolume(url)
     }
+
 
     /// A model directory counts as present when it has a `config.json` or
     /// `model_index.json` (Klein models use the latter) and `verifyModel`
@@ -298,17 +270,19 @@ public class Flux2ModelDownloader: @unchecked Sendable {
 
         // Read-only volumes (NTFS by default, a dirty exFAT remounted read-only)
         // pass every check above; the only way to know is to create the
-        // directory and ask. Anything that throws before the first file lands
-        // then removes a directory we created ourselves, so a failed attempt
-        // (403 without a licence, offline, not writable) leaves no empty tree.
-        // The emptiness check also keeps a concurrent download of the same
-        // component — which callers must serialize anyway, since both would
-        // write the same files — from having its directory pulled away.
+        // directory and ask. Anything that throws before a file actually
+        // lands then removes a directory we created ourselves, so a failed
+        // attempt (403 without a licence, offline, not writable, the first
+        // file's transfer itself failing) leaves no empty tree. Checking
+        // emptiness at the moment of the throw — rather than a "did we start"
+        // flag — is what also keeps a concurrent download of the same
+        // component (callers must serialize anyway, since both write the same
+        // files) from having its now non-empty directory pulled out from
+        // under it.
         let createdDestination = !fm.fileExists(atPath: destDir.path)
         try fm.createDirectory(at: destDir, withIntermediateDirectories: true)
-        var transferStarted = false
         defer {
-            if createdDestination, !transferStarted,
+            if createdDestination,
                ((try? fm.contentsOfDirectory(atPath: destDir.path)) ?? []).isEmpty {
                 try? fm.removeItem(at: destDir)
             }
@@ -341,7 +315,6 @@ public class Flux2ModelDownloader: @unchecked Sendable {
         guard !filesToDownload.isEmpty else {
             throw Flux2DownloadError.modelNotFound("No model files found in \(repoId)")
         }
-        transferStarted = true
 
         // Download each file
         var downloadedBytes: Int64 = 0
@@ -523,9 +496,30 @@ public class Flux2ModelDownloader: @unchecked Sendable {
         guard let path = findModelPath(for: component, at: location) else {
             return
         }
+        // An override isn't the only way to relocate a component: the
+        // consumer app's own workflow leaves the *default* directory in
+        // place and replaces the big weight files inside it with symlinks.
+        // That directory isn't a disposable cache copy either.
+        let relocated = SafetensorsDirectory.symlinkedWeights(at: path)
+        guard relocated.isEmpty else {
+            throw Flux2DownloadError.deletionRefusedForRelocatedWeights(component.displayName, path)
+        }
 
         try FileManager.default.removeItem(at: path)
         Flux2Debug.log("Deleted \(component.displayName)")
+    }
+
+    /// Whether this component's weights are relocated — an explicit
+    /// `ModelRegistry.pathOverride`, or the default directory's `.safetensors`
+    /// files themselves being symlinks to another disk. Either way `delete()`
+    /// refuses to remove it. A read-only status query (e.g. for a UI icon);
+    /// it does not participate in `delete()`'s own guard, which re-derives
+    /// its own snapshot.
+    public static func isRelocated(_ component: ModelRegistry.ModelComponent) -> Bool {
+        let location = location(for: component)
+        if location.isOverride { return true }
+        guard let path = findModelPath(for: component, at: location) else { return false }
+        return !SafetensorsDirectory.symlinkedWeights(at: path).isEmpty
     }
 
     /// Get total size of downloaded models
@@ -626,6 +620,7 @@ public enum Flux2DownloadError: LocalizedError {
     case insufficientSpace(required: Int64, available: Int64)
     case invalidPathOverride(URL)
     case deletionRefusedForOverride(String)
+    case deletionRefusedForRelocatedWeights(String, URL)
     case destinationVolumeUnavailable(String, URL)
     case weightsUnreachable(String, URL, [String])
     case weightsRelocated(String, URL, missing: [String])
@@ -652,6 +647,8 @@ public enum Flux2DownloadError: LocalizedError {
             return "\(name)'s directory (\(url.path)) is not writable — is the volume mounted read-only?"
         case .deletionRefusedForOverride(let name):
             return "\(name) has a path override and was not deleted — that location may be its only copy (e.g. an external disk). Clear the override or remove the files manually."
+        case .deletionRefusedForRelocatedWeights(let name, let url):
+            return "\(name) at \(url.path) has weight files that are symlinks to another disk and was not deleted — the external copy may not exist anywhere else. Remove the files manually if you're sure."
         case .destinationVolumeUnavailable(let name, let url):
             return "\(name)'s directory (\(url.path)) is on a volume that isn't mounted — connect the external disk and retry."
         case .weightsRelocated(let name, let url, let missing):

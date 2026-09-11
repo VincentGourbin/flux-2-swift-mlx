@@ -232,6 +232,47 @@ final class TextEncoderModelDirectoryTests: XCTestCase {
             atPath: modelDir.appendingPathComponent("model.safetensors").path))
     }
 
+    func testDownloadQwen3RefusesIncompleteRelocatedSeriesWithMissingShardsNamed() async throws {
+        // Disk mounted (live links), but shard 2 of 2 was never relocated:
+        // the error must name the actually-missing shard, not the ones present.
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("flux2-te-relocated-\(UUID().uuidString)")
+            .appendingPathComponent("models")
+        let model = Qwen3ModelInfo(
+            id: "test-qwen-relocated",
+            repoId: "test-org/qwen3-relocated",
+            name: "Qwen3 Test",
+            description: "Test Qwen3 model",
+            variant: .qwen3_4B_8bit,
+            parameters: "4B"
+        )
+        let modelDir = tempDir.appendingPathComponent("test-org").appendingPathComponent("qwen3-relocated")
+        let externalDir = tempDir.appendingPathComponent("external")
+        try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: externalDir, withIntermediateDirectories: true)
+        try "{}".write(to: modelDir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+        let shard1 = "model-00001-of-00002.safetensors"
+        try Data(repeating: 0x42, count: 8).write(to: externalDir.appendingPathComponent(shard1))
+        try FileManager.default.createSymbolicLink(
+            at: modelDir.appendingPathComponent(shard1), withDestinationURL: externalDir.appendingPathComponent(shard1))
+        defer { try? FileManager.default.removeItem(at: tempDir.deletingLastPathComponent()) }
+
+        TextEncoderModelDownloader.customModelsDirectory = tempDir
+
+        do {
+            _ = try await TextEncoderModelDownloader().downloadQwen3(model)
+            XCTFail("Expected downloadQwen3 to refuse an incomplete relocated series")
+        } catch let error as TextEncoderModelDownloaderError {
+            guard case .weightsRelocated(_, let missing) = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+            XCTAssertEqual(missing, ["model-00002-of-00002.safetensors"])
+        }
+        // The live link must survive the refused download.
+        XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(
+            atPath: modelDir.appendingPathComponent(shard1).path))
+    }
+
     func testVerifyShardedModelGroupsSeriesByStemAndTotal() throws {
         // The text-encoder verifier shares Flux2Core's series logic now: a
         // non-"model" stem is parsed, and a leftover shard of another series

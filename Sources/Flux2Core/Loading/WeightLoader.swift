@@ -13,11 +13,14 @@ public class Flux2WeightLoader {
     /// - Parameter modelPath: Path to directory containing safetensors files
     /// - Returns: Dictionary of weight name to MLXArray
     public static func loadWeights(from modelPath: String) throws -> [String: MLXArray] {
-        // Same predicate the verifiers use: `._*` AppleDouble sidecars and
-        // dangling relocation symlinks are not loadable weights — feeding
-        // either to loadArrays yields an opaque header error.
-        let safetensorFiles = SafetensorsDirectory.reachableWeights(
-            at: URL(fileURLWithPath: modelPath, isDirectory: true))
+        // Same series ModelDownloader.verifyModel verified complete — not
+        // every reachable .safetensors file, so a stray leftover shard from
+        // an earlier download or revision can't silently merge its tensors
+        // into the result. `._*` AppleDouble sidecars and dangling relocation
+        // symlinks are excluded the same way the verifier excludes them.
+        let safetensorFiles = SafetensorsDirectory.filesToLoad(
+            at: URL(fileURLWithPath: modelPath, isDirectory: true),
+            singleFilePrefixes: ["flux-2-klein"])
 
         if safetensorFiles.isEmpty {
             throw Flux2WeightLoaderError.noWeightsFound(modelPath)

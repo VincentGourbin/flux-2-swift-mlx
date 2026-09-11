@@ -12,10 +12,14 @@ public class TextEncoderWeightLoader {
 
     /// Load all weights from a model directory
     public static func loadWeights(from modelPath: String) throws -> [String: MLXArray] {
-        // Same predicate as the verifiers: `._*` AppleDouble sidecars and
-        // dangling relocation symlinks are not loadable weights.
-        let safetensorFiles = SafetensorsDirectory.reachableWeights(
-            at: URL(fileURLWithPath: modelPath, isDirectory: true))
+        // Same series TextEncoderModelDownloader.verifyShardedModel verified
+        // complete — not every reachable .safetensors file, so a stray
+        // leftover shard can't silently merge its tensors into the result.
+        // `._*` AppleDouble sidecars and dangling relocation symlinks are
+        // excluded the same way the verifier excludes them.
+        let safetensorFiles = SafetensorsDirectory.filesToLoad(
+            at: URL(fileURLWithPath: modelPath, isDirectory: true),
+            singleFileNames: ["model.safetensors"])
 
         if safetensorFiles.isEmpty {
             throw TextEncoderWeightLoaderError.noWeightsFound

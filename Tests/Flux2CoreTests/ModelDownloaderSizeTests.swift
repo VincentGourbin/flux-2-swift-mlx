@@ -9,6 +9,7 @@
 
 import XCTest
 @testable import Flux2Core
+import FluxTextEncoders
 
 final class ModelDownloaderSizeTests: XCTestCase {
 
@@ -177,6 +178,26 @@ final class ModelDownloaderSizeTests: XCTestCase {
         let result = Flux2ModelDownloader.verifyModel(at: dir)
         XCTAssertFalse(result.complete)
         XCTAssertEqual(result.missing.count, 1)
+    }
+
+    func testFilesToLoadExcludesLeftoverShardOfADifferentSeries() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("flux2-filestoload-\(UUID().uuidString)")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+
+        // A complete 2-shard series (the real, current model)...
+        try Data(repeating: 0x41, count: 8).write(to: dir.appendingPathComponent("model-00001-of-00002.safetensors"))
+        try Data(repeating: 0x42, count: 8).write(to: dir.appendingPathComponent("model-00002-of-00002.safetensors"))
+        // ...plus a leftover shard of an unrelated 5-shard series (a stale
+        // download from a different HF revision).
+        try Data(repeating: 0x43, count: 8).write(to: dir.appendingPathComponent("model-00001-of-00005.safetensors"))
+
+        // Verification is still complete (a real series is whole)...
+        XCTAssertTrue(SafetensorsDirectory.verifySeries(at: dir).complete)
+        // ...but loading must not pull the stale leftover's tensors in too.
+        let files = SafetensorsDirectory.filesToLoad(at: dir)
+        XCTAssertEqual(files, ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"])
     }
 
     func testVerifyModelIgnoresAppleDoubleSidecars() throws {

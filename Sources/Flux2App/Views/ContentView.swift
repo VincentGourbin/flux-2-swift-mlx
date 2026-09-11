@@ -2333,12 +2333,13 @@ struct TransformerSection: View {
 
                     Spacer()
 
-                    if isDownloaded, ModelRegistry.pathOverride(for: .transformer(variant)) != nil {
-                        // An overridden location may be the only copy; the
-                        // framework refuses to delete it, so don't offer to.
+                    if isDownloaded, Flux2ModelDownloader.isRelocated(.transformer(variant)) {
+                        // A path override, or weights symlinked in place, may
+                        // be the only copy; the framework refuses to delete
+                        // either, so don't offer to.
                         Image(systemName: "externaldrive")
                             .foregroundStyle(.secondary)
-                            .help("Loaded from a custom location — manage it there")
+                            .help("Relocated to another disk — manage it there")
                     } else if isDownloaded {
                         Button(action: {
                             transformerToDelete = variant
@@ -2401,10 +2402,10 @@ struct VAESection: View {
 
                 Spacer()
 
-                if modelManager.isVAEDownloaded, ModelRegistry.pathOverride(for: .vae(.standard)) != nil {
+                if modelManager.isVAEDownloaded, Flux2ModelDownloader.isRelocated(.vae(.standard)) {
                     Image(systemName: "externaldrive")
                         .foregroundStyle(.secondary)
-                        .help("Loaded from a custom location — manage it there")
+                        .help("Relocated to another disk — manage it there")
                 } else if modelManager.isVAEDownloaded {
                     Button(action: { showDeleteAlert = true }) {
                         Image(systemName: "trash")

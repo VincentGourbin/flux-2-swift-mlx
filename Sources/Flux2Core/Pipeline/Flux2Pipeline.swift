@@ -841,11 +841,13 @@ public class Flux2Pipeline: @unchecked Sendable {
                 "The existing pre-quantized checkpoint under \(sourcePath.path) is a symlink (relocated to another disk) — regenerate it at the relocation target, or remove the link, before exporting here.")
         }
 
-        // Past this point the export mutates state.
-        if checkpointExists {
-            Flux2PrequantizedCheckpoint.remove(
-                sourceModelPath: sourcePath, quantization: quantization.transformer)
-        }
+        // Past this point the export mutates state — but not the existing
+        // checkpoint file: `save()` below writes to a temp file and replaces
+        // it atomically, so there is no need to (and must not) delete it
+        // ahead of the fallible reload/quantize/save that follows. Deleting
+        // it here would leave the user with NEITHER checkpoint if that reload
+        // then failed (disk I/O, OOM, a shape mismatch) — `force` regenerating
+        // from source is not worth losing the current file over.
         if mustReload {
             unloadTransformer()
         }

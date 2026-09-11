@@ -160,20 +160,36 @@ public class TextEncoderModelDownloader {
         SafetensorsDirectory.symlinkedWeights(at: directory)
     }
 
-    /// Refuse to let `hubApi.snapshot` write into a directory whose weights
-    /// are relocation symlinks. Once `verifyShardedModel` follows symlinks, a
-    /// relocated model with its disk unplugged reads "not downloaded"; the
-    /// Hub client would then unlink each dangling link and drop a local copy
-    /// in its place — silently undoing the relocation and orphaning the
-    /// external copy. Same for a live-but-incomplete series, where the fix is
-    /// to restore the missing shards at the relocation target instead.
+    /// Refuse to let `hubApi.snapshot` write into a directory that isn't a
+    /// safe destination — checked before any network activity, same
+    /// precedence Flux2Core's `destinationProblem` uses, so the two
+    /// downloaders fail the same way for the same causes:
+    ///
+    /// 1. Unreadable (App Sandbox: `stat` works outside an active security
+    ///    scope, `contentsOfDirectory` doesn't) — must not read as "empty".
+    /// 2. On an unmounted `/Volumes` disk — `HubApi`'s own
+    ///    `createDirectory(withIntermediateDirectories:)` has no such check,
+    ///    so without this it silently rebuilds the path on the boot volume.
+    /// 3. Relocation symlinks. Once `verifyShardedModel` follows symlinks, a
+    ///    relocated model with its disk unplugged reads "not downloaded"; the
+    ///    Hub client would then unlink each dangling link and drop a local
+    ///    copy in its place — silently undoing the relocation and orphaning
+    ///    the external copy. Same for a live-but-incomplete series, where the
+    ///    fix is to restore the missing shards at the relocation target.
     private static func refuseIfRelocated(repoId: String) throws {
         for destination in hubDestinations(repoId: repoId) {
+            if SafetensorsDirectory.isDirectoryUnreadable(destination) {
+                throw TextEncoderModelDownloaderError.destinationUnreadable(destination)
+            }
+            if SafetensorsDirectory.isOnUnmountedVolume(destination) {
+                throw TextEncoderModelDownloaderError.destinationVolumeUnavailable(destination)
+            }
             let links = SafetensorsDirectory.symlinkedWeights(at: destination)
             guard !links.isEmpty else { continue }
             let unreachable = SafetensorsDirectory.unreachableWeights(at: destination)
             throw unreachable.isEmpty
-                ? TextEncoderModelDownloaderError.weightsRelocated(destination, links)
+                ? TextEncoderModelDownloaderError.weightsRelocated(
+                    destination, missing: SafetensorsDirectory.verifySeries(at: destination).missing)
                 : TextEncoderModelDownloaderError.weightsUnreachable(destination, unreachable)
         }
     }
@@ -709,15 +725,21 @@ public enum TextEncoderModelDownloaderError: LocalizedError {
     case qwen35ModelNotFound
     case downloadFailed(String)
     case invalidToken
-    case weightsRelocated(URL, [String])
+    case weightsRelocated(URL, missing: [String])
     case weightsUnreachable(URL, [String])
+    case destinationUnreadable(URL)
+    case destinationVolumeUnavailable(URL)
 
     public var errorDescription: String? {
         switch self {
         case .weightsUnreachable(let url, let files):
             return "\(url.path) has weight files that are symlinks to a disk that isn't connected (\(files.prefix(3).joined(separator: ", "))) — connect it and retry; downloading here would replace the links with local copies."
-        case .weightsRelocated(let url, let files):
-            return "\(url.path) holds relocated weight files (symlinks: \(files.prefix(3).joined(separator: ", "))) but is incomplete — restore the missing shards at the relocation target; downloading here would replace the live links with local copies."
+        case .weightsRelocated(let url, let missing):
+            return "\(url.path) holds relocated weight files (symlinks) but is incomplete (\(missing.prefix(3).joined(separator: ", "))) — restore the missing shards at the relocation target; downloading here would replace the live links with local copies."
+        case .destinationUnreadable(let url):
+            return "\(url.path) exists but can't be listed — under App Sandbox it must lie inside an active security-scoped resource."
+        case .destinationVolumeUnavailable(let url):
+            return "\(url.path) is on a volume that isn't mounted — connect the external disk and retry."
         case .modelNotFound:
             return "Model not found"
         case .qwen3ModelNotFound:

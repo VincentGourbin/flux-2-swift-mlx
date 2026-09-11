@@ -94,6 +94,47 @@ public enum SafetensorsDirectory {
         })
     }
 
+    /// The exact `.safetensors` file names that make up "the" model in
+    /// `directory` — the ones `verifySeries` found complete, not every
+    /// reachable `.safetensors` file.
+    ///
+    /// A directory can accumulate a stray leftover from an earlier download
+    /// or a different HF revision (e.g. a different shard count). Loading
+    /// every reachable file regardless of which series it belongs to would
+    /// silently merge that leftover's tensors into the result by key, with
+    /// no error. Falls back to every reachable file when no recognisable
+    /// series exists at all (an unusual layout) or none is complete —
+    /// callers only reach here after `verifySeries`/`findModelPath` already
+    /// confirmed completeness, so this is a defensive fallback, not the
+    /// expected path.
+    public static func filesToLoad(
+        at directory: URL,
+        singleFileNames: Set<String> = ["model.safetensors", "diffusion_pytorch_model.safetensors"],
+        singleFilePrefixes: [String] = []
+    ) -> [String] {
+        let weights = reachableWeights(at: directory)
+
+        if let single = weights.first(where: { singleFileNames.contains($0) }) {
+            return [single]
+        }
+        if !singleFilePrefixes.isEmpty {
+            let matches = weights.filter { name in singleFilePrefixes.contains { name.hasPrefix($0) } }
+            if !matches.isEmpty { return matches }
+        }
+
+        struct Series: Hashable { let stem: String; let total: Int }
+        var found: [Series: [Int: String]] = [:]
+        for file in weights {
+            guard let shard = shardComponents(of: file) else { continue }
+            found[Series(stem: shard.stem, total: shard.total), default: [:]][shard.index] = file
+        }
+        if let complete = found.first(where: { $0.key.total == $0.value.count }) {
+            return complete.value.sorted { $0.key < $1.key }.map { $0.value }
+        }
+
+        return weights
+    }
+
     /// Splits `<stem>-NNNNN-of-MMMMM.safetensors` into its parts; `nil` for any
     /// other name (or an implausible series — no real checkpoint has thousands
     /// of shards, and the index set built from it must stay small).
@@ -113,5 +154,49 @@ public enum SafetensorsDirectory {
 
     private static func isWeightName(_ name: String) -> Bool {
         name.hasSuffix(".safetensors") && !name.hasPrefix("._")
+    }
+
+    /// The path exists (`stat` works) but can't be listed as a directory —
+    /// under App Sandbox a missing security scope, otherwise a plain file
+    /// sitting where a model directory belongs.
+    public static func isDirectoryUnreadable(_ directory: URL) -> Bool {
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: directory.path, isDirectory: &isDir), isDir.boolValue else {
+            return false
+        }
+        return (try? fm.contentsOfDirectory(atPath: directory.path)) == nil
+    }
+
+    /// True when `url` lives under `/Volumes` but not on a mounted volume: its
+    /// nearest existing ancestor is on the *boot* volume (same volume
+    /// identifier as `/`). That covers both an absent mount point (ancestor is
+    /// `/Volumes`) and a ghost mount-point directory left behind on the boot
+    /// volume after an unclean unmount. A missing subfolder on a mounted disk
+    /// resolves to an ancestor on that disk and is fine.
+    ///
+    /// Mounts outside `/Volumes` (`hdiutil -mountpoint`, sshfs under `$HOME`)
+    /// can't be told apart from a plain directory this way and are not
+    /// detected; the guard's job is a clear error *before* any network
+    /// transfer, not a complete mount oracle.
+    public static func isOnUnmountedVolume(_ url: URL) -> Bool {
+        let fm = FileManager.default
+        var ancestor = url.standardizedFileURL
+        while !fm.fileExists(atPath: ancestor.path) {
+            let parent = ancestor.deletingLastPathComponent()
+            if parent.path == ancestor.path { return false }
+            ancestor = parent
+        }
+        // The ancestor exists, so resolving is safe (the pitfall of
+        // resolvingSymlinksInPath only concerns dangling links).
+        let resolved = ancestor.resolvingSymlinksInPath()
+        let components = resolved.pathComponents
+        guard components.count >= 2, components[1].caseInsensitiveCompare("Volumes") == .orderedSame else {
+            return false
+        }
+        guard let ancestorVolume = try? resolved.resourceValues(forKeys: [.volumeIdentifierKey]).volumeIdentifier,
+              let rootVolume = try? URL(fileURLWithPath: "/").resourceValues(forKeys: [.volumeIdentifierKey]).volumeIdentifier
+        else { return components.count == 2 }
+        return ancestorVolume.isEqual(rootVolume)
     }
 }
