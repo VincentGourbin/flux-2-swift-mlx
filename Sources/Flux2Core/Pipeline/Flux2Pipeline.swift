@@ -794,52 +794,60 @@ public class Flux2Pipeline: @unchecked Sendable {
             throw Flux2Error.modelNotLoaded("\(model.displayName) transformer weights not found — \(hint)")
         }
 
-        if Flux2PrequantizedCheckpoint.exists(
+        let checkpointExists = Flux2PrequantizedCheckpoint.exists(
             sourceModelPath: sourcePath, quantization: quantization.transformer)
+
+        // Without force, only a VALID existing checkpoint is a no-op; an
+        // invalid/stale squatter is regenerated (the load-side warning tells
+        // users to re-run the export — that advice must work).
+        if checkpointExists, !force,
+           Flux2PrequantizedCheckpoint.isValid(
+               sourceModelPath: sourcePath, quantization: quantization.transformer)
         {
-            // Without force, only a VALID existing checkpoint is a no-op; an
-            // invalid/stale squatter is regenerated (the load-side warning
-            // tells users to re-run the export — that advice must work).
-            if !force,
-               Flux2PrequantizedCheckpoint.isValid(
-                   sourceModelPath: sourcePath, quantization: quantization.transformer)
-            {
-                let url = Flux2PrequantizedCheckpoint.weightsURL(
-                    sourceModelPath: sourcePath, quantization: quantization.transformer)
-                Flux2Debug.log(
-                    "Pre-quantized checkpoint already exists and is valid — nothing to do (pass force to regenerate from the source weights): \(url.path)")
-                return url
-            }
-            Flux2PrequantizedCheckpoint.remove(
+            let url = Flux2PrequantizedCheckpoint.weightsURL(
                 sourceModelPath: sourcePath, quantization: quantization.transformer)
+            Flux2Debug.log(
+                "Pre-quantized checkpoint already exists and is valid — nothing to do (pass force to regenerate from the source weights): \(url.path)")
+            return url
         }
 
-        // The export must derive from the SOURCE weights, never from a
-        // previous export: drop a checkpoint-loaded resident transformer and
-        // disable the fast path for the (re)load below. Also drop a resident
-        // transformer loaded from a *different* directory (a path override
-        // set or cleared since the load): the exists/remove decision above was
-        // made against `sourcePath`, and the save must write there too.
-        // Any unload below discards LoRA matrices that fusion already consumed:
-        // the reload can only warn, and the session would silently continue
-        // base-only while `hasLoRA` still says true. Guard on exactly the
-        // predicate that triggers the unload, or the check misses the case it
-        // was written for (resident checkpoint load, unchanged source path).
+        // Every reason to refuse is a pure predicate, so all of them run BEFORE
+        // anything is mutated: an export that aborts must not have deleted the
+        // user's existing checkpoint (`force` makes that ~10 GB irreversible)
+        // nor evicted a resident multi-GB transformer.
+
+        // The export must derive from the SOURCE weights, never from a previous
+        // export, so a checkpoint-loaded resident transformer has to be
+        // reloaded — as does one loaded from a *different* directory (a path
+        // override set or cleared since the load), since the decisions here are
+        // all made against `sourcePath` and the save must write there too.
+        // That reload discards LoRA matrices fusion already consumed: it can
+        // only warn, and the session would silently continue base-only while
+        // `hasLoRA` still says true. Guard on exactly the predicate that
+        // triggers the unload, or the check misses the case it was written for
+        // (resident checkpoint load, unchanged source path).
         let mustReload = transformerLoadedFromPrequantized || transformerSourcePath != sourcePath
         if mustReload, transformerHasMergedLoRAs {
             throw Flux2Error.invalidConfiguration(
                 "The resident transformer has merged LoRA weights (loaded from \(transformerSourcePath?.path ?? "?")) and this export has to reload it from \(sourcePath.path) — the merged matrices cannot be recovered. Unload the LoRAs, or reload them after the export.")
         }
-        if mustReload {
-            unloadTransformer()
-        }
         if Flux2PrequantizedCheckpoint.isSymlinked(
             sourceModelPath: sourcePath, quantization: quantization.transformer)
         {
-            // remove() left the link alone; saving would replace it with a
-            // local file and silently undo the relocation.
+            // Saving would replace the link with a local file and silently undo
+            // the relocation (`remove()` refuses to unlink it for the same
+            // reason), so refuse before touching anything.
             throw Flux2Error.invalidConfiguration(
                 "The existing pre-quantized checkpoint under \(sourcePath.path) is a symlink (relocated to another disk) — regenerate it at the relocation target, or remove the link, before exporting here.")
+        }
+
+        // Past this point the export mutates state.
+        if checkpointExists {
+            Flux2PrequantizedCheckpoint.remove(
+                sourceModelPath: sourcePath, quantization: quantization.transformer)
+        }
+        if mustReload {
+            unloadTransformer()
         }
         skipPrequantizedCheckpoint = true
         defer { skipPrequantizedCheckpoint = false }
