@@ -72,7 +72,13 @@ public enum SafetensorsDirectory {
 
         guard !weights.isEmpty else { return (false, ["No safetensors files found"]) }
 
-        struct Series: Hashable { let stem: String; let total: Int }
+        struct Series: Hashable, Comparable {
+            let stem: String
+            let total: Int
+            static func < (a: Series, b: Series) -> Bool {
+                a.stem != b.stem ? a.stem < b.stem : a.total < b.total
+            }
+        }
         var found: [Series: Set<Int>] = [:]
         for file in weights {
             guard let shard = shardComponents(of: file) else { continue }
@@ -80,10 +86,15 @@ public enum SafetensorsDirectory {
         }
         guard !found.isEmpty else { return (true, []) }
 
-        // Complete if any one series is whole; otherwise report the missing
-        // shards of the series closest to completion.
+        // Complete if any one series is whole (order-independent — `true` is
+        // `true` no matter which complete series was found first). Otherwise
+        // report the missing shards of the series closest to completion,
+        // breaking a tie by (stem, total) rather than `Dictionary`'s
+        // per-process-randomized iteration order, so the reported filenames
+        // don't vary run to run for the same on-disk state.
         var best: (series: Series, missing: [Int])?
-        for (series, indices) in found {
+        for series in found.keys.sorted() {
+            let indices = found[series]!
             let missing = Set(1...series.total).subtracting(indices).sorted()
             if missing.isEmpty { return (true, []) }
             if best == nil || missing.count < best!.missing.count { best = (series, missing) }
@@ -122,14 +133,27 @@ public enum SafetensorsDirectory {
             if !matches.isEmpty { return matches }
         }
 
-        struct Series: Hashable { let stem: String; let total: Int }
+        struct Series: Hashable, Comparable {
+            let stem: String
+            let total: Int
+            static func < (a: Series, b: Series) -> Bool {
+                a.stem != b.stem ? a.stem < b.stem : a.total < b.total
+            }
+        }
         var found: [Series: [Int: String]] = [:]
         for file in weights {
             guard let shard = shardComponents(of: file) else { continue }
             found[Series(stem: shard.stem, total: shard.total), default: [:]][shard.index] = file
         }
-        if let complete = found.first(where: { $0.key.total == $0.value.count }) {
-            return complete.value.sorted { $0.key < $1.key }.map { $0.value }
+        // `Dictionary` iteration order is randomized per process, so picking
+        // "first complete" without a tiebreak would make the choice between
+        // two independently-complete series (e.g. a stale one left behind by
+        // an upstream re-shard) vary run to run — the loaded weights would
+        // silently differ with no error. Sorting by (stem, total) makes the
+        // pick deterministic; which series wins is otherwise arbitrary since
+        // nothing here can know which one is "current".
+        if let complete = found.filter({ $0.key.total == $0.value.count }).keys.sorted().first {
+            return found[complete]!.sorted { $0.key < $1.key }.map { $0.value }
         }
 
         return weights

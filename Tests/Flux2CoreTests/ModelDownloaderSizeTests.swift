@@ -200,6 +200,26 @@ final class ModelDownloaderSizeTests: XCTestCase {
         XCTAssertEqual(files, ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"])
     }
 
+    func testFilesToLoadIsDeterministicBetweenTwoCompleteSeries() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("flux2-tiebreak-\(UUID().uuidString)")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+
+        // Two independently-complete series (e.g. a stale one an upstream
+        // re-shard left behind). `Dictionary` iteration order is randomized
+        // per process, so without an explicit tiebreak this would pick either
+        // one at random on different runs.
+        try Data(repeating: 0x41, count: 8).write(to: dir.appendingPathComponent("a-00001-of-00001.safetensors"))
+        try Data(repeating: 0x42, count: 8).write(to: dir.appendingPathComponent("z-00001-of-00001.safetensors"))
+
+        // Repeat the call several times: a non-deterministic implementation
+        // would be very likely to disagree with itself across all of them.
+        let results = (0..<20).map { _ in SafetensorsDirectory.filesToLoad(at: dir) }
+        XCTAssertTrue(results.allSatisfy { $0 == results[0] })
+        XCTAssertEqual(results[0], ["a-00001-of-00001.safetensors"])
+    }
+
     func testVerifyModelIgnoresAppleDoubleSidecars() throws {
         let fm = FileManager.default
         let dir = fm.temporaryDirectory.appendingPathComponent("flux2-sidecar-\(UUID().uuidString)")
