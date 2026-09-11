@@ -229,6 +229,39 @@ flux2 i2i <prompt> --images <img1> --images <img2> [--images <img3>] [options]
 | `--text-quant` | | `8bit` | Text encoder quantization |
 | `--transformer-quant` | | `qint8` | Transformer quantization |
 
+### Image Preparation (barn-door Live Area + megapixel budget)
+
+An alternative to `--width`/`--height` (incompatible with them — see below): format the reference to the
+model's step size, optionally narrow generation to a **Live Area** sub-region
+("barn doors"), and composite the result back into the full-resolution
+original. See [docs/ImagePreparation.md](ImagePreparation.md) for the full
+model — what Live Area is (and isn't), how the megapixel budget interacts
+with it, and worked examples.
+
+Any of these flags enables the prepared pipeline (or pass `--prepared` alone
+for just the formatting step):
+
+| Option | Description |
+|--------|-------------|
+| `--prepared` | Enable Image Preparation with default settings (crop, original aspect, 1.0 MP budget) |
+| `--favour <original\|horizontal\|vertical>` | Bias crop/pad toward the source aspect, or force wide/tall |
+| `--method <crop\|pad>` | Fit to step size by cropping or letterbox-padding |
+| `--prep-scale <0.1-1.0>` | Fine-tune how aggressively the image is scaled before crop/pad |
+| `--megapixels <0.25-4.0>` | Total pixel budget for generation (default `1.0`) |
+| `--live-area <x,y,w,h>` | Normalized barn-door rect — what the model sees and where the result pastes back |
+| `--process-area <x,y,w,h>` | Normalized sub-rect of the Live Area actually regenerated (advanced; defaults to the whole Live Area) |
+| `--no-composite` | Output the generated canvas as-is instead of pasting back into the original |
+
+```bash
+# Format a wide photo to the model's step size, favouring a squarer crop
+flux2 i2i "warm afternoon light" -i photo.jpg -o edited.png \
+  --prepared --method crop --favour horizontal --megapixels 1.5
+
+# Narrow generation to a room in the frame (barn doors), paste back on a hard edge
+flux2 i2i "add a reading lamp on the side table" -i room.jpg -o edited.png \
+  --live-area 0.15,0.1,0.7,0.85 --megapixels 1.0
+```
+
 ### Understanding Strength
 
 The `--strength` parameter controls how much of the original image is preserved:
