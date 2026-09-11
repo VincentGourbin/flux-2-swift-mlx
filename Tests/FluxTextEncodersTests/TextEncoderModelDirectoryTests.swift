@@ -221,13 +221,37 @@ final class TextEncoderModelDirectoryTests: XCTestCase {
             _ = try await TextEncoderModelDownloader().downloadQwen3(model)
             XCTFail("Expected downloadQwen3 to refuse a relocated model")
         } catch let error as TextEncoderModelDownloaderError {
-            guard case .weightsRelocated(_, let files) = error else {
+            // Dangling link: the disk is gone, distinct from a live but
+            // incomplete relocation (.weightsRelocated).
+            guard case .weightsUnreachable(_, let files) = error else {
                 return XCTFail("Unexpected error: \(error)")
             }
             XCTAssertEqual(files, ["model.safetensors"])
         }
         XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(
             atPath: modelDir.appendingPathComponent("model.safetensors").path))
+    }
+
+    func testVerifyShardedModelGroupsSeriesByStemAndTotal() throws {
+        // The text-encoder verifier shares Flux2Core's series logic now: a
+        // non-"model" stem is parsed, and a leftover shard of another series
+        // neither completes nor breaks the real one.
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("te-series-\(UUID().uuidString)")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        let write = { (name: String) in
+            try Data(repeating: 0x42, count: 8).write(to: dir.appendingPathComponent(name))
+        }
+
+        try write("qwen3-00001-of-00002.safetensors")
+        let partial = TextEncoderModelDownloader.verifyShardedModel(at: dir)
+        XCTAssertFalse(partial.complete)
+        XCTAssertEqual(partial.missing, ["qwen3-00002-of-00002.safetensors"])
+
+        try write("qwen3-00002-of-00002.safetensors")
+        try write("model-00001-of-00007.safetensors")  // leftover of another series
+        XCTAssertTrue(TextEncoderModelDownloader.verifyShardedModel(at: dir).complete)
     }
 
     // MARK: - Multiple switches

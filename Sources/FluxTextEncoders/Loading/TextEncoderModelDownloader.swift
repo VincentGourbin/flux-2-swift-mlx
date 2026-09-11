@@ -129,25 +129,35 @@ public class TextEncoderModelDownloader {
         return nil
     }
 
-    /// Where `hubApi.snapshot(from: repoId)` writes: `{hubDownloadDirectory}/{org}/{repo}`.
-    static func hubDestination(repoId: String) -> URL {
-        var url = hubDownloadDirectory
-        for component in repoId.split(separator: "/") {
-            url = url.appendingPathComponent(String(component))
+    /// Every directory a `hubApi.snapshot(from: repoId)` could land in.
+    ///
+    /// `makeHubApi` passes `downloadBase = customModelsDirectory.deletingLastPathComponent()`
+    /// and `HubApi` then appends its repo-type component (`models`) plus the
+    /// repo id, so the real write location only coincides with
+    /// `hubDownloadDirectory` — what `hubCachePath` looks up — when the
+    /// configured directory is itself named `models`. Guarding both covers
+    /// either naming.
+    static func hubDestinations(repoId: String) -> [URL] {
+        let repoComponents = repoId.split(separator: "/").map(String.init)
+        func appendRepo(to base: URL) -> URL {
+            repoComponents.reduce(base) { $0.appendingPathComponent($1) }
         }
-        return url
+        let lookupBase = hubDownloadDirectory
+        let writeBase = (customModelsDirectory?.deletingLastPathComponent()
+            ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!)
+            .appendingPathComponent("models")
+        var destinations = [appendRepo(to: lookupBase)]
+        let writeDestination = appendRepo(to: writeBase)
+        if writeDestination.standardized != destinations[0].standardized {
+            destinations.append(writeDestination)
+        }
+        return destinations
     }
 
     /// `.safetensors` entries in `directory` that are symlinks (live or
     /// dangling): the model was relocated per-file to another disk.
     public static func symlinkedWeights(at directory: URL) -> [String] {
-        let fm = FileManager.default
-        let contents = (try? fm.contentsOfDirectory(atPath: directory.path)) ?? []
-        return contents.filter { name in
-            guard name.hasSuffix(".safetensors"), !name.hasPrefix("._") else { return false }
-            let attrs = try? fm.attributesOfItem(atPath: directory.appendingPathComponent(name).path)
-            return (attrs?[.type] as? FileAttributeType) == .typeSymbolicLink
-        }.sorted()
+        SafetensorsDirectory.symlinkedWeights(at: directory)
     }
 
     /// Refuse to let `hubApi.snapshot` write into a directory whose weights
@@ -155,12 +165,16 @@ public class TextEncoderModelDownloader {
     /// relocated model with its disk unplugged reads "not downloaded"; the
     /// Hub client would then unlink each dangling link and drop a local copy
     /// in its place — silently undoing the relocation and orphaning the
-    /// external copy. Same for a live-but-incomplete series.
+    /// external copy. Same for a live-but-incomplete series, where the fix is
+    /// to restore the missing shards at the relocation target instead.
     private static func refuseIfRelocated(repoId: String) throws {
-        let destination = hubDestination(repoId: repoId)
-        let links = symlinkedWeights(at: destination)
-        if !links.isEmpty {
-            throw TextEncoderModelDownloaderError.weightsRelocated(destination, links)
+        for destination in hubDestinations(repoId: repoId) {
+            let links = SafetensorsDirectory.symlinkedWeights(at: destination)
+            guard !links.isEmpty else { continue }
+            let unreachable = SafetensorsDirectory.unreachableWeights(at: destination)
+            throw unreachable.isEmpty
+                ? TextEncoderModelDownloaderError.weightsRelocated(destination, links)
+                : TextEncoderModelDownloaderError.weightsUnreachable(destination, unreachable)
         }
     }
 
@@ -168,71 +182,7 @@ public class TextEncoderModelDownloader {
     /// Note: Does NOT trust index.json as some HF repos have mismatched index files
     /// Instead, detects safetensors files and verifies the series is complete
     public static func verifyShardedModel(at path: URL) -> (complete: Bool, missing: [String]) {
-        let fm = FileManager.default
-        let contents = (try? fm.contentsOfDirectory(atPath: path.path)) ?? []
-        // Only weights whose bytes are reachable count: `fileExists` is
-        // stat-based and follows symlinks, so a weight relocated to an
-        // external disk that is unplugged (dangling link) is missing, not
-        // present-by-name. `._` entries are AppleDouble sidecars on exFAT.
-        let safetensorsFiles = contents.filter {
-            $0.hasSuffix(".safetensors") && !$0.hasPrefix("._")
-                && fm.fileExists(atPath: path.appendingPathComponent($0).path)
-        }
-
-        // Single file model
-        if safetensorsFiles.contains("model.safetensors") {
-            return (true, [])
-        }
-
-        // No safetensors files at all
-        guard !safetensorsFiles.isEmpty else {
-            return (false, ["No safetensors files found"])
-        }
-
-        // Parse sharded file pattern: model-XXXXX-of-YYYYY.safetensors
-        // Example: model-00001-of-00003.safetensors
-        var totalShards: Int?
-        var foundIndices: Set<Int> = []
-
-        for file in safetensorsFiles {
-            // Parse filename like "model-00001-of-00003.safetensors"
-            let name = file.replacingOccurrences(of: ".safetensors", with: "")
-            let parts = name.split(separator: "-")
-            // Expected: ["model", "00001", "of", "00003"]
-            guard parts.count == 4,
-                  parts[0] == "model",
-                  parts[2] == "of",
-                  let index = Int(parts[1]),
-                  let total = Int(parts[3]) else {
-                continue
-            }
-
-            if totalShards == nil {
-                totalShards = total
-            } else if totalShards != total {
-                // Inconsistent totals - mixed files
-                return (false, ["Inconsistent shard totals: \(totalShards!) vs \(total)"])
-            }
-
-            foundIndices.insert(index)
-        }
-
-        // If we found sharded files, verify all parts are present
-        if let total = totalShards {
-            let expectedIndices = Set(1...total)
-            let missing = expectedIndices.subtracting(foundIndices)
-
-            if missing.isEmpty {
-                return (true, [])
-            } else {
-                let missingFiles = missing.sorted().map { "model-\(String(format: "%05d", $0))-of-\(String(format: "%05d", total)).safetensors" }
-                return (false, missingFiles)
-            }
-        }
-
-        // Has some safetensors files but not in standard sharded format
-        // Consider it complete if there are any safetensors files
-        return (true, [])
+        SafetensorsDirectory.verifySeries(at: path, singleFileNames: ["model.safetensors"])
     }
 
     /// Download a model using Hub API
@@ -760,11 +710,14 @@ public enum TextEncoderModelDownloaderError: LocalizedError {
     case downloadFailed(String)
     case invalidToken
     case weightsRelocated(URL, [String])
+    case weightsUnreachable(URL, [String])
 
     public var errorDescription: String? {
         switch self {
+        case .weightsUnreachable(let url, let files):
+            return "\(url.path) has weight files that are symlinks to a disk that isn't connected (\(files.prefix(3).joined(separator: ", "))) — connect it and retry; downloading here would replace the links with local copies."
         case .weightsRelocated(let url, let files):
-            return "\(url.path) holds relocated weight files (symlinks: \(files.prefix(3).joined(separator: ", "))) that are missing or unreachable — connect the disk or restore them at the relocation target; downloading here would replace the links with local copies."
+            return "\(url.path) holds relocated weight files (symlinks: \(files.prefix(3).joined(separator: ", "))) but is incomplete — restore the missing shards at the relocation target; downloading here would replace the live links with local copies."
         case .modelNotFound:
             return "Model not found"
         case .qwen3ModelNotFound:

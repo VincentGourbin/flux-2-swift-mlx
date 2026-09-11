@@ -2269,7 +2269,11 @@ struct DiffusionModelsSection: View {
                 do {
                     try modelManager.deleteTransformer(variant)
                 } catch {
-                    deleteError = error.localizedDescription
+                    // Presenting a second alert while the first is still
+                    // dismissing can be dropped by SwiftUI; hand it to the
+                    // next runloop so the message actually shows.
+                    let message = error.localizedDescription
+                    Task { @MainActor in deleteError = message }
                 }
             }
         } message: { variant in
@@ -2428,7 +2432,11 @@ struct VAESection: View {
                 do {
                     try modelManager.deleteVAE()
                 } catch {
-                    deleteError = error.localizedDescription
+                    // Presenting a second alert while the first is still
+                    // dismissing can be dropped by SwiftUI; hand it to the
+                    // next runloop so the message actually shows.
+                    let message = error.localizedDescription
+                    Task { @MainActor in deleteError = message }
                 }
             }
         } message: {

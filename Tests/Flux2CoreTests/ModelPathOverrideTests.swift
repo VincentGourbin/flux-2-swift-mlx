@@ -220,10 +220,10 @@ final class ModelPathOverrideTests: XCTestCase {
             _ = try await Flux2ModelDownloader().download(.vae(.standard))
             XCTFail("Expected download() to refuse a relocated, incomplete series")
         } catch let error as Flux2DownloadError {
-            guard case .weightsRelocated(_, _, let files) = error else {
+            guard case .weightsRelocated(_, _, let missing) = error else {
                 return XCTFail("Unexpected error: \(error)")
             }
-            XCTAssertEqual(files.count, 3)
+            XCTAssertEqual(missing, ["diffusion_pytorch_model-00002-of-00004.safetensors"])
         }
         // Every live link is still a link.
         XCTAssertEqual(Flux2ModelDownloader.symlinkedWeights(at: modelDir).count, 3)

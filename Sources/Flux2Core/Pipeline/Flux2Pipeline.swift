@@ -820,14 +820,17 @@ public class Flux2Pipeline: @unchecked Sendable {
         // transformer loaded from a *different* directory (a path override
         // set or cleared since the load): the exists/remove decision above was
         // made against `sourcePath`, and the save must write there too.
-        if transformerSourcePath != sourcePath, transformerHasMergedLoRAs {
-            // The reload from `sourcePath` could only warn: the LoRA matrices
-            // were consumed by the fusion, so the session would silently
-            // continue base-only while `hasLoRA` still says true.
+        // Any unload below discards LoRA matrices that fusion already consumed:
+        // the reload can only warn, and the session would silently continue
+        // base-only while `hasLoRA` still says true. Guard on exactly the
+        // predicate that triggers the unload, or the check misses the case it
+        // was written for (resident checkpoint load, unchanged source path).
+        let mustReload = transformerLoadedFromPrequantized || transformerSourcePath != sourcePath
+        if mustReload, transformerHasMergedLoRAs {
             throw Flux2Error.invalidConfiguration(
-                "The resident transformer has merged LoRA weights and was loaded from \(transformerSourcePath?.path ?? "?"), but the export resolves to \(sourcePath.path) — unload the LoRAs (or reload them after the export) before exporting.")
+                "The resident transformer has merged LoRA weights (loaded from \(transformerSourcePath?.path ?? "?")) and this export has to reload it from \(sourcePath.path) — the merged matrices cannot be recovered. Unload the LoRAs, or reload them after the export.")
         }
-        if transformerLoadedFromPrequantized || transformerSourcePath != sourcePath {
+        if mustReload {
             unloadTransformer()
         }
         if Flux2PrequantizedCheckpoint.isSymlinked(
@@ -844,6 +847,14 @@ public class Flux2Pipeline: @unchecked Sendable {
 
         guard let transformer, let loadedSourcePath = transformerSourcePath else {
             throw Flux2Error.modelNotLoaded("Transformer not loaded — cannot export")
+        }
+        // `loadTransformer()` resolves the source path again internally. If a
+        // path override changed during the load (it blocks on multi-GB I/O),
+        // every decision above — exists/isValid/remove/isSymlinked — was made
+        // against a different directory than the one the save would write to.
+        guard loadedSourcePath == sourcePath else {
+            throw Flux2Error.invalidConfiguration(
+                "The transformer's location changed during the export (checked \(sourcePath.path), loaded \(loadedSourcePath.path)) — a path override was set or cleared mid-run. Retry the export.")
         }
         // Bake check AFTER the load, against the instance actually being
         // saved: `transformerHasMergedLoRAs` survives unloadLoRA (merged

@@ -121,11 +121,14 @@ public enum Flux2PrequantizedCheckpoint {
             return "unknown"
         }
         let parts: [String] = entries.filter { $0.hasSuffix(".safetensors") && !$0.hasPrefix("._") }.sorted().map { name in
-            // Follow a relocation symlink: the fingerprint must track the
-            // real bytes, not the link's own constant size/mtime.
+            // Follow a relocation symlink: the fingerprint must track the real
+            // bytes, not the link's own constant size/mtime. An unreachable
+            // target gets a sentinel rather than falling through to the link's
+            // own lstat data, which would read as "the weights changed" and
+            // send the user to re-export instead of to reconnect the disk.
             let path = sourceModelPath.appendingPathComponent(name).path
-            let statPath = fm.fileExists(atPath: path)
-                ? URL(fileURLWithPath: path).resolvingSymlinksInPath().path : path
+            guard fm.fileExists(atPath: path) else { return "\(name):unreachable" }
+            let statPath = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
             let attrs = try? fm.attributesOfItem(atPath: statPath)
             let size = (attrs?[.size] as? NSNumber)?.int64Value ?? -1
             let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1
@@ -207,6 +210,15 @@ public enum Flux2PrequantizedCheckpoint {
             ("group_size", String(quantization.groupSize)),
             ("mode", quantization.mode.rawValue),
             ("component", component),
+            // The source directory's name is part of the identity, not just
+            // informational: the fingerprint below is name/size/mtime, and two
+            // same-architecture models (a distilled variant and its base) have
+            // identical weight file names and sizes, so a fingerprint can
+            // legitimately collide. Dropping this check would let a path
+            // override aimed at the wrong sibling load its checkpoint silently.
+            // A directory moved wholesale therefore invalidates its checkpoint —
+            // a slow standard load plus a warning, which is the safe failure.
+            ("source", sourceModelPath.lastPathComponent),
         ]
         for (key, value) in expected where metadata[key] != value {
             Flux2Debug.warning(
@@ -218,13 +230,6 @@ public enum Flux2PrequantizedCheckpoint {
             Flux2Debug.warning(
                 "Pre-quantized checkpoint is stale (source weights changed since export — re-download or update?) — falling back to standard load. Re-run `flux2 export-quantized` with force to refresh: \(url.path)")
             return false
-        }
-        // The fingerprint is the identity; the directory name is informational
-        // only — a model directory moved wholesale under a path override keeps
-        // its checkpoint valid.
-        if let source = metadata["source"], source != sourceModelPath.lastPathComponent {
-            Flux2Debug.log(
-                "Pre-quantized checkpoint was exported under '\(source)', now loading from '\(sourceModelPath.lastPathComponent)' (same weights per fingerprint)")
         }
         return true
     }

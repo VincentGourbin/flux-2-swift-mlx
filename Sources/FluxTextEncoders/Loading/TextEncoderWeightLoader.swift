@@ -12,9 +12,10 @@ public class TextEncoderWeightLoader {
 
     /// Load all weights from a model directory
     public static func loadWeights(from modelPath: String) throws -> [String: MLXArray] {
-        let fm = FileManager.default
-        let contents = try fm.contentsOfDirectory(atPath: modelPath)
-        let safetensorFiles = contents.filter { $0.hasSuffix(".safetensors") }.sorted()
+        // Same predicate as the verifiers: `._*` AppleDouble sidecars and
+        // dangling relocation symlinks are not loadable weights.
+        let safetensorFiles = SafetensorsDirectory.reachableWeights(
+            at: URL(fileURLWithPath: modelPath, isDirectory: true))
 
         if safetensorFiles.isEmpty {
             throw TextEncoderWeightLoaderError.noWeightsFound

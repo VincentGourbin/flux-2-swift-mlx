@@ -2,6 +2,7 @@
 // Copyright 2025 Vincent Gourbin
 
 import Foundation
+import FluxTextEncoders
 import MLX
 import MLXNN
 
@@ -12,15 +13,11 @@ public class Flux2WeightLoader {
     /// - Parameter modelPath: Path to directory containing safetensors files
     /// - Returns: Dictionary of weight name to MLXArray
     public static func loadWeights(from modelPath: String) throws -> [String: MLXArray] {
-        let fm = FileManager.default
-        let contents = try fm.contentsOfDirectory(atPath: modelPath)
-        // Same predicate as Flux2ModelDownloader.verifyModel: `._*` entries are
-        // AppleDouble sidecars (exFAT/NTFS), and a dangling symlink isn't a
-        // weight file — feeding either to loadArrays yields an opaque header error.
-        let safetensorFiles = contents.filter {
-            $0.hasSuffix(".safetensors") && !$0.hasPrefix("._")
-                && fm.fileExists(atPath: (modelPath as NSString).appendingPathComponent($0))
-        }.sorted()
+        // Same predicate the verifiers use: `._*` AppleDouble sidecars and
+        // dangling relocation symlinks are not loadable weights — feeding
+        // either to loadArrays yields an opaque header error.
+        let safetensorFiles = SafetensorsDirectory.reachableWeights(
+            at: URL(fileURLWithPath: modelPath, isDirectory: true))
 
         if safetensorFiles.isEmpty {
             throw Flux2WeightLoaderError.noWeightsFound(modelPath)
