@@ -411,6 +411,34 @@ struct ImageToImage: AsyncParsableCommand {
     @Option(name: .long, help: "Max VAE encode budget per reference image, in megapixels (1 MP = 1024×1024; default 1.0). Raise for higher-fidelity conditioning at the cost of memory; e.g. 4.0 ≈ 2048².")
     var maxReferenceMegapixels: Double?
 
+    // MARK: - Image Preparation (barn-door Live Area + megapixel budget)
+    // See docs/ImagePreparation.md. Setting any of these flags (or --prepared)
+    // enables the prepared pipeline instead of the legacy plain-reference path.
+
+    @Flag(name: .long, help: "Format the reference image and apply the megapixel budget before generating, compositing the result back into the original (see docs/ImagePreparation.md)")
+    var prepared: Bool = false
+
+    @Option(name: .long, help: "Prepared: bias crop/pad toward original aspect, horizontal, or vertical (original, horizontal, vertical)")
+    var favour: String?
+
+    @Option(name: .long, help: "Prepared: fit the reference to the model's step size by cropping or padding (crop, pad)")
+    var method: String?
+
+    @Option(name: .long, help: "Prepared: fine-tune how aggressively the image is scaled before crop/pad (0.1-1.0)")
+    var prepScale: Double?
+
+    @Option(name: .long, help: "Prepared: total pixel budget for generation, in megapixels (0.25-4.0, default 1.0)")
+    var megapixels: Double?
+
+    @Option(name: .long, help: "Prepared: Live Area barn-door rect as normalized x,y,width,height (e.g. 0.1,0.1,0.8,0.8) — what the model sees and where the result pastes back")
+    var liveArea: String?
+
+    @Option(name: .long, help: "Prepared: sub-rect actually regenerated, normalized x,y,width,height AGAINST THE FULL ORIGINAL IMAGE (same coordinate space as --live-area, not relative to it) — must overlap --live-area; advanced, defaults to the whole Live Area")
+    var processArea: String?
+
+    @Flag(name: .long, help: "Prepared: skip pasting the generated result back into the original — output the generated canvas as-is")
+    var noComposite: Bool = false
+
     @Flag(name: .long, help: "Enhance prompt with visual details using Mistral before encoding")
     var upsamplePrompt: Bool = false
 
@@ -561,9 +589,56 @@ struct ImageToImage: AsyncParsableCommand {
             }
         }
 
-        // Show output dimensions
-        let outputWidth = width ?? refImages[0].width
-        let outputHeight = height ?? refImages[0].height
+        // Image Preparation: format the reference(s) to the model's step size,
+        // apply the barn-door Live Area + megapixel budget, and remember the
+        // composition plan (if any) to paste the result back after generation.
+        // See docs/ImagePreparation.md. Any prep flag (or --prepared) enables
+        // this; otherwise the legacy plain-reference path is unchanged.
+        let usesPreparation = ImageToImagePreparationSupport.usesPreparation(
+            prepared: prepared, favour: favour, method: method, scale: prepScale,
+            megapixels: megapixels, liveArea: liveArea, processArea: processArea,
+            noComposite: noComposite)
+
+        // Image Preparation derives its own output size from the megapixel
+        // budget/aspect; --width/--height would be silently ignored (a real
+        // ~2x resolution surprise for a legacy caller that adds one prep flag
+        // without dropping its existing --width/--height). Reject explicitly.
+        if usesPreparation, width != nil || height != nil {
+            throw ValidationError("--width/--height are not compatible with Image Preparation flags (--prepared, --favour, --method, --prep-scale, --megapixels, --live-area, --process-area, --no-composite) — use --megapixels and --favour to control output size instead")
+        }
+
+        let pipelineImages: [CGImage]
+        let outputWidth: Int
+        let outputHeight: Int
+        var compositionPlan: ImageCompositionPlan?
+        var preparationSettings: ImagePreparationSettings?
+
+        if usesPreparation {
+            let settings = try ImageToImagePreparationSupport.buildSettings(
+                favour: favour, method: method, scale: prepScale, megapixels: megapixels,
+                liveArea: liveArea, processArea: processArea, noComposite: noComposite)
+            let preparedInput = try ImagePreparation.prepare(referenceImages: refImages, settings: settings)
+            pipelineImages = preparedInput.images
+            outputWidth = preparedInput.width
+            outputHeight = preparedInput.height
+            compositionPlan = preparedInput.compositionPlan
+            preparationSettings = settings
+            if verbose {
+                print("Image Preparation: \(settings.sizingMethod.rawValue.lowercased()), favour \(settings.sizingFavor.rawValue.lowercased()), \(String(format: "%.2f", settings.megapixelBudget)) MP budget\(compositionPlan != nil ? ", composite back" : "")")
+            }
+            // The composite geometry is fully determined by the plan above, not
+            // by the generated pixels. Validate it now, before any network/GPU
+            // work, instead of discarding a completed multi-minute generation
+            // if `--process-area`/`--live-area` turn out to map to an empty
+            // canvas rect.
+            if let compositionPlan {
+                try ImagePreparation.validateComposable(compositionPlan)
+            }
+        } else {
+            pipelineImages = refImages
+            outputWidth = width ?? refImages[0].width
+            outputHeight = height ?? refImages[0].height
+        }
 
         print("I2I \(outputWidth)x\(outputHeight), \(actualSteps) steps, guidance \(actualGuidance), \(refImages.count) ref image(s)\(seed.map { ", seed \($0)" } ?? "")...")
         if verbose {
@@ -665,15 +740,34 @@ struct ImageToImage: AsyncParsableCommand {
         // Reference-encode budget policy: framework owns the mechanism (a per-image
         // pixel ceiling); the CLI just maps the user-facing megapixel flag to pixels.
         // 1 MP == 1024×1024, so the default resolves to the historical 1024² budget.
-        let maxReferencePixels = maxReferenceMegapixels
-            .map { max(32 * 32, Int(($0 * 1024 * 1024).rounded())) } ?? (1024 * 1024)
+        //
+        // Image Preparation already rendered the (never-upsampled) reference at
+        // settings.megapixelBudget; without an explicit --max-reference-megapixels
+        // override, re-capping the encode at the unrelated historical 1024²
+        // default here would silently throw away that fidelity (e.g. `--megapixels
+        // 2.0` renders a ~2MP reference, then this recompresses it to ~1MP before
+        // the VAE ever sees it).
+        let maxReferencePixels: Int
+        if let maxReferenceMegapixels {
+            maxReferencePixels = max(32 * 32, Int((maxReferenceMegapixels * 1024 * 1024).rounded()))
+        } else if let preparationSettings {
+            maxReferencePixels = max(32 * 32, ImagePreparation.conditioningPixelBudget(for: preparationSettings.megapixelBudget))
+        } else {
+            maxReferencePixels = 1024 * 1024
+        }
 
-        let image = try await pipeline.generateImageToImage(
+        // Captured by value for the @Sendable checkpoint closure below — checkpoints
+        // are composited the same way the final image is, so a Live-Area run's
+        // intermediate saves show the same framing as the final output instead of
+        // the bare, un-composited generation canvas.
+        let compositionPlanForCheckpoints = compositionPlan
+
+        var image = try await pipeline.generateImageToImage(
             prompt: prompt,
-            images: refImages,
+            images: pipelineImages,
             interpretImagePaths: interpretImagePaths.isEmpty ? nil : interpretImagePaths,
-            height: height,
-            width: width,
+            height: outputHeight,
+            width: outputWidth,
             steps: actualSteps,
             guidance: actualGuidance,
             seed: seed,
@@ -689,7 +783,13 @@ struct ImageToImage: AsyncParsableCommand {
                 if let dir = checkpointDir {
                     let checkpointPath = "\(dir)/step_\(String(format: "%03d", step)).png"
                     do {
-                        try saveImage(checkpointImage, to: checkpointPath)
+                        let toSave: CGImage
+                        if let compositionPlanForCheckpoints {
+                            toSave = try ImagePreparation.composite(checkpointImage, using: compositionPlanForCheckpoints)
+                        } else {
+                            toSave = checkpointImage
+                        }
+                        try saveImage(toSave, to: checkpointPath)
                         print("\n  Checkpoint saved: step_\(String(format: "%03d", step)).png")
                     } catch {
                         print("\n  Failed to save checkpoint at step \(step): \(error.localizedDescription)")
@@ -699,6 +799,16 @@ struct ImageToImage: AsyncParsableCommand {
         )
 
         print()
+
+        // Paste the generated patch back into the full-resolution original
+        // (Image Preparation, Live Area / partial edits only — a full-frame
+        // edit has no surrounding pixels to preserve and skips this).
+        if let compositionPlan {
+            image = try ImagePreparation.composite(image, using: compositionPlan)
+            if verbose {
+                print("Composited into original (\(image.width)x\(image.height))")
+            }
+        }
 
         let elapsed = Date().timeIntervalSince(startTime)
         print("Generation completed in \(String(format: "%.1f", elapsed))s")
