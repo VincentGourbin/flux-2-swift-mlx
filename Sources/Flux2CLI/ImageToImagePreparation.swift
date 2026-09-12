@@ -10,7 +10,11 @@ import Foundation
 
 enum ImageToImagePreparationSupport {
     static func parseNormalizedRect(_ value: String, label: String) throws -> CGRect {
-        let parts = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        // omittingEmptySubsequences: false — the default (true) silently
+        // collapses a stray double comma ("0.1,,0.1,0.8,0.8") into 4 parts
+        // instead of 5, so the malformed input passes the count check with
+        // shifted values rather than being rejected.
+        let parts = value.split(separator: ",", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
         // `Double("nan")`/`Double("inf")` parse successfully in Swift, so the
         // count/Double(...) guard alone lets a typo like `--live-area
         // nan,0.1,0.8,0.8` through silently — clampUnitRect degrades it to
@@ -61,6 +65,13 @@ enum ImageToImagePreparationSupport {
         processArea: String?,
         noComposite: Bool
     ) -> Bool {
+        // --no-composite is deliberately NOT a trigger on its own: it only
+        // means anything once Image Preparation is already active (the
+        // legacy path has no composite-back step to skip), but its name
+        // doesn't suggest "also reformat/resize the reference" — a caller
+        // adding just --no-composite to an existing invocation would get
+        // silent, unrequested cropping/resizing (and possibly a surprise
+        // --width/--height conflict) instead of the no-op they'd expect.
         prepared
             || favour != nil
             || method != nil
@@ -68,7 +79,6 @@ enum ImageToImagePreparationSupport {
             || megapixels != nil
             || liveArea != nil
             || processArea != nil
-            || noComposite
     }
 
     static func buildSettings(

@@ -21,10 +21,16 @@ for the model (FLUX.2 snaps to a 32-pixel grid).
 Image Formatting always runs once any prep flag is set — the model needs
 correctly dimensioned input.
 
+With multiple `--images`, Live Area and `--process-area` only apply to the
+**first** reference; every additional reference is formatted full-frame
+regardless of a Live Area on the first.
+
 ## Step 2 — Live Area (optional)
 
 After formatting, generation can be narrowed to a **sub-region** of the image
-via `--live-area x,y,width,height` (normalized `0…1`, top-left origin).
+via `--live-area x,y,width,height` (normalized `0…1`, top-left origin, against
+the full original image). `--process-area` uses that same coordinate space
+(not relative to the Live Area) and must overlap it.
 
 **What Live Area is**
 
@@ -37,8 +43,10 @@ via `--live-area x,y,width,height` (normalized `0…1`, top-left origin).
 - Not a brush mask — anything outside the Live Area on the full-resolution
   image stays effectively bit-exact original (the compositing round-trip
   through the generation-resolution canvas can shift the paste-back edge by
-  a pixel or two); inside, the whole crop is reinterpreted toward the prompt
-  and pasted back on a hard edge.
+  a few pixels — more for a Live Area drawn much larger than the megapixel
+  budget, since the round-trip rounding error scales with that ratio);
+  inside, the whole crop is reinterpreted toward the prompt and pasted back
+  on a hard edge.
 - Not object referents for the prompt ("these three women") — the **text
   prompt** carries the edit; Live Area carries scene volume and megapixel
   economics.
@@ -63,10 +71,17 @@ update.
 
 Separate from Live Area, but they work together. The budget is the maximum
 total pixel count for generation (`0.25`–`4.0` MP, default `1.0`). Live Area
-sets the **aspect ratio**; the budget sets **how many pixels** fill that
-ratio — a small live region with a 1 MP budget still generates at ~1 MP in
-that aspect (the conditioning crop is upscaled to hit the budget), giving
-local editing without throwing away output resolution.
+sets the **aspect ratio**; the budget sets **how many pixels** the model
+*generates* — a small live region with a 1 MP budget still generates at ~1 MP
+in that aspect, giving local editing without throwing away output
+resolution.
+
+That's the generation canvas, not the reference the VAE encodes: the
+reference is deliberately never upsampled past its native resolution (an
+interpolated, upsampled JPEG smears into fuzzy gradients FLUX.2 reads as
+real structure) — it's rendered at native scale and the model enlarges it
+generatively to fill the budget, rather than the framework enlarging the
+pixels first.
 
 ## End-to-end flow
 

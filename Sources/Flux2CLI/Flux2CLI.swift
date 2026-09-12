@@ -433,7 +433,7 @@ struct ImageToImage: AsyncParsableCommand {
     @Option(name: .long, help: "Prepared: Live Area barn-door rect as normalized x,y,width,height (e.g. 0.1,0.1,0.8,0.8) — what the model sees and where the result pastes back")
     var liveArea: String?
 
-    @Option(name: .long, help: "Prepared: sub-rect of the Live Area actually regenerated, normalized x,y,width,height — advanced; defaults to the whole Live Area")
+    @Option(name: .long, help: "Prepared: sub-rect actually regenerated, normalized x,y,width,height AGAINST THE FULL ORIGINAL IMAGE (same coordinate space as --live-area, not relative to it) — must overlap --live-area; advanced, defaults to the whole Live Area")
     var processArea: String?
 
     @Flag(name: .long, help: "Prepared: skip pasting the generated result back into the original — output the generated canvas as-is")

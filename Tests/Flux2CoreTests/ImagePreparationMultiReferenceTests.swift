@@ -53,6 +53,29 @@ final class ImagePreparationMultiReferenceTests: XCTestCase {
         XCTAssertLessThanOrEqual(secondaryPrepared.height, smallSecondary.height)
     }
 
+    /// A width-only upsample check misses genuine upsampling whenever
+    /// Favour/Method reshape the aspect ratio: with `--favour vertical
+    /// --method crop`, the real (crop) scale factor comes from the HEIGHT
+    /// axis, which can exceed 1 even while the width ratio stays <= 1.
+    func testFormatFullFrameReferenceUsesRealCropScaleNotWidthRatio() throws {
+        let secondary = Self.makeSolidImage(width: 1200, height: 900)  // 4:3
+
+        var settings = ImagePreparationSettings()
+        settings.sizingFavor = .vertical  // forces target aspect <= 3:4
+        settings.sizingMethod = .crop
+        settings.megapixelBudget = 1.0
+
+        let prepared = try ImagePreparation.formatFullFrameReference(secondary, settings: settings)
+
+        // A width-only check would see 896/1200 ~= 0.75 <= 1 and render
+        // straight to the full (upsampled) target height of ~1184 — genuine
+        // upsampling past the native 900px height. The real crop scale
+        // (max of the x/y axis scales) is what actually exceeds 1 here, and
+        // must trigger the native-resolution cap.
+        XCTAssertLessThanOrEqual(prepared.width, secondary.width)
+        XCTAssertLessThanOrEqual(prepared.height, secondary.height)
+    }
+
     private static func makeSolidImage(width: Int, height: Int) -> CGImage {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue

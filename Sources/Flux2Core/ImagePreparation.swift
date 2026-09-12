@@ -66,7 +66,13 @@ public enum ImagePreparation {
     }
 
     public static func conditioningPixelBudget(for megapixelBudget: Double) -> Int {
-        let clamped = min(max(megapixelBudget, ImagePreparationSettings.minMegapixelBudget), ImagePreparationSettings.maxMegapixelBudget)
+        // Public entry point — sanitize independently of ImagePreparationSettings
+        // .clampValues() (a caller may call this directly with a raw Double).
+        // `min`/`max` don't sanitize NaN (`max(nan, x)` is `nan` when nan is the
+        // first argument), which would otherwise reach `Int(_.rounded())` below
+        // — a Swift runtime trap, not a graceful fallback.
+        let budget = megapixelBudget.isFinite ? megapixelBudget : 1.0
+        let clamped = min(max(budget, ImagePreparationSettings.minMegapixelBudget), ImagePreparationSettings.maxMegapixelBudget)
         return Int((clamped * 1_000_000).rounded())
     }
 
@@ -74,6 +80,7 @@ public enum ImagePreparation {
         sourceAspect: Double,
         settings: ImagePreparationSettings
     ) -> (width: Int, height: Int) {
+        let sourceAspect = sourceAspect.isFinite && sourceAspect > 0 ? sourceAspect : 1.0
         let targetAspect: Double
         switch settings.sizingFavor {
         case .original:
@@ -84,7 +91,8 @@ public enum ImagePreparation {
             targetAspect = min(sourceAspect, 3.0 / 4.0)
         }
 
-        let scale = min(max(settings.preparationScale, 0.1), 1.0)
+        let rawScale = settings.preparationScale.isFinite ? settings.preparationScale : 1.0
+        let scale = min(max(rawScale, 0.1), 1.0)
         let pixelBudget = Double(conditioningPixelBudget(for: settings.megapixelBudget)) * scale * scale
         let rawHeight = (pixelBudget / max(targetAspect, 0.0001)).squareRoot()
         let rawWidth = rawHeight * targetAspect
@@ -152,7 +160,7 @@ public enum ImagePreparation {
         var settings = settings
         settings.clampValues()
 
-        let (contextRect, processRect) = resolvedRects(settings: settings, image: original)
+        let (contextRect, processRect) = try resolvedRects(settings: settings, image: original)
         let targetSize = generationSize(referenceImage: original, settings: settings)
 
         let contextImage = try cropImage(original, to: contextRect)
@@ -236,7 +244,20 @@ public enum ImagePreparation {
         // straight to the full target size, smearing an interpolated
         // reference into the VAE. Render at native scale instead when the
         // source is smaller, and let the model enlarge generatively.
-        let outputScale = CGFloat(targetSize.width) / CGFloat(max(1, referenceImage.width))
+        //
+        // The real scale factor is method-dependent (crop takes max(x,y)
+        // scale, pad takes min) and must come from the same
+        // preparationTransform the actual render below uses — a width-only
+        // ratio under-detects upsampling for any settings where Favour/Method
+        // reshape the aspect ratio (e.g. --favour vertical with --method
+        // crop can scale by height far more than by width).
+        let outputScale = preparationTransform(
+            sourceWidth: referenceImage.width,
+            sourceHeight: referenceImage.height,
+            targetWidth: targetSize.width,
+            targetHeight: targetSize.height,
+            method: settings.sizingMethod
+        ).scale
         let renderSize = referenceRenderSize(
             contextWidth: referenceImage.width,
             contextHeight: referenceImage.height,
@@ -289,12 +310,14 @@ public enum ImagePreparation {
             throw Flux2Error.imageProcessingFailed(
                 "Generated image (\(generatedImage.width)x\(generatedImage.height)) does not match the composition plan's canvas (\(plan.transform.targetWidth)x\(plan.transform.targetHeight))")
         }
-        // Known ~1-2px edge tolerance: generatedCropRect is rounded outward in
-        // canvas space, then mapped back through the inverse transform and
-        // rounded outward again for destinationRect below. Two independent
-        // outward-rounding steps across a scale factor can each add a
-        // fractional pixel, so the pasted patch can overshoot the intended
-        // Live Area by a pixel or two rather than landing pixel-exact.
+        // Known edge tolerance: generatedCropRect is rounded outward in canvas
+        // space, then mapped back through the inverse transform and rounded
+        // outward again for destinationRect below. Each outward rounding step
+        // is amplified by 1/plan.transform.scale on the way back to source
+        // space, so the pasted patch can overshoot the intended Live Area by
+        // more than a token pixel or two when the Live Area was drawn much
+        // larger than the megapixel budget (a small transform.scale) — not
+        // pixel-exact in general.
         let visibleCanvasRect = try visibleCanvasRect(for: plan, canvasWidth: generatedImage.width, canvasHeight: generatedImage.height)
         let generatedCropRect = integralPixelRect(visibleCanvasRect, imageWidth: generatedImage.width, imageHeight: generatedImage.height)
         let generatedPatch = try cropImage(generatedImage, to: generatedCropRect)
@@ -375,7 +398,15 @@ public enum ImagePreparation {
     /// paste back into the original" needs
     /// `settings.compositeBack && !isFullFrame(settings:image:)`.
     public static func isFullFrame(settings: ImagePreparationSettings, image: CGImage) -> Bool {
-        isFullFrame(processRect: resolvedRects(settings: settings, image: image).process, original: image)
+        guard let rects = try? resolvedRects(settings: settings, image: image) else {
+            // A --process-area that doesn't overlap the Live Area fails to
+            // resolve (see integralProcessRect) — prepare() surfaces that as
+            // a real error; this read-only predicate has nowhere to throw to,
+            // so it conservatively reports "not full-frame" rather than
+            // guessing whether compositing should be skipped.
+            return false
+        }
+        return isFullFrame(processRect: rects.process, original: image)
     }
 
     /// The integral context + process rects for `settings` on `image` — the single
@@ -384,11 +415,11 @@ public enum ImagePreparation {
     private static func resolvedRects(
         settings: ImagePreparationSettings,
         image: CGImage
-    ) -> (context: CGRect, process: CGRect) {
+    ) throws -> (context: CGRect, process: CGRect) {
         var settings = settings
         settings.clampValues()
         let contextRect = integralPixelRect(from: settings.contextArea, in: image)
-        let processRect = integralProcessRect(in: image, contextRect: contextRect, processArea: settings.processArea)
+        let processRect = try integralProcessRect(in: image, contextRect: contextRect, processArea: settings.processArea)
         return (contextRect, processRect)
     }
 
@@ -485,7 +516,7 @@ public enum ImagePreparation {
         in image: CGImage,
         contextRect: CGRect,
         processArea: CGRect?
-    ) -> CGRect {
+    ) throws -> CGRect {
         guard let processArea else {
             return contextRect
         }
@@ -494,7 +525,13 @@ public enum ImagePreparation {
         let clampedProcessRect = rawProcessRect.intersection(contextRect)
 
         guard !clampedProcessRect.isNull, clampedProcessRect.width > 0, clampedProcessRect.height > 0 else {
-            return contextRect
+            // A non-overlapping --process-area used to fall back to the whole
+            // Live Area here, silently — the pre-flight validateComposable()
+            // check can't catch this because by the time it runs, this
+            // substitution already happened and looks like a normal,
+            // trivially-valid full-Live-Area plan.
+            throw Flux2Error.invalidConfiguration(
+                "--process-area does not overlap the Live Area (--live-area) — check both rects together")
         }
 
         return integralPixelRect(clampedProcessRect, imageWidth: image.width, imageHeight: image.height)

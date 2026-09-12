@@ -238,8 +238,14 @@ original. See [docs/ImagePreparation.md](ImagePreparation.md) for the full
 model — what Live Area is (and isn't), how the megapixel budget interacts
 with it, and worked examples.
 
-Any of these flags enables the prepared pipeline (or pass `--prepared` alone
-for just the formatting step):
+Any of `--prepared`/`--favour`/`--method`/`--prep-scale`/`--megapixels`/
+`--live-area`/`--process-area` enables the prepared pipeline (`--prepared`
+alone just runs the formatting step with defaults). `--no-composite` only
+has an effect combined with one of those — on its own it's a no-op, since
+the legacy path has no composite-back step to skip.
+
+Live Area / `--process-area` are only applied to the **first** `--images`
+reference; additional references are formatted full-frame regardless.
 
 | Option | Description |
 |--------|-------------|
@@ -248,9 +254,9 @@ for just the formatting step):
 | `--method <crop\|pad>` | Fit to step size by cropping or letterbox-padding |
 | `--prep-scale <0.1-1.0>` | Fine-tune how aggressively the image is scaled before crop/pad |
 | `--megapixels <0.25-4.0>` | Total pixel budget for generation (default `1.0`) |
-| `--live-area <x,y,w,h>` | Normalized barn-door rect — what the model sees and where the result pastes back |
-| `--process-area <x,y,w,h>` | Normalized sub-rect of the Live Area actually regenerated (advanced; defaults to the whole Live Area) |
-| `--no-composite` | Output the generated canvas as-is instead of pasting back into the original |
+| `--live-area <x,y,w,h>` | Normalized barn-door rect (against the full original image) — what the model sees and where the result pastes back |
+| `--process-area <x,y,w,h>` | Normalized rect, **in the same full-image coordinate space as `--live-area`** (not relative to it) — the region actually regenerated; must overlap `--live-area`, or the command errors. Advanced; defaults to the whole Live Area |
+| `--no-composite` | Skip pasting the generated canvas back into the original (only meaningful alongside another prep flag) |
 
 ```bash
 # Format a wide photo to the model's step size, favouring a squarer crop

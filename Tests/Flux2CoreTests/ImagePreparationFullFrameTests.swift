@@ -103,6 +103,18 @@ final class ImagePreparationFullFrameTests: XCTestCase {
         XCTAssertNotEqual(width, 960, "still truncating instead of rounding")
     }
 
+    func testPrepareThrowsWhenProcessAreaDoesNotOverlapLiveArea() throws {
+        let image = makeImage(width: 1200, height: 900)
+        var settings = ImagePreparationSettings()
+        settings.contextArea = CGRect(x: 0, y: 0, width: 0.3, height: 0.3)   // Live Area: top-left corner
+        settings.processArea = CGRect(x: 0.7, y: 0.7, width: 0.3, height: 0.3)  // does not overlap
+
+        // Previously silently substituted the whole Live Area instead of
+        // erroring — a typo'd, non-overlapping pair must be rejected, not
+        // silently regenerate a different region than requested.
+        XCTAssertThrowsError(try ImagePreparation.prepare(referenceImages: [image], settings: settings))
+    }
+
     func testValidateComposableThrowsForEmptyIntersection() throws {
         let image = makeImage(width: 1200, height: 900)
         var settings = ImagePreparationSettings()
