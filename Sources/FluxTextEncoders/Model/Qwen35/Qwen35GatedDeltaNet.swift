@@ -98,8 +98,8 @@ private func gatedDeltaUpdate(
     var kExp = k
     let repeatFactor = Hv / Hk
     if repeatFactor > 1 {
-        qExp = MLX.repeat(q, count: repeatFactor, axis: 2)
-        kExp = MLX.repeat(k, count: repeatFactor, axis: 2)
+        qExp = MLX.repeated(q, count: repeatFactor, axis: 2)
+        kExp = MLX.repeated(k, count: repeatFactor, axis: 2)
     }
 
     // === Single-token shortcut (generation mode: T=1) ===

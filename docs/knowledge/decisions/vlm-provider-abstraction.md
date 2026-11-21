@@ -42,8 +42,11 @@ members.
 The provider protocol therefore lives in `FluxTextEncoders` (no new
 dependency); the Gemma implementation lives in an opt-in library target that
 consumers link deliberately. Version compatibility checked: gemma-4-swift-mlx
-1.5.0 accepts mlx-swift `0.31.4..<0.32`, so the framework's `exact: "0.31.6"`
-pin holds; resolution brings mlx-swift-lm 3.31.4.
+1.10.0 accepts mlx-swift `0.33.x` (upToNextMinor), so the framework's
+`exact: "0.33.0"` pin holds; resolution brings mlx-swift-lm 3.33.x. (Before
+the v3.2.0 bump: gemma 1.5.0 / mlx-swift `0.31.4..<0.32` / exact 0.31.6.)
+Any future mlx-swift minor bump on the framework requires a matching
+gemma-4-swift-mlx release first.
 
 # Why E2B 6-bit is the Gemma default
 
