@@ -70,7 +70,7 @@ public class Qwen3VLMRoPE: Module {
             // cos/sin shape needs to be [1, 1, seq, actualDim] where each freq is repeated for the pair
             // angles[j] applies to pair (x[2j], x[2j+1])
             // So we need to repeat each angle value twice: [a0, a0, a1, a1, a2, a2, ...]
-            let anglesRepeated = MLX.repeat(angles, count: 2, axis: -1)
+            let anglesRepeated = MLX.repeated(angles, count: 2, axis: -1)
                 .reshaped([1, 1, angles.dim(0), actualDim])
 
             let cos = MLX.cos(anglesRepeated)

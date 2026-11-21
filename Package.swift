@@ -21,18 +21,19 @@ let package = Package(
     dependencies: [
         // Pinned exactly: mlx-swift introduces breaking API changes even in patch
         // releases (e.g. AdamW TupleState -> AdamState in 0.31.4). Bump deliberately.
-        // 0.31.6 verified against the full Metal test suite + a generation run;
+        // 0.33.0 verified against the full Metal test suite + a generation run;
         // 0.31.5+ requires a Swift 6.3 toolchain (Xcode 26+).
-        .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.31.6"),
+        .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.33.0"),
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.8.2"),
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.3"),
         .package(url: "https://github.com/jpsim/Yams", from: "6.0.0"),
         .package(url: "https://github.com/VincentGourbin/swift-mlx-profiler", from: "1.4.0"),
         // Optional VLM provider (target `FluxGemma4VLM` only): Gemma 4 E2B as an
         // alternative to the bundled Qwen3.5 for prompt enrichment / scoring.
-        // Its mlx-swift range is 0.31.4..<0.32, compatible with the exact pin above;
-        // it brings mlx-swift-lm in, which is why it stays out of the base targets.
-        .package(url: "https://github.com/VincentGourbin/gemma-4-swift-mlx", from: "1.5.0"),
+        // 1.10.0+ accepts mlx-swift 0.33.x (upToNextMinor), compatible with the exact
+        // pin above; it brings mlx-swift-lm 3.33.x in, which is why it stays out of
+        // the base targets.
+        .package(url: "https://github.com/VincentGourbin/gemma-4-swift-mlx", from: "1.10.0"),
     ],
     targets: [
         // MARK: - Libraries
