@@ -529,7 +529,7 @@ flux2 info
 
 ```
 Flux.2 Swift MLX Framework
-Version: 0.1.0
+Version: 3.2.0
 
 System Information:
   RAM: 64GB
