@@ -8,13 +8,14 @@ A native Swift implementation of [Flux.2](https://blackforestlabs.ai/) image gen
 
 ## Downloads
 
-**[📦 Latest Release (v2.1.0)](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/tag/v2.1.0)** — Universal binaries for Apple Silicon
+**[📦 Latest Release (v3.2.0)](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/tag/v3.2.0)** — Apple Silicon binaries
 
 | Download | Description |
 |----------|-------------|
-| [Flux2App](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/download/v2.1.0/Flux2App-v2.1.0-macOS.zip) | Demo macOS app with T2I, I2I, chat ([guide](docs/Flux2App.md)) |
-| [Flux2CLI](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/download/v2.1.0/Flux2CLI-v2.1.0-macOS.zip) | Image generation CLI ([guide](docs/CLI.md)) |
-| [FluxEncodersCLI](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/download/v2.1.0/FluxEncodersCLI-v2.1.0-macOS.zip) | Text encoders CLI ([guide](docs/TextEncoders.md)) |
+| [Flux2CLI](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/download/v3.2.0/Flux2CLI-v3.2.0-macOS.zip) | Image generation CLI ([guide](docs/CLI.md)) |
+| [FluxEncodersCLI](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/download/v3.2.0/FluxEncodersCLI-v3.2.0-macOS.zip) | Text encoders CLI ([guide](docs/TextEncoders.md)) |
+
+The demo app (`Flux2App`) is not shipped as a binary (only the CLIs are, since v2.2.0) — build it from source ([guide](docs/Flux2App.md)).
 
 > **Note**: On first launch, macOS may block unsigned apps. Right-click → Open to bypass Gatekeeper.
 
@@ -56,6 +57,11 @@ A native Swift implementation of [Flux.2](https://blackforestlabs.ai/) image gen
   `Flux2Pipeline.generate*` — a per-step callback that lets new chains
   transform packed latents between steps. Foundation for the RePaint
   blend; available for region control, style transfer, etc.
+- **Image Preparation** (`ImagePreparation`, Flux2Core): barn-door **Live
+  Area** editing and megapixel-budget formatting for I2I — fit the reference
+  to the model's 32-px grid (crop/pad, aspect bias, scale), generate only the
+  Live Area and composite it back. CLI: `--prepared`, `--live-area`, …
+  ([guide](docs/ImagePreparation.md))
 - A third chain — `Flux2Sharp3DRepairChain` (single-image 3D novel-view
   repair via Apple SHARP + a FLUX.2 LoRA) — lives in the sibling repo
   [`rephoto-swift-coreml`](https://github.com/VincentGourbin/rephoto-swift-coreml)
@@ -78,7 +84,7 @@ A native Swift implementation of [Flux.2](https://blackforestlabs.ai/) image gen
 
 - macOS 15.0 (Sequoia) or later (built on macOS 26 Tahoe)
 - Apple Silicon Mac (M1/M2/M3/M4)
-- Xcode 16.0 or later
+- To build from source: Xcode 26 or later (Swift 6.3 toolchain, required by mlx-swift 0.33.0)
 
 **Memory requirements by model (with on-the-fly quantization):**
 
@@ -95,14 +101,16 @@ A native Swift implementation of [Flux.2](https://blackforestlabs.ai/) image gen
 Download from the [Releases page](https://github.com/VincentGourbin/flux-2-swift-mlx/releases/latest):
 
 ```bash
-# CLI
-unzip Flux2CLI-v2.1.0-macOS.zip
-./Flux2CLI t2i "a cat" --model klein-4b
+# Image generation CLI
+unzip Flux2CLI-v3.2.0-macOS.zip
+./Flux2CLI-v3.2.0/Flux2CLI t2i "a cat" --model klein-4b
 
-# App
-unzip Flux2App-v2.1.0-macOS.zip
-open Flux2App.app
+# Text encoders CLI
+unzip FluxEncodersCLI-v3.2.0-macOS.zip
+./FluxEncodersCLI-v3.2.0/FluxEncodersCLI --help
 ```
+
+Each archive holds the executable plus its `*.bundle` resource folders — keep them side by side (`mlx-swift_Cmlx.bundle` carries the Metal shader library; without it MLX fails with `Failed to load the default metallib`). To install system-wide, copy the executable **and** the bundles into the same directory.
 
 ### Build from Source
 
@@ -111,11 +119,27 @@ git clone https://github.com/VincentGourbin/flux-2-swift-mlx.git
 cd flux-2-swift-mlx
 ```
 
-Build with Xcode (not `swift build`):
+Build with Xcode (not `swift build` — Metal shaders are only compiled by Xcode):
 
 1. Open the project in Xcode
 2. Select `Flux2CLI` or `Flux2App` scheme
 3. Build with `Cmd+B` (or `Cmd+R` to run)
+
+Or from the command line (`-skipPackagePluginValidation` is required since mlx-swift 0.31.5, which ships a build-tool plugin):
+
+```bash
+xcodebuild -scheme Flux2CLI -configuration Release -destination 'platform=macOS' -skipPackagePluginValidation build
+```
+
+### As a Swift Package
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/VincentGourbin/flux-2-swift-mlx.git", from: "3.2.0")
+]
+```
+
+mlx-swift is pinned `exact: "0.33.0"` (it breaks APIs even in patch releases), so your package must resolve to that same version. The optional `FluxGemma4VLM` target pulls in gemma-4-swift-mlx 1.10.0+ and mlx-swift-lm 3.33.x.
 
 ### Download Models
 
@@ -270,6 +294,8 @@ The manifest schema is deliberately runtime-agnostic (`version`, `pid`, `runtime
 | [LoRA Evaluation](docs/examples/evaluate-lora/) | Automated gap analysis and training parameter recommendations |
 | [VLM API](docs/VLM-API.md) | VLM providers (Qwen3.5 bundled, Gemma 4 E2B opt-in) — image analysis, comparison, prompt rewriting, LoRA training setup |
 | [Text Encoders](docs/TextEncoders.md) | FluxTextEncoders library API and CLI |
+| [Inpainting Guide](docs/INPAINTING_GUIDE.md) | By-the-book masked inpainting — read before integrating `Flux2MaskedInpaintingChain` |
+| [Image Preparation](docs/ImagePreparation.md) | Live Area editing and megapixel-budget formatting for I2I |
 | [Custom Model Integration](docs/CustomModelIntegration.md) | Integrating custom MLX-compatible models into the framework |
 | [Flux2App Guide](docs/Flux2App.md) | Demo macOS application |
 

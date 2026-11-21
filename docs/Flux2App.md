@@ -61,7 +61,8 @@ Download and manage text encoders and diffusion models:
 
 ### Requirements
 
-- macOS 14.0 (Sonoma) or later
+- macOS 15.0 (Sequoia) or later
+- Xcode 26 or later to build
 - Apple Silicon Mac (M1/M2/M3/M4)
 - 16GB+ RAM for Klein 4B, 64GB+ for Dev
 

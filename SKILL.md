@@ -13,7 +13,7 @@ Add to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/VincentGourbin/flux-2-swift-mlx.git", branch: "main")
+    .package(url: "https://github.com/VincentGourbin/flux-2-swift-mlx.git", from: "3.2.0")
 ]
 
 // Add to your target dependencies
@@ -26,7 +26,7 @@ dependencies: [
 )
 ```
 
-Requires macOS 14+ and Apple Silicon (M1/M2/M3/M4). Build with Xcode (not `swift build`) for Metal GPU support.
+Requires macOS 15+ and Apple Silicon (M1/M2/M3/M4). Build with Xcode 26+ (not `swift build`) for Metal GPU support; command-line builds need `xcodebuild ... -skipPackagePluginValidation`. mlx-swift is pinned `exact: "0.33.0"`.
 
 ## Quick Start
 
@@ -555,7 +555,7 @@ let config = LoRATrainingConfig(
 
 ```bash
 # Install pre-built binary
-unzip Flux2CLI-v1.0.1-macOS.zip
+unzip Flux2CLI-v3.2.0-macOS.zip   # executable + *.bundle resources, keep them together
 
 # Text-to-Image (Klein 4B - fast, commercial OK)
 flux2 t2i "a beaver building a dam" --model klein-4b
